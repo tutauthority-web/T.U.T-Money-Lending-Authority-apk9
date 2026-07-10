@@ -1,0 +1,6 @@
+{
+  "name": "T.U.T. Private Lending Authority",
+  "description": "Professional, high-security financial application for private lending and deposit management with real-time browser notifications.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

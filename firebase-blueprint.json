@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and financial summary",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "nid": { "type": "string" },
+        "address": { "type": "string" },
+        "occupation": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "memberId": { "type": "string" },
+        "totalLoan": { "type": "number" },
+        "totalDeposit": { "type": "number" },
+        "remainingDebt": { "type": "number" },
+        "role": { "type": "string", "enum": ["admin", "member"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "phone", "status", "role"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial request (Loan, Deposit, Refund, Pay Due)",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["loan", "deposit", "refund", "pay_due"] },
+        "amount": { "type": "number" },
+        "method": { "type": "string", "enum": ["Cash", "Bkash", "Nagad", "Recharge"] },
+        "accountNumber": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "confirmed"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "memoId": { "type": "string" }
+      },
+      "required": ["userId", "type", "amount", "method", "status", "timestamp"]
+    },
+    "Sponsorship": {
+      "title": "Sponsorship",
+      "description": "Corporate sponsorship deal",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "dealValue": { "type": "number" },
+        "campaignType": { "type": "string", "enum": ["Premium Partner", "Strategic Collab", "Community Sponsor"] },
+        "promotionText": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "paused", "completed"] },
+        "impressions": { "type": "number" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "targetUrl": { "type": "string" },
+        "specialOffer": { "type": "string" }
+      },
+      "required": ["companyName", "dealValue", "campaignType", "promotionText", "status", "impressions", "startDate", "endDate"]
+    },
+    "SystemControls": {
+      "title": "SystemControls",
+      "description": "System parameters and authority controls",
+      "type": "object",
+      "properties": {
+        "personalFund": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System action audit log entry",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "actorEmail": { "type": "string" },
+        "actorName": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "severity": { "type": "string", "enum": ["info", "warning", "critical"] }
+      },
+      "required": ["timestamp", "actorEmail", "actorName", "action", "details", "severity"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Financial transactions"
+    },
+    "/sponsorships/{sponsorshipId}": {
+      "schema": "Sponsorship",
+      "description": "Corporate sponsorship campaigns"
+    },
+    "/system_controls/{documentId}": {
+      "schema": "SystemControls",
+      "description": "Authority settings and capital control parameters"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Regulatory audit log records"
+    }
+  }
+}
