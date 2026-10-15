@@ -27,14 +27,18 @@
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
-        "type": { "type": "string", "enum": ["loan", "deposit", "refund", "pay_due"] },
+        "type": { "type": "string", "enum": ["loan", "deposit", "refund", "pay_due", "subscription"] },
         "amount": { "type": "number" },
-        "method": { "type": "string", "enum": ["Cash", "Bkash", "Nagad", "Recharge"] },
+        "method": { "type": "string", "enum": ["Cash", "Bkash", "Nagad", "Recharge", "Account Balance"] },
         "accountNumber": { "type": "string" },
         "transactionId": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "confirmed"] },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "rejected"] },
         "timestamp": { "type": "string", "format": "date-time" },
-        "memoId": { "type": "string" }
+        "memoId": { "type": "string" },
+        "adminNotes": { "type": "string" },
+        "decidedBy": { "type": "string" },
+        "decidedAt": { "type": "string" },
+        "moreInfoRequested": { "type": "boolean" }
       },
       "required": ["userId", "type", "amount", "method", "status", "timestamp"]
     },
@@ -81,12 +85,132 @@
         "severity": { "type": "string", "enum": ["info", "warning", "critical"] }
       },
       "required": ["timestamp", "actorEmail", "actorName", "action", "details", "severity"]
+    },
+    "EmailLog": {
+      "title": "EmailLog",
+      "description": "Log of dispatched email notification",
+      "type": "object",
+      "properties": {
+        "to": { "type": "string" },
+        "recipientName": { "type": "string" },
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "status": { "type": "string", "enum": ["delivered", "failed"] },
+        "error": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "category": { "type": "string" }
+      },
+      "required": ["to", "recipientName", "subject", "body", "status", "timestamp", "category"]
+    },
+    "Wallet": {
+      "title": "Wallet",
+      "description": "User linked digital wallet (bKash/Nagad)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "provider": { "type": "string", "enum": ["bKash", "Nagad"] },
+        "holderName": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "isVerified": { "type": "boolean" },
+        "isDefault": { "type": "boolean" },
+        "dateLinked": { "type": "string", "format": "date-time" }
+      },
+      "required": ["provider", "holderName", "mobileNumber", "isVerified", "isDefault", "dateLinked"]
+    },
+    "Card": {
+      "title": "Card",
+      "description": "User added credit/debit card for Beta Waitlist",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cardType": { "type": "string", "enum": ["Visa", "Mastercard"] },
+        "holderName": { "type": "string" },
+        "cardNumber": { "type": "string" },
+        "expiryDate": { "type": "string" },
+        "dateAdded": { "type": "string", "format": "date-time" }
+      },
+      "required": ["cardType", "holderName", "cardNumber", "expiryDate", "dateAdded"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Stationed digital or human workforce support officer",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "department": { "type": "string" },
+        "position": { "type": "string" },
+        "joinedDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["Available", "Busy", "Offline"] },
+        "performanceScore": { "type": "number" },
+        "employeeType": { "type": "string", "enum": ["Digital Employee", "Human Employee"] },
+        "internalAiCode": { "type": "string" },
+        "aiModelVersion": { "type": "string" },
+        "knowledgeVersion": { "type": "string" },
+        "lastUpdated": { "type": "string" },
+        "averageResponseTime": { "type": "string" },
+        "customerSatisfaction": { "type": "string" },
+        "totalChats": { "type": "number" }
+      },
+      "required": ["name", "photoUrl", "department", "position", "joinedDate", "status", "performanceScore", "employeeType"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Escalated support and compliance ticket",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Urgent"] },
+        "category": { "type": "string", "enum": ["Loan Issue", "Deposit Help", "Security Block", "General Help", "Technical Error"] },
+        "assignedDepartment": { "type": "string" },
+        "status": { "type": "string", "enum": ["Open", "In Progress", "Resolved"] },
+        "description": { "type": "string" },
+        "estimatedResponseTime": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "userEmail", "userName", "priority", "category", "assignedDepartment", "status", "description", "estimatedResponseTime", "createdAt", "updatedAt"]
+    },
+    "ChatSession": {
+      "title": "ChatSession",
+      "description": "Corporate workforce chat session between a user and employee",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "employeeName": { "type": "string" },
+        "messages": { "type": "array" },
+        "lastMessage": { "type": "string" },
+        "updatedAt": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "escalated"] }
+      },
+      "required": ["userId", "userName", "employeeId", "employeeName", "messages", "lastMessage", "updatedAt", "status"]
+    },
+    "TestConnection": {
+      "title": "TestConnection",
+      "description": "Firestore connection validation document",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string" }
+      }
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User profiles"
+    },
+    "/users/{userId}/wallets/{walletId}": {
+      "schema": "Wallet",
+      "description": "User linked wallets"
+    },
+    "/users/{userId}/cards/{cardId}": {
+      "schema": "Card",
+      "description": "User added credit/debit cards"
     },
     "/transactions/{transactionId}": {
       "schema": "Transaction",
@@ -103,6 +227,26 @@
     "/audit_logs/{logId}": {
       "schema": "AuditLog",
       "description": "Regulatory audit log records"
+    },
+    "/email_logs/{logId}": {
+      "schema": "EmailLog",
+      "description": "Email dispatch history logs"
+    },
+    "/employees/{employeeId}": {
+      "schema": "Employee",
+      "description": "Staff and AI employees directory"
+    },
+    "/workforce_tickets/{ticketId}": {
+      "schema": "SupportTicket",
+      "description": "Escalated customer support tickets"
+    },
+    "/workforce_chats/{chatId}": {
+      "schema": "ChatSession",
+      "description": "Chat sessions with staff or digital officers"
+    },
+    "/test/{docId}": {
+      "schema": "TestConnection",
+      "description": "Firestore connection validation endpoint"
     }
   }
 }

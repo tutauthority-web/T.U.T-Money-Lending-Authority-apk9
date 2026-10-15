@@ -32,6 +32,7 @@ import {
   addDoc, 
   doc, 
   updateDoc, 
+  setDoc,
   serverTimestamp, 
   increment 
 } from 'firebase/firestore';
@@ -106,15 +107,20 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
   // 3-STEP INTEGRATED SECURE FLOW (Perfect Screen Fitting, High Legibility, No Empty Gaps)
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
+  // Default Wallet States
+  const [hasDefaultWallet, setHasDefaultWallet] = useState(false);
+  const [defaultWalletName, setDefaultWalletName] = useState('');
+
   // Form Field States
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<'Cash' | 'Bkash' | 'Nagad' | 'Recharge'>('Bkash');
   const [mobileOperator, setMobileOperator] = useState<string>('Grameenphone');
   const [accountNumber, setAccountNumber] = useState('');
   const [confirmAccountNumber, setConfirmAccountNumber] = useState('');
+  const defaultRepaymentDate = format(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), 'yyyy-MM-dd');
   const [trxId, setTrxId] = useState('');
-  const [loanReason, setLoanReason] = useState('');
-  const [estimatedRepaymentDate, setEstimatedRepaymentDate] = useState('');
+  const [loanReason, setLoanReason] = useState('Education Support');
+  const [estimatedRepaymentDate, setEstimatedRepaymentDate] = useState(defaultRepaymentDate);
   const [loading, setLoading] = useState(false);
 
   // Cash payment fields
@@ -131,6 +137,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
   const [verifiedRecipient, setVerifiedRecipient] = useState<any | null>(null);
   const [transferError, setTransferError] = useState('');
   const [transferPassword, setTransferPassword] = useState('');
+  const [transferReference, setTransferReference] = useState('');
   const [transferSuccess, setTransferSuccess] = useState<any | null>(null);
 
   // Subscription locals
@@ -207,13 +214,52 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
   };
 
   useEffect(() => {
+    const handleGlobalRelease = () => {
+      if (isHolding) stopHolding();
+    };
+    window.addEventListener('mouseup', handleGlobalRelease);
+    window.addEventListener('touchend', handleGlobalRelease);
     return () => {
+      window.removeEventListener('mouseup', handleGlobalRelease);
+      window.removeEventListener('touchend', handleGlobalRelease);
       if (holdIntervalRef.current) clearInterval(holdIntervalRef.current);
     };
-  }, []);
+  }, [isHolding]);
 
   useEffect(() => {
     setMethod('Bkash');
+    
+    const fetchDefaultWallet = async () => {
+      const currentUserUid = auth.currentUser?.uid;
+      if (!currentUserUid) return;
+
+      if (type === 'loan' || type === 'refund') {
+        try {
+          const walletsRef = collection(db, `users/${currentUserUid}/wallets`);
+          const q = query(walletsRef, where('isVerified', '==', true), where('isDefault', '==', true));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const defaultW = snap.docs[0].data();
+            const mappedMethod = defaultW.provider === 'bKash' ? 'Bkash' : 'Nagad';
+            setMethod(mappedMethod as any);
+            setAccountNumber(defaultW.mobileNumber);
+            setConfirmAccountNumber(defaultW.mobileNumber);
+            setHasDefaultWallet(true);
+            setDefaultWalletName(`${defaultW.provider} (${defaultW.mobileNumber})`);
+          } else {
+            setHasDefaultWallet(false);
+            setDefaultWalletName('');
+          }
+        } catch (err) {
+          console.error("Error loading default wallet: ", err);
+        }
+      } else {
+        setHasDefaultWallet(false);
+        setDefaultWalletName('');
+      }
+    };
+    
+    fetchDefaultWallet();
   }, [type]);
 
   const handlePresetSelect = (val: number) => {
@@ -245,22 +291,108 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
         return;
       }
 
+      // Generate smart candidate variations for Member ID, Phone, and Email
+      const candidates = new Set<string>();
+      candidates.add(identifierClean);
+      candidates.add(identifierClean.toLowerCase());
+      candidates.add(identifierClean.toUpperCase());
+
+      // Phone number variations
+      const digits = identifierClean.replace(/\D/g, '');
+      if (digits) {
+        candidates.add(digits);
+        
+        let base11 = '';
+        if (digits.length === 11 && digits.startsWith('0')) {
+          base11 = digits;
+        } else if (digits.length === 13 && digits.startsWith('880')) {
+          base11 = '0' + digits.substring(3);
+        } else if (digits.length === 14 && digits.startsWith('880')) {
+          base11 = '0' + digits.substring(4);
+        } else if (digits.length === 10 && !digits.startsWith('0')) {
+          base11 = '0' + digits;
+        }
+
+        if (base11 && base11.length === 11) {
+          candidates.add(base11);
+          // Standard Bangladeshi splits
+          candidates.add(`${base11.substring(0, 5)}-${base11.substring(5)}`);
+          candidates.add(`${base11.substring(0, 4)}-${base11.substring(4)}`);
+          candidates.add(`+88${base11.substring(0, 5)}-${base11.substring(5)}`);
+          candidates.add(`+88${base11}`);
+          candidates.add(`88${base11}`);
+        }
+      }
+
+      // Member ID suffix matching
+      const numSuffixMatch = identifierClean.match(/\d+$/);
+      if (numSuffixMatch) {
+        const suffix = numSuffixMatch[0];
+        candidates.add(`TUT-MBR-2026-${suffix}`);
+        candidates.add(`TUT-MBR-2026-${suffix.padStart(4, '0')}`);
+        candidates.add(`MBR-${suffix}`);
+        candidates.add(`TUT-${suffix}`);
+        candidates.add(`TUT-MBR-${suffix}`);
+      }
+
+      const uniqueCandidates = Array.from(candidates);
       let foundUser: any = null;
 
-      const qId = query(collection(db, 'users'), where('memberId', '==', identifierClean));
-      const snapId = await getDocs(qId);
-      if (!snapId.empty) {
-        foundUser = { uid: snapId.docs[0].id, ...snapId.docs[0].data() };
-      } else {
-        const qPhone = query(collection(db, 'users'), where('phone', '==', identifierClean));
-        const snapPhone = await getDocs(qPhone);
-        if (!snapPhone.empty) {
-          foundUser = { uid: snapPhone.docs[0].id, ...snapPhone.docs[0].data() };
-        } else {
-          const qEmail = query(collection(db, 'users'), where('email', '==', identifierClean.toLowerCase()));
-          const snapEmail = await getDocs(qEmail);
-          if (!snapEmail.empty) {
-            foundUser = { uid: snapEmail.docs[0].id, ...snapEmail.docs[0].data() };
+      // 1. Query by unique identifier candidates (Member ID, Phone, Email)
+      const queriesToRun: any[] = [];
+      uniqueCandidates.forEach(cand => {
+        queriesToRun.push(query(collection(db, 'users'), where('memberId', '==', cand)));
+        queriesToRun.push(query(collection(db, 'users'), where('phone', '==', cand)));
+        if (cand.includes('@')) {
+          queriesToRun.push(query(collection(db, 'users'), where('email', '==', cand.toLowerCase())));
+        }
+      });
+
+      if (queriesToRun.length > 0) {
+        // Query up to 30 queries in parallel chunks of 10
+        const chunkSize = 10;
+        for (let i = 0; i < queriesToRun.length; i += chunkSize) {
+          const chunk = queriesToRun.slice(i, i + chunkSize);
+          const snaps = await Promise.all(chunk.map(q => getDocs(q)));
+          for (const snap of snaps) {
+            if (!snap.empty) {
+              foundUser = { uid: snap.docs[0].id, ...(snap.docs[0].data() as any) };
+              break;
+            }
+          }
+          if (foundUser) break;
+        }
+      }
+
+      // 2. Query by Name (Case-insensitive matching / Prefix check) if still not found and input looks like a name
+      if (!foundUser && /^[a-zA-Z\s.-]+$/.test(identifierClean) && identifierClean.length >= 3) {
+        const titleCase = identifierClean.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+        const upper = identifierClean.toUpperCase();
+        const lower = identifierClean.toLowerCase();
+
+        const nameCandidates = Array.from(new Set([identifierClean, titleCase, upper, lower]));
+        const nameQueries = nameCandidates.map(nc => 
+          query(collection(db, 'users'), where('name', '==', nc))
+        );
+        
+        const nameSnaps = await Promise.all(nameQueries.map(q => getDocs(q)));
+        for (const snap of nameSnaps) {
+          if (!snap.empty) {
+            foundUser = { uid: snap.docs[0].id, ...(snap.docs[0].data() as any) };
+            break;
+          }
+        }
+
+        // If still not found, do a prefix query on "name"
+        if (!foundUser) {
+          const prefixQuery = query(
+            collection(db, 'users'),
+            where('name', '>=', titleCase),
+            where('name', '<=', titleCase + '\uf8ff')
+          );
+          const prefixSnap = await getDocs(prefixQuery);
+          if (!prefixSnap.empty) {
+            foundUser = { uid: prefixSnap.docs[0].id, ...(prefixSnap.docs[0].data() as any) };
           }
         }
       }
@@ -328,7 +460,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
         status: 'confirmed',
         timestamp: serverTimestamp(),
         memoId: senderTxMemoId,
-        accountNumber: verifiedRecipient.memberId || 'N/A'
+        accountNumber: verifiedRecipient.memberId || 'N/A',
+        reference: transferReference.trim()
       });
 
       await addDoc(collection(db, 'transactions'), {
@@ -344,7 +477,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
         status: 'confirmed',
         timestamp: serverTimestamp(),
         memoId: recipientTxMemoId,
-        accountNumber: profile.memberId || 'N/A'
+        accountNumber: profile.memberId || 'N/A',
+        reference: transferReference.trim()
       });
 
       setTransferSuccess({
@@ -352,7 +486,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
         recipientName: verifiedRecipient.name,
         recipientId: verifiedRecipient.memberId || 'Approved Member',
         memoId: senderTxMemoId,
-        date: new Date()
+        date: new Date(),
+        reference: transferReference.trim()
       });
 
       addToast('Transfer Completed', `Successfully sent ৳${transferAmt.toLocaleString()} BDT`, 'success');
@@ -375,37 +510,47 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
     }
   };
 
-  const handleStandardRequestSubmit = async () => {
+  const handleStandardRequestSubmit = async (isBackground: boolean = false) => {
     if (!auth.currentUser || !profile) return;
     const reqAmt = parseFloat(amount);
 
     if (type === 'loan') {
       const currentDebt = profile.remainingDebt || 0;
       const proposedTotalDebt = currentDebt + reqAmt;
-      const limit = profile.borrowingLimit ?? 100000;
+      const userTier = profile.subscriptionTier || 'bronze';
+      const defaultTierLimit = userTier === 'gold' ? 2500 : userTier === 'silver' ? 1500 : 500;
+      const limit = profile.borrowingLimit ?? defaultTierLimit;
       if (proposedTotalDebt > limit) {
-        addToast('Borrowing Limit Exceeded', `Your total debt with this request (৳${proposedTotalDebt.toLocaleString()}) would exceed your approved credit limit (৳${limit.toLocaleString()}).`, 'warning');
+        addToast('Borrowing Limit Exceeded', `Your total debt with this request (৳${proposedTotalDebt.toLocaleString()}) would exceed your approved ${userTier.toUpperCase()} tier credit limit (৳${limit.toLocaleString()} BDT).`, 'warning');
         return;
       }
     }
 
     setLoading(true);
     try {
+      const txMemoId = `TUT-TX-${Math.floor(100000 + Math.random() * 900000)}`;
       const payload: any = {
         userId: auth.currentUser.uid,
         userName: profile.name,
+        userEmail: profile.email || auth.currentUser.email || '',
+        userPhone: profile.phone || '',
+        memberId: profile.memberId || 'N/A',
         type: type === 'pay_due' ? 'pay_due' : type,
         amount: reqAmt,
         method: method,
         status: 'pending',
-        timestamp: serverTimestamp()
+        memoId: txMemoId,
+        timestamp: serverTimestamp(),
+        createdAt: new Date().toISOString()
       };
 
       if (type === 'loan' || type === 'refund') {
         if (method === 'Cash') {
           payload.accountNumber = 'Cash';
+          payload.transactionId = 'CASH-PAYOUT';
         } else {
           payload.accountNumber = accountNumber;
+          payload.transactionId = trxId || txMemoId;
           if (method === 'Recharge') {
             payload.mobileOperator = mobileOperator;
           }
@@ -413,15 +558,20 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
       } else {
         if (method === 'Cash') {
           payload.accountNumber = cashPayerPhone;
-          payload.transactionId = cashPayerName;
+          payload.transactionId = cashPayerName || 'CASH-HANDOVER';
+          payload.cashPayerName = cashPayerName;
+          payload.cashPayerPhone = cashPayerPhone;
         } else {
           payload.accountNumber = accountNumber;
-          payload.transactionId = trxId;
+          payload.transactionId = trxId || txMemoId;
         }
       }
 
       if (type === 'loan') {
-        payload.loanReason = loanReason;
+        const finalReason = loanReason.trim() || 'Education Support';
+        payload.loanReason = finalReason;
+        payload.reason = finalReason;
+        payload.purpose = finalReason;
         payload.estimatedRepaymentDate = estimatedRepaymentDate;
       }
 
@@ -429,7 +579,9 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
       await sendNotification('New Transaction Request', `${profile.name} submitted a ${type} request for ৳${reqAmt.toLocaleString()}.`, 'tahsinullahtusher999@gmail.com');
       
       addToast('Request Dispatched', `Your ${type.replace('_', ' ')} request of ৳${reqAmt.toLocaleString()} was successfully logged in the secure queue.`, 'success');
-      onClose();
+      if (!isBackground) {
+        onClose();
+      }
     } catch (err: any) {
       console.error(err);
       addToast('Submission Failed', 'Failed to submit transaction to secure database.', 'danger');
@@ -438,37 +590,107 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
     }
   };
 
-  const handleSubscriptionRequestSubmit = async () => {
+  const handleSubscriptionRequestSubmit = async (isBackground: boolean = false) => {
     if (!auth.currentUser || !profile) return;
     
     setLoading(true);
     try {
       const pricing = getSubscriptionPricing(selectedSubTier || 'bronze', profile);
+      const months = pricing.months || 1;
+      const today = new Date();
+      let expiresAt = new Date();
+      if (profile.subscriptionStatus === 'active' && profile.subscriptionExpiresAt) {
+        const currentExp = new Date(profile.subscriptionExpiresAt);
+        if (currentExp > today) {
+          expiresAt = new Date(currentExp);
+        }
+      }
+      expiresAt.setDate(expiresAt.getDate() + (months * 30));
+      const tierLimit = selectedSubTier === 'gold' ? 2500 : selectedSubTier === 'silver' ? 1500 : 500;
+
+      const safeUserName = profile?.name || auth.currentUser.displayName || 'Member';
+      const safeAccountNumber = subSenderMobile || profile?.phone || '01XXXXXXXXX';
+      const subMemoId = `TUT-SUB-${Date.now().toString().slice(-6)}`;
+
       const payload: any = {
         userId: auth.currentUser.uid,
-        userName: profile.name,
+        userName: safeUserName,
         type: 'subscription',
         amount: pricing.price,
-        method: subWallet,
-        accountNumber: subSenderMobile,
-        transactionId: subTrxId,
-        status: 'pending',
+        method: subWallet || 'bKash',
+        accountNumber: safeAccountNumber,
+        transactionId: subTrxId || subMemoId,
+        memoId: subMemoId,
+        status: 'confirmed',
         subscriptionTier: selectedSubTier,
-        subscriptionMonths: pricing.months,
+        subscriptionMonths: months,
         timestamp: serverTimestamp()
       };
       
       await addDoc(collection(db, 'transactions'), payload);
       
       await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-        subscriptionStatus: 'pending_approval',
-        subscriptionTier: selectedSubTier
+        subscriptionStatus: 'active',
+        subscriptionTier: selectedSubTier,
+        subscriptionExpiresAt: expiresAt.toISOString(),
+        borrowingLimit: tierLimit,
+        continuousSubscriptionMonths: (profile?.continuousSubscriptionMonths || 0) + months,
+        lastSubscriptionPaidAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
       });
+
+      if (pricing.price > 0) {
+        try {
+          const fundsDocRef = doc(db, 'system_controls', 'funds');
+          await setDoc(fundsDocRef, {
+            personalFund: increment(pricing.price),
+            subscriptionFund: increment(pricing.price),
+            totalReserve: increment(pricing.price),
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+
+          const reservesDocRef = doc(db, 'system_controls', 'reserves');
+          await setDoc(reservesDocRef, {
+            primaryTarget: increment(pricing.price),
+            subscriptionReserveContribution: increment(pricing.price),
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        } catch (e) {
+          console.warn("Reserve funds sync note:", e);
+        }
+
+        try {
+          await addDoc(collection(db, 'subscription_funds'), {
+            userId: auth.currentUser.uid,
+            userName: safeUserName,
+            userEmail: profile?.email || auth.currentUser.email || '',
+            userPhone: profile?.phone || subSenderMobile || '',
+            memberId: profile?.memberId || 'N/A',
+            tier: selectedSubTier,
+            tierName: selectedSubTier === 'gold' ? 'Gold Sovereign' : selectedSubTier === 'silver' ? 'Silver Executive' : 'Bronze',
+            amount: pricing.price,
+            durationMonths: months,
+            paymentMethod: subWallet || 'bKash',
+            accountNumber: safeAccountNumber,
+            transactionId: subTrxId || subMemoId,
+            memoId: subMemoId,
+            allocatedToReserve: true,
+            reserveDestination: 'Main Zero-Usury Lending Liquidity Reserve',
+            status: 'confirmed',
+            timestamp: serverTimestamp(),
+            createdAt: new Date().toISOString()
+          });
+        } catch (e) {
+          console.warn("Subscription funds record note:", e);
+        }
+      }
       
-      await sendNotification('New Subscription Request', `${profile.name} requested ${selectedSubTier} subscription tier.`, 'tahsinullahtusher999@gmail.com');
+      await sendNotification('Subscription Activated', `${profile.name} activated ${selectedSubTier} subscription tier.`, 'tahsinullahtusher999@gmail.com');
       
-      addToast('Subscription Dispatched', 'Your subscription verification request was securely submitted.', 'success');
-      onClose();
+      addToast('Charter Activated', `Your ${selectedSubTier?.toUpperCase()} subscription tier is active! Limit: ৳${tierLimit.toLocaleString()} BDT.`, 'success');
+      if (!isBackground) {
+        onClose();
+      }
     } catch (err: any) {
       console.error(err);
       addToast('Submission Failed', 'Failed to secure subscription request.', 'danger');
@@ -517,14 +739,27 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
   const triggerSuccessCelebration = () => {
     playSuccessSound();
     setGoalCelebration(true);
-    setTimeout(() => {
+
+    // Immediately trigger backend submission concurrently during the celebration animation
+    let submissionPromise: Promise<any>;
+    if (type === 'transfer') {
+      submissionPromise = executeTransferSubmit();
+    } else if (type === 'subscription') {
+      submissionPromise = handleSubscriptionRequestSubmit(true);
+    } else {
+      submissionPromise = handleStandardRequestSubmit(true);
+    }
+
+    // Keep celebration on screen for at least 2000ms
+    setTimeout(async () => {
+      try {
+        await submissionPromise;
+      } catch (err) {
+        console.error("Secure background submit error during celebration:", err);
+      }
       setGoalCelebration(false);
-      if (type === 'transfer') {
-        executeTransferSubmit();
-      } else if (type === 'subscription') {
-        handleSubscriptionRequestSubmit();
-      } else {
-        handleStandardRequestSubmit();
+      if (type !== 'transfer') {
+        onClose();
       }
     }, 2000);
   };
@@ -588,9 +823,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
     if (!currentAcct.trim()) return false;
     if (type !== 'subscription' && currentAcct !== currentConfirm) return false;
 
-    if (type !== 'loan' && type !== 'refund' && type !== 'subscription') {
-      const currentTrx = trxId;
-      if (!currentTrx.trim()) return false;
+    if (type === 'subscription') {
+      if (!subTrxId.trim()) return false;
     }
 
     return true;
@@ -618,9 +852,12 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
   };
 
   const getLimitLabel = () => {
+    const userTier = profile.subscriptionTier || 'bronze';
+    const defaultTierLimit = userTier === 'gold' ? 2500 : userTier === 'silver' ? 1500 : 500;
+    const tierLimit = profile.borrowingLimit ?? defaultTierLimit;
     switch (type) {
       case 'loan':
-        return `Borrow Capacity: ৳${Math.max(0, (profile.borrowingLimit ?? 100000) - (profile.remainingDebt || 0)).toLocaleString()}`;
+        return `Borrow Capacity: ৳${Math.max(0, tierLimit - (profile.remainingDebt || 0)).toLocaleString()}`;
       case 'deposit':
         return `Current Balance: ৳${(profile.totalDeposit || 0).toLocaleString()}`;
       case 'refund':
@@ -630,7 +867,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
       case 'transfer':
         return `Sendable Balance: ৳${(profile.totalDeposit || 0).toLocaleString()}`;
       case 'subscription':
-        return `Active Plan: ${(profile.subscriptionTier || 'NONE').toUpperCase()}`;
+        return `Active Plan: ${(profile.subscriptionTier || 'NONE').toUpperCase()} (Limit: ৳${tierLimit.toLocaleString()})`;
       default:
         return '';
     }
@@ -673,18 +910,22 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
     </svg>
   );
 
-  const confettiParticles = Array.from({ length: 45 }).map((_, i) => ({
-    id: i,
-    x: Math.random() * 320 - 160,
-    y: Math.random() * -240 - 100,
-    size: Math.random() * 8 + 4,
-    color: ['#10b981', '#3b82f6', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444'][Math.floor(Math.random() * 6)],
-    delay: Math.random() * 0.3,
-    duration: Math.random() * 1.3 + 1.1
-  }));
+  const confettiParticles = React.useMemo(() => {
+    return Array.from({ length: 45 }).map((_, i) => ({
+      id: i,
+      x: Math.random() * 320 - 160,
+      y: Math.random() * -240 - 100,
+      size: Math.random() * 8 + 4,
+      color: ['#10b981', '#3b82f6', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444'][Math.floor(Math.random() * 6)],
+      delay: Math.random() * 0.3,
+      duration: Math.random() * 1.3 + 1.1
+    }));
+  }, [goalCelebration]);
 
   // Calculations for Step 1 Info Box Chart Ring
-  const borrowingLimit = profile.borrowingLimit || 100000;
+  const userTier = profile.subscriptionTier || 'bronze';
+  const defaultTierLimit = userTier === 'gold' ? 2500 : userTier === 'silver' ? 1500 : 500;
+  const borrowingLimit = profile.borrowingLimit ?? defaultTierLimit;
   const remainingDebt = profile.remainingDebt || 0;
   const usedPercentage = type === 'loan' 
     ? Math.min(100, Math.max(0, (remainingDebt / borrowingLimit) * 100))
@@ -703,9 +944,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
       <div className="w-full bg-[#04091a]/95 backdrop-blur-xl border-b border-white/5 py-3 px-5 flex items-center justify-between shrink-0 z-30">
         <button 
           onClick={() => {
-            if (step === 3) setStep(2);
-            else if (step === 2) setStep(1);
-            else onClose();
+            if (step === 3) {
+              if (type === 'transfer') {
+                setStep(1);
+              } else {
+                setStep(2);
+              }
+            } else if (step === 2) {
+              setStep(1);
+            } else {
+              onClose();
+            }
           }}
           className={cn(
             "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-all text-xs font-black uppercase tracking-wider cursor-pointer",
@@ -723,13 +972,23 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
             {getTransactionLabel()}
           </h1>
           <p className="text-[10px] text-slate-400 font-extrabold tracking-widest mt-1 uppercase">
-            Step {step} of 3
+            Step {type === 'transfer' ? (step === 3 ? 2 : 1) : step} of {type === 'transfer' ? 2 : 3}
           </p>
         </div>
 
-        <div className="flex items-center gap-1.5 bg-emerald-500/10 px-3 py-1 rounded-lg border border-emerald-500/20 text-xs font-black tracking-widest text-emerald-400">
-          <Shield className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-          SECURE
+        <div className="flex items-center gap-2.5">
+          <div className="hidden sm:flex items-center gap-1.5 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 text-xs font-black tracking-widest text-emerald-400">
+            <Shield className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            SECURE
+          </div>
+          <a
+            href="https://wa.me/8801713710607"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs font-black text-blue-400 hover:text-blue-300 transition-colors uppercase tracking-wider underline decoration-blue-500/30 underline-offset-4 cursor-pointer shrink-0"
+          >
+            Need Help?
+          </a>
         </div>
       </div>
 
@@ -752,28 +1011,32 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
           </span>
         </div>
 
-        <div className={cn("h-0.5 w-6 transition-all", step > 1 ? "bg-emerald-500" : "bg-white/10")} />
+        {type !== 'transfer' && (
+          <>
+            <div className={cn("h-0.5 w-6 transition-all", step > 1 ? "bg-emerald-500" : "bg-white/10")} />
 
-        <div className="flex items-center gap-2">
-          <span className={cn(
-            "w-6 h-6 rounded-full flex items-center justify-center text-xs font-black border transition-all",
-            step === 2 
-              ? "bg-blue-600 text-white border-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)]" 
-              : step === 3
-                ? "bg-emerald-500 text-white border-emerald-400"
-                : "bg-slate-900 text-slate-500 border-white/5"
-          )}>
-            {step > 2 ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : '2'}
-          </span>
-          <span className={cn(
-            "text-xs font-black uppercase tracking-wider transition-all",
-            step === 2 ? "text-blue-400" : step === 3 ? "text-emerald-400" : "text-slate-500"
-          )}>
-            Receiving
-          </span>
-        </div>
+            <div className="flex items-center gap-2">
+              <span className={cn(
+                "w-6 h-6 rounded-full flex items-center justify-center text-xs font-black border transition-all",
+                step === 2 
+                  ? "bg-blue-600 text-white border-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)]" 
+                  : step === 3
+                    ? "bg-emerald-500 text-white border-emerald-400"
+                    : "bg-slate-900 text-slate-500 border-white/5"
+              )}>
+                {step > 2 ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : '2'}
+              </span>
+              <span className={cn(
+                "text-xs font-black uppercase tracking-wider transition-all",
+                step === 2 ? "text-blue-400" : step === 3 ? "text-emerald-400" : "text-slate-500"
+              )}>
+                {type === 'deposit' || type === 'pay_due' || type === 'subscription' ? 'Payment' : 'Receiving'}
+              </span>
+            </div>
+          </>
+        )}
 
-        <div className={cn("h-0.5 w-6 transition-all", step > 2 ? "bg-emerald-500" : "bg-white/10")} />
+        <div className={cn("h-0.5 w-6 transition-all", (type === 'transfer' ? step === 3 : step > 2) ? "bg-emerald-500" : "bg-white/10")} />
 
         <div className="flex items-center gap-2">
           <span className={cn(
@@ -782,7 +1045,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
               ? "bg-blue-600 text-white border-blue-500 shadow-[0_0_10px_rgba(37,99,235,0.5)]" 
               : "bg-slate-900 text-slate-500 border-white/5"
           )}>
-            3
+            {type === 'transfer' ? '2' : '3'}
           </span>
           <span className={cn(
             "text-xs font-black uppercase tracking-wider transition-all",
@@ -830,6 +1093,12 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Reference ID</span>
                   <span className="text-blue-400 font-mono font-bold">{transferSuccess.memoId}</span>
                 </div>
+                {transferSuccess.reference && (
+                  <div className="flex justify-between items-center border-b border-white/5 pb-2">
+                    <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Reference</span>
+                    <span className="text-blue-300 font-bold max-w-[180px] truncate">{transferSuccess.reference}</span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center">
                   <span className="text-slate-500 font-bold uppercase text-[9px] tracking-wider">Timestamp</span>
                   <span className="text-white font-medium">{format(transferSuccess.date, 'dd MMM yyyy, HH:mm')}</span>
@@ -855,7 +1124,28 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
           </div>
         ) : (
           /* WORKSPACE PORTAL SCREEN WITH 3 OPTIMIZED WIZARD VIEWS */
-          <div className="flex-1 flex flex-col justify-between overflow-hidden">
+          <div className="flex-1 flex flex-col justify-between overflow-hidden relative">
+            
+            {/* Premium, High-Fidelity Ledger Sync Overlay */}
+            <AnimatePresence>
+              {loading && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 bg-[#02050e]/96 backdrop-blur-md z-50 flex flex-col items-center justify-center space-y-4"
+                >
+                  <div className="relative flex items-center justify-center w-16 h-16">
+                    <div className="w-12 h-12 rounded-full border-4 border-blue-500/10 border-t-blue-500 animate-spin" />
+                    <Lock className="w-5 h-5 text-blue-400 absolute animate-pulse" />
+                  </div>
+                  <div className="text-center space-y-1.5 px-6">
+                    <p className="text-xs font-black text-white uppercase tracking-widest">Securing Ledger Connection...</p>
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Synchronizing dual-signature verification tickets</p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
             
             <AnimatePresence mode="wait">
               
@@ -893,7 +1183,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                         </svg>
                         <div className="absolute inset-0 flex flex-col items-center justify-center leading-none">
                           <span className="text-[10px] font-black font-mono text-white">{Math.round(usedPercentage)}%</span>
-                          <span className="text-[7px] font-bold text-slate-500 uppercase mt-0.5">Used</span>
+                          <span className="text-[9px] font-bold text-slate-500 uppercase mt-0.5">Used</span>
                         </div>
                       </div>
                     </div>
@@ -1049,22 +1339,53 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             maxLength={120}
                             className="w-full bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-600 resize-none h-14"
                           />
-                          <div className="text-right text-[10px] text-slate-500 font-bold leading-none">
-                            {loanReason.length}/120
+                          <div className="flex items-center justify-between">
+                            <div className="flex flex-wrap gap-1.5">
+                              {['Education Support', 'Emergency Needs', 'Medical Expense', 'Family Support'].map((r) => (
+                                <button
+                                  key={r}
+                                  type="button"
+                                  onClick={() => setLoanReason(r)}
+                                  className={cn(
+                                    "px-2 py-0.5 rounded-lg text-[9.5px] font-bold border transition-all cursor-pointer",
+                                    loanReason === r
+                                      ? "bg-blue-600 border-blue-500 text-white"
+                                      : "bg-slate-950 border-white/10 text-slate-400 hover:border-white/20"
+                                  )}
+                                >
+                                  {r}
+                                </button>
+                              ))}
+                            </div>
+                            <span className="text-[10px] text-slate-500 font-bold leading-none shrink-0 ml-1">
+                              {loanReason.length}/120
+                            </span>
                           </div>
                         </div>
                       )}
 
                       {type === 'transfer' && (
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Account PIN/Password</label>
-                          <input
-                            type="password"
-                            value={transferPassword}
-                            onChange={(e) => setTransferPassword(e.target.value)}
-                            placeholder="Enter account login password"
-                            className="w-full bg-slate-950 border border-white/10 rounded-xl p-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-700"
-                          />
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Reference (Optional)</label>
+                            <input
+                              type="text"
+                              value={transferReference}
+                              onChange={(e) => setTransferReference(e.target.value.slice(0, 100))}
+                              placeholder="Enter optional transfer note / reference"
+                              className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-700 font-medium"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Account PIN/Password</label>
+                            <input
+                              type="password"
+                              value={transferPassword}
+                              onChange={(e) => setTransferPassword(e.target.value)}
+                              placeholder="Enter account login password"
+                              className="w-full bg-slate-950 border border-white/10 rounded-xl p-2.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-700"
+                            />
+                          </div>
                         </div>
                       )}
 
@@ -1090,6 +1411,26 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           onChange={(e) => setEstimatedRepaymentDate(e.target.value)}
                           className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-blue-500 transition-all font-mono font-bold"
                         />
+                        <div className="flex items-center gap-1.5 pt-1">
+                          {[30, 60, 90].map((days) => {
+                            const dStr = format(new Date(Date.now() + days * 24 * 60 * 60 * 1000), 'yyyy-MM-dd');
+                            return (
+                              <button
+                                key={days}
+                                type="button"
+                                onClick={() => setEstimatedRepaymentDate(dStr)}
+                                className={cn(
+                                  "px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer",
+                                  estimatedRepaymentDate === dStr
+                                    ? "bg-blue-600 border-blue-500 text-white"
+                                    : "bg-slate-950 border-white/10 text-slate-400 hover:border-white/20"
+                                )}
+                              >
+                                {days === 30 ? '+1 Month' : days === 60 ? '+2 Months' : '+3 Months'}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
 
@@ -1100,7 +1441,13 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                     <button
                       type="button"
                       onClick={() => {
-                        if (isStep1Valid()) setStep(2);
+                        if (isStep1Valid()) {
+                          if (type === 'transfer') {
+                            setStep(3);
+                          } else {
+                            setStep(2);
+                          }
+                        }
                       }}
                       disabled={!isStep1Valid()}
                       className={cn(
@@ -1233,7 +1580,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                         <div className="p-3 bg-slate-950 rounded-xl border border-white/5 flex items-center justify-between leading-none mt-1.5">
                           <div className="space-y-1">
                             <span className="text-[9px] font-black text-amber-400 uppercase tracking-widest leading-none block">
-                              Send Money Personal Wallet
+                              Send Money Authority Wallet
                             </span>
                             <span className="text-sm font-mono font-black text-white leading-none select-all">{getPersonalNumber()}</span>
                           </div>
@@ -1400,6 +1747,12 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                 ✈
                               </span>
                             </div>
+                            {hasDefaultWallet && (type === 'loan' || type === 'refund') && (method === 'Bkash' || method === 'Nagad') && (
+                              <p className="text-[9px] text-amber-400 font-extrabold uppercase tracking-widest flex items-center gap-1.5 mt-1.5 leading-none">
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                                ★ Pre-filled verified primary wallet: {defaultWalletName}
+                              </p>
+                            )}
                           </div>
 
                           {/* Confirm Account Number */}
@@ -1426,8 +1779,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             </div>
                           )}
 
-                          {/* Transaction ID only shown for types that require it (deposit, pay_due) */}
-                          {type !== 'loan' && type !== 'refund' && type !== 'subscription' && (
+                          {/* Transaction ID only shown for types that require it (deposit, pay_due, subscription) */}
+                          {type !== 'loan' && type !== 'refund' && (
                             <div className="space-y-1">
                               <div className="flex items-center gap-1.5 text-slate-400">
                                 <FileText className="w-3.5 h-3.5 text-blue-400" />
@@ -1435,16 +1788,36 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   Transaction ID (TrxID)
                                 </label>
                               </div>
-                              <input
-                                type="text"
-                                value={trxId}
-                                onChange={(e) => {
-                                  setTrxId(e.target.value);
-                                }}
-                                placeholder="Enter transaction ID"
-                                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-700 uppercase"
-                              />
-                              <p className="text-[9px] text-slate-500 font-bold uppercase mt-1">Leave empty if not applicable</p>
+                              <div className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={type === 'subscription' ? subTrxId : trxId}
+                                  onChange={(e) => {
+                                    if (type === 'subscription') {
+                                      if (setSubTrxId) setSubTrxId(e.target.value);
+                                    } else {
+                                      setTrxId(e.target.value);
+                                    }
+                                  }}
+                                  placeholder="Enter SMS TrxID (e.g. 9J28AB72K)"
+                                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-700 uppercase"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const gen = `TX${Math.floor(10000000 + Math.random() * 90000000)}`;
+                                    if (type === 'subscription') {
+                                      if (setSubTrxId) setSubTrxId(gen);
+                                    } else {
+                                      setTrxId(gen);
+                                    }
+                                  }}
+                                  className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-[10px] font-black uppercase text-blue-400 shrink-0 cursor-pointer"
+                                >
+                                  Auto-Gen
+                                </button>
+                              </div>
+                              <p className="text-[9px] text-slate-500 font-bold uppercase mt-1">From your bKash/Nagad SMS confirmation, or tap Auto-Gen</p>
                             </div>
                           )}
                         </>
@@ -1513,7 +1886,9 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                       <div className="flex items-center justify-between pb-3 border-b border-white/5 mb-3">
                         <div className="flex items-center gap-2">
                           <FileText className="w-4 h-4 text-blue-400" />
-                          <h3 className="text-xs font-black uppercase text-white tracking-widest">Review Your Loan Request</h3>
+                          <h3 className="text-xs font-black uppercase text-white tracking-widest">
+                            {type === 'transfer' ? 'Review Transfer Details' : type === 'loan' ? 'Review Your Loan Request' : 'Review Transaction Details'}
+                          </h3>
                         </div>
                         <span className="text-[9px] bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded text-emerald-400 font-extrabold uppercase tracking-widest">SECURE</span>
                       </div>
@@ -1525,16 +1900,42 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                       {/* Detail Rows Matching Screen 3 table design exactly */}
                       <div className="space-y-3.5 text-xs">
                         
-                        {/* Row 1: Loan Amount */}
+                        {/* Row 1: Amount */}
                         <div className="flex justify-between items-center border-b border-white/5 pb-2.5">
                           <div className="flex items-center gap-2 text-slate-400">
                             <Shield className="w-4 h-4 text-blue-500/60" />
-                            <span className="font-bold uppercase tracking-wider text-[10px]">Loan Amount</span>
+                            <span className="font-bold uppercase tracking-wider text-[10px]">
+                              {type === 'transfer' ? 'Transfer Amount' : type === 'loan' ? 'Loan Amount' : 'Amount'}
+                            </span>
                           </div>
                           <span className="text-white font-black font-mono">
                             ৳ {type === 'subscription' ? getSubscriptionPricing(selectedSubTier || 'bronze', profile).price.toLocaleString() : parseFloat(amount).toLocaleString()} BDT
                           </span>
                         </div>
+
+                        {/* Recipient details for transfers */}
+                        {type === 'transfer' && verifiedRecipient && (
+                          <>
+                            <div className="flex justify-between items-center border-b border-white/5 pb-2.5">
+                              <div className="flex items-center gap-2 text-slate-400">
+                                <User className="w-4 h-4 text-emerald-400/60" />
+                                <span className="font-bold uppercase tracking-wider text-[10px]">Recipient Name</span>
+                              </div>
+                              <span className="text-white font-bold truncate max-w-[200px]">
+                                {verifiedRecipient.name}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center border-b border-white/5 pb-2.5">
+                              <div className="flex items-center gap-2 text-slate-400">
+                                <Shield className="w-4 h-4 text-blue-400/60" />
+                                <span className="font-bold uppercase tracking-wider text-[10px]">Recipient Member ID</span>
+                              </div>
+                              <span className="text-blue-400 font-mono font-bold">
+                                {verifiedRecipient.memberId || 'Approved Member'}
+                              </span>
+                            </div>
+                          </>
+                        )}
 
                         {/* Row 2: Reason for Loan */}
                         {type === 'loan' && (
@@ -1577,6 +1978,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
 
                         {/* Dynamic Row for Account Info / Payer Info */}
                         {(() => {
+                          if (type === 'transfer') return null;
                           const currentWallet = type === 'subscription' ? subWallet : method;
                           if (currentWallet === 'Cash') {
                             if (type === 'loan' || type === 'refund') {
@@ -1670,7 +2072,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             <div key={i} className="bg-white h-full" style={{ width: `${w}px` }} />
                           ))}
                         </div>
-                        <span className="text-[7px] text-slate-500 font-mono tracking-widest uppercase mt-1">
+                        <span className="text-[9px] text-slate-500 font-mono tracking-widest uppercase mt-1">
                           TUT-LEDG-TX-{Math.floor(1000 + Math.random() * 9000)}
                         </span>
                       </div>
@@ -1700,7 +2102,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                     >
                       {/* Filling scan trail visual */}
                       <div 
-                        className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-emerald-500/10 via-emerald-500/20 to-emerald-500/40 border-r border-emerald-500/40 pointer-events-none transition-all duration-75"
+                        className="absolute top-0 bottom-0 left-0 bg-gradient-to-r from-emerald-500/10 via-emerald-500/20 to-emerald-500/40 border-r border-emerald-500/40 pointer-events-none"
                         style={{ width: `${holdProgress}%` }}
                       />
 
@@ -1740,7 +2142,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           left: `calc(${holdProgress}% * 0.81 + 4px)`,
                         }}
                         className={cn(
-                          "absolute top-1.5 w-10 h-10 rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing select-none z-20 transition-all duration-75 border",
+                          "absolute top-1.5 w-10 h-10 rounded-xl flex items-center justify-center cursor-grab active:cursor-grabbing select-none z-20 border transition-[transform,background-color,border-color,box-shadow] duration-200",
                           isHolding 
                             ? "scale-110 bg-emerald-500 border-emerald-300 text-white shadow-[0_0_15px_rgba(16,185,129,0.5)]" 
                             : "bg-slate-900 border-white/20 text-slate-400 hover:scale-105 hover:border-slate-400"
@@ -1751,7 +2153,18 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
 
                     </div>
 
-                    <p className="text-[10px] text-slate-500 font-extrabold uppercase tracking-widest text-center flex items-center justify-center gap-1 leading-none mt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerSuccessCelebration();
+                      }}
+                      className="w-full py-2.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-98"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      One-Tap Instant Authorization
+                    </button>
+
+                    <p className="text-[10px] text-slate-500 font-extrabold uppercase tracking-widest text-center flex items-center justify-center gap-1 leading-none mt-0.5">
                       <Lock className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
                       Authorized Signature Required to Submit
                     </p>

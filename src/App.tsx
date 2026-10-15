@@ -3,15 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useMemo, Component, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, Component, useRef } from 'react';
 import { MemberDashboard } from './components/MemberDashboard';
 import { SecureTransactionPortal } from './components/SecureTransactionPortal';
+import { LoginPage } from './components/Login';
+import { AdminPortalV4 } from './components/AdminPortalV4';
+import { AdminMemberDossierModal } from './components/AdminMemberDossierModal';
+import { NotificationService, NotificationPayload } from './services/NotificationService';
+import { WorkforceManagement } from './components/WorkforceManagement';
+import { WorkforceSupportWidget } from './components/WorkforceSupportWidget';
+import { UserNotificationsModal } from './components/UserNotificationsModal';
+import { calculateUserUnreadCount } from './utils/userNotificationsEngine';
+import { syncOfficialFinancialStatus } from './utils/financialSyncEngine';
 import tutLogo from './assets/images/tut_logo_1783437312744.jpg';
 import { 
   auth, db, storage 
 } from './firebase';
 import { 
   signInWithPopup, 
+  signInWithRedirect,
   GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
@@ -37,7 +47,8 @@ import {
   getDocFromServer,
   Timestamp,
   deleteDoc,
-  increment
+  increment,
+  getDocs
 } from 'firebase/firestore';
 import { 
   ref,
@@ -91,7 +102,15 @@ import {
   Landmark,
   RotateCcw,
   HelpCircle,
-  Users
+  Users,
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  FileCheck,
+  UserCheck,
+  XCircle,
+  ShieldCheck,
+  Scale
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { 
@@ -111,6 +130,472 @@ import {
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+
+// --- Sub-component: Full-Page Member Dossier & Premium Profile Editor ---
+export interface AdminMemberDossierProps {
+  member: UserProfile;
+  onClose: () => void;
+  onSave: (updated: any) => Promise<void>;
+  allTransactions: Transaction[];
+  db: any;
+}
+
+export const AdminMemberDossier = ({ member, onClose, onSave, allTransactions, db }: AdminMemberDossierProps) => {
+  const [name, setName] = useState(member.name || '');
+  const [nid, setNid] = useState(member.nid || '');
+  const [address, setAddress] = useState(member.address || '');
+  const [occupation, setOccupation] = useState(member.occupation || '');
+  const [phone, setPhone] = useState(member.phone || '');
+  const [facebook, setFacebook] = useState(member.facebook || '');
+  const [whatsapp, setWhatsapp] = useState(member.whatsapp || '');
+  const [telegram, setTelegram] = useState(member.telegram || '');
+  const [fatherName, setFatherName] = useState(member.fatherName || '');
+  const [motherName, setMotherName] = useState(member.motherName || '');
+  const [dob, setDob] = useState(member.dob || '');
+  const [bloodGroup, setBloodGroup] = useState(member.bloodGroup || '');
+  const [emergencyContact, setEmergencyContact] = useState(member.emergencyContact || '');
+  const [nomineeName, setNomineeName] = useState(member.nomineeName || '');
+  const [nomineeRelation, setNomineeRelation] = useState(member.nomineeRelation || '');
+  const [photoUrl, setPhotoUrl] = useState(member.photoUrl || '');
+  const [permanentAddress, setPermanentAddress] = useState(member.permanentAddress || '');
+  const [referenceContact, setReferenceContact] = useState(member.referenceContact || '');
+  const [adminNotes, setAdminNotes] = useState(member.adminNotes || '');
+  const [borrowingLimit, setBorrowingLimit] = useState(member.borrowingLimit ?? 100000);
+  const [totalLoan, setTotalLoan] = useState(member.totalLoan ?? 0);
+  const [totalDeposit, setTotalDeposit] = useState(member.totalDeposit ?? 0);
+  const [remainingDebt, setRemainingDebt] = useState(member.remainingDebt ?? 0);
+  const [emailNotificationsEnabled, setEmailNotificationsEnabled] = useState(member.emailNotificationsEnabled !== false);
+
+  const [saving, setSaving] = useState(false);
+
+  const memberTransactions = useMemo(() => {
+    return allTransactions.filter(t => t.userId === member.uid);
+  }, [allTransactions, member.uid]);
+
+  const handleFormSave = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        name,
+        nid,
+        address,
+        occupation,
+        phone,
+        facebook,
+        whatsapp,
+        telegram,
+        fatherName,
+        motherName,
+        dob,
+        bloodGroup,
+        emergencyContact,
+        nomineeName,
+        nomineeRelation,
+        photoUrl,
+        permanentAddress,
+        referenceContact,
+        adminNotes,
+        borrowingLimit: Number(borrowingLimit),
+        totalLoan: Number(totalLoan),
+        totalDeposit: Number(totalDeposit),
+        remainingDebt: Number(remainingDebt),
+        emailNotificationsEnabled
+      };
+      await onSave(payload);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 text-left">
+      {/* Top Header Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-white/5 pb-4 gap-4">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={onClose} 
+            className="p-2 bg-slate-950 border border-white/10 hover:border-blue-500/50 rounded-xl text-slate-400 hover:text-white transition-all cursor-pointer group"
+          >
+            <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
+          </button>
+          <div>
+            <span className="text-[9px] font-bold text-blue-400 uppercase tracking-widest leading-none block">Member Management</span>
+            <h1 className="text-xl font-black tracking-tight text-white mt-1">Dossier File & Profile Editor</h1>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button 
+            variant="secondary" 
+            onClick={onClose}
+            className="px-4 py-2 text-xs bg-slate-950 text-slate-300 hover:text-white border border-white/5 hover:bg-slate-900"
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleFormSave} 
+            className="px-4 py-2 text-xs font-black uppercase tracking-wider bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-500/20"
+            disabled={saving}
+          >
+            {saving ? "Saving Dossier..." : "Save Dossier Updates"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Main Grid: Info Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        {/* Left Column (Main Demographics) - Col span 7 */}
+        <div className="lg:col-span-7 space-y-6">
+          
+          {/* Section: Identity Credentials */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl pointer-events-none" />
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-4 flex items-center gap-2">
+              <User className="w-3.5 h-3.5 text-blue-400" />
+              1. Identity & Biography
+            </h2>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2 flex flex-col md:flex-row items-center gap-5 p-4 bg-slate-900/50 border border-white/5 rounded-xl">
+                <FileUploader 
+                  label="Member Profile Photo"
+                  currentUrl={photoUrl}
+                  onUpload={(url) => setPhotoUrl(url)}
+                />
+                <div className="flex-1 space-y-2 w-full text-left">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider leading-none">Registered Node Account</p>
+                  <p className="text-lg font-black text-white tracking-tight leading-none">{name || 'Unnamed Account'}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-xs font-mono text-slate-400">{member.memberId || 'PENDING ASSIGNMENT'}</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-700" />
+                    <span className="text-[9px] uppercase font-black text-blue-400 tracking-wider">
+                      {member.status === 'approved' ? 'Approved Citizen' : 'Verification Queue'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <Input 
+                label="Full Name"
+                placeholder="e.g. Tahsin Ullah Tusher"
+                value={name}
+                onChange={e => setName(e.target.value)}
+              />
+
+              <Input 
+                label="National ID (NID)"
+                placeholder="e.g. 8273618492"
+                value={nid}
+                onChange={e => setNid(e.target.value)}
+              />
+
+              <Input 
+                label="Father's Name"
+                placeholder="e.g. Father's Name"
+                value={fatherName}
+                onChange={e => setFatherName(e.target.value)}
+              />
+
+              <Input 
+                label="Mother's Name"
+                placeholder="e.g. Mother's Name"
+                value={motherName}
+                onChange={e => setMotherName(e.target.value)}
+              />
+
+              <Input 
+                label="Date of Birth"
+                type="date"
+                value={dob}
+                onChange={e => setDob(e.target.value)}
+              />
+
+              <Input 
+                label="Blood Group"
+                placeholder="e.g. A+, O-, B+"
+                value={bloodGroup}
+                onChange={e => setBloodGroup(e.target.value)}
+              />
+
+              <Input 
+                label="Core Phone Number"
+                placeholder="e.g. +88017000000"
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+              />
+
+              <Input 
+                label="Occupation"
+                placeholder="e.g. Software Engineer"
+                value={occupation}
+                onChange={e => setOccupation(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Section: Residence Coordinates */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-4 flex items-center gap-2">
+              <Landmark className="w-3.5 h-3.5 text-blue-400" />
+              2. Geographic Registry
+            </h2>
+            <div className="space-y-4">
+              <Input 
+                label="Present Address"
+                placeholder="Present living address"
+                value={address}
+                onChange={e => setAddress(e.target.value)}
+              />
+              <Input 
+                label="Permanent Address"
+                placeholder="Permanent village address"
+                value={permanentAddress}
+                onChange={e => setPermanentAddress(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Section: Digital Communication Links */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-4 flex items-center gap-2">
+              <Send className="w-3.5 h-3.5 text-blue-400" />
+              3. Telecommunication & Handles
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Input 
+                label="Facebook URL"
+                placeholder="https://facebook.com/..."
+                value={facebook}
+                onChange={e => setFacebook(e.target.value)}
+              />
+              <Input 
+                label="WhatsApp"
+                placeholder="Phone or handle"
+                value={whatsapp}
+                onChange={e => setWhatsapp(e.target.value)}
+              />
+              <Input 
+                label="Telegram"
+                placeholder="@username"
+                value={telegram}
+                onChange={e => setTelegram(e.target.value)}
+              />
+            </div>
+          </div>
+
+        </div>
+
+        {/* Right Column (Finances, Nominee, & History) - Col span 5 */}
+        <div className="lg:col-span-5 space-y-6">
+          
+          {/* Section: Financial Authority Limits */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 rounded-full blur-2xl pointer-events-none" />
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-4 flex items-center gap-2">
+              <Wallet className="w-3.5 h-3.5 text-emerald-400" />
+              4. Banking Limits & Balances
+            </h2>
+            <div className="space-y-4">
+              <Input 
+                label="Maximum Borrowing Limit (৳)"
+                type="number"
+                placeholder="100000"
+                value={borrowingLimit}
+                onChange={e => setBorrowingLimit(Number(e.target.value))}
+              />
+
+              <div className="grid grid-cols-3 gap-3">
+                <Input 
+                  label="Total Deposited"
+                  type="number"
+                  value={totalDeposit}
+                  onChange={e => setTotalDeposit(Number(e.target.value))}
+                />
+                <Input 
+                  label="Outstanding Loan"
+                  type="number"
+                  value={totalLoan}
+                  onChange={e => setTotalLoan(Number(e.target.value))}
+                />
+                <Input 
+                  label="Active Debt Due"
+                  type="number"
+                  value={remainingDebt}
+                  onChange={e => setRemainingDebt(Number(e.target.value))}
+                />
+              </div>
+
+              <div className="p-3 bg-slate-900/40 border border-white/5 rounded-xl flex items-center justify-between text-xs font-mono">
+                <span className="text-slate-400">Authority Liquidity Ratio:</span>
+                <span className={cn(
+                  "font-bold",
+                  totalDeposit >= totalLoan ? "text-emerald-400" : "text-amber-400"
+                )}>
+                  {totalDeposit === 0 ? '0.00' : ((totalLoan / totalDeposit) * 100).toFixed(1)}% LDR
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Section: Next of Kin / Nominee */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-4 flex items-center gap-2">
+              <Users className="w-3.5 h-3.5 text-blue-400" />
+              5. Emergency Contacts & Nominees
+            </h2>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Input 
+                  label="Nominee Name"
+                  placeholder="e.g. Nominee Full Name"
+                  value={nomineeName}
+                  onChange={e => setNomineeName(e.target.value)}
+                />
+                <Input 
+                  label="Nominee Relation"
+                  placeholder="e.g. Spouse, Brother"
+                  value={nomineeRelation}
+                  onChange={e => setNomineeRelation(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Input 
+                  label="Emergency Contact"
+                  placeholder="e.g. +88017..."
+                  value={emergencyContact}
+                  onChange={e => setEmergencyContact(e.target.value)}
+                />
+                <Input 
+                  label="Reference Contact"
+                  placeholder="e.g. Mentor / Partner"
+                  value={referenceContact}
+                  onChange={e => setReferenceContact(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-black uppercase tracking-wider text-slate-400 pl-1">Admin Supervision Logs & Notes</label>
+                <textarea 
+                  value={adminNotes}
+                  onChange={e => setAdminNotes(e.target.value)}
+                  placeholder="Add internal compliance remarks, character assessments, or history..."
+                  className="w-full min-h-[80px] text-xs px-3.5 py-3 rounded-xl bg-slate-900 border border-white/5 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all custom-scrollbar"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Section: Member Communication Preferences */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-4 flex items-center gap-2">
+              <Mail className="w-3.5 h-3.5 text-blue-400" />
+              6. Communication Preferences
+            </h2>
+            <div className="flex items-center justify-between p-3.5 bg-slate-900/40 border border-white/5 rounded-xl">
+              <div className="space-y-0.5 text-left">
+                <span className="text-[10px] font-bold text-white uppercase tracking-wider block">Email Notification Status</span>
+                <span className="text-[9px] text-slate-500">Allow system to dispatch email statements and ledger updates directly to this citizen</span>
+              </div>
+              <Button
+                type="button"
+                onClick={() => setEmailNotificationsEnabled(!emailNotificationsEnabled)}
+                className={cn(
+                  "text-[10px] font-black uppercase py-1.5 px-3 h-auto rounded-xl border transition-all cursor-pointer",
+                  emailNotificationsEnabled
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
+                    : "bg-slate-500/10 border-slate-500/20 text-slate-400 hover:bg-slate-500/20"
+                )}
+              >
+                {emailNotificationsEnabled ? 'Active' : 'Muted'}
+              </Button>
+            </div>
+          </div>
+
+          {/* Section: Complete Ledger History */}
+          <div className="p-6 bg-slate-950/60 border border-white/5 rounded-2xl relative overflow-hidden backdrop-blur-xl">
+            <h2 className="text-xs font-black uppercase tracking-widest text-slate-400 border-b border-white/5 pb-2 mb-3 flex items-center gap-2">
+              <History className="w-3.5 h-3.5 text-blue-400" />
+              6. Associated Ledger History ({memberTransactions.length})
+            </h2>
+            
+            <div className="max-h-[220px] overflow-y-auto space-y-2 custom-scrollbar text-xs">
+              {memberTransactions.length === 0 ? (
+                <div className="py-8 text-center text-slate-500 font-mono text-[11px]">
+                  No logged transactions recorded for this profile.
+                </div>
+              ) : (
+                memberTransactions.map((tx) => {
+                  const txDate = tx.timestamp?.seconds 
+                    ? new Date(tx.timestamp.seconds * 1000) 
+                    : tx.timestamp 
+                      ? new Date(tx.timestamp) 
+                      : new Date();
+                  const formattedDate = format(txDate, 'dd MMM yyyy, HH:mm');
+                  const isNegative = tx.type === 'loan' || tx.type === 'refund';
+
+                  return (
+                    <div key={tx.id} className="p-3 bg-slate-900/60 border border-white/5 rounded-xl flex justify-between items-center hover:bg-slate-900 transition-colors">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className={cn(
+                            "text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded leading-none border",
+                            tx.type === 'deposit' ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" :
+                            tx.type === 'loan' ? "bg-amber-500/10 border-amber-500/20 text-amber-400" :
+                            "bg-blue-500/10 border-blue-500/20 text-blue-400"
+                          )}>
+                            {tx.type.replace('_', ' ')}
+                          </span>
+                          <span className={cn(
+                            "text-[9px] font-bold uppercase",
+                            tx.status === 'confirmed' ? "text-emerald-500" :
+                            tx.status === 'pending' ? "text-amber-500" : "text-rose-500"
+                          )}>
+                            ● {tx.status}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 font-mono">{formattedDate} • Ref: {tx.transactionId || 'Cash'}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className={cn(
+                          "font-mono font-bold text-sm",
+                          isNegative ? "text-rose-400" : "text-emerald-400"
+                        )}>
+                          {isNegative ? '-' : '+'} ৳ {tx.amount.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* Persistent Save Floating Trigger at the bottom */}
+      <div className="flex justify-end gap-3 pt-4 border-t border-white/5">
+        <Button 
+          variant="secondary" 
+          onClick={onClose}
+          className="px-5 py-2.5 text-xs bg-slate-950 text-slate-300 hover:text-white border border-white/5 hover:bg-slate-900"
+        >
+          Cancel & Close
+        </Button>
+        <Button 
+          onClick={handleFormSave} 
+          className="px-6 py-2.5 text-xs font-black uppercase tracking-wider bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-lg shadow-emerald-500/20 border border-emerald-500/30"
+          disabled={saving}
+        >
+          {saving ? "Saving Dossier File..." : "Save Dossier Updates"}
+        </Button>
+      </div>
+
+    </div>
+  );
+};
 
 // --- Constants ---
 const ADMIN_EMAIL = 'tahsinullahtusher999@gmail.com'.toLowerCase();
@@ -191,6 +676,7 @@ export interface UserProfile {
   address: string;
   occupation: string;
   phone: string;
+  emailNotificationsEnabled?: boolean;
   // Social Media
   facebook?: string;
   whatsapp?: string;
@@ -210,11 +696,14 @@ export interface UserProfile {
   referenceContact?: string;
   adminNotes?: string;
   
-  status: 'pending' | 'approved';
+  status: 'pending' | 'approved' | 'rejected';
   memberId?: string;
   totalLoan: number;
   totalDeposit: number;
   remainingDebt: number;
+  totalRepaid?: number;
+  reserveContribution?: number;
+  portalDeposit?: number;
   role: 'admin' | 'member';
   createdAt: any;
   borrowingLimit?: number;
@@ -226,19 +715,35 @@ export interface UserProfile {
   continuousSubscriptionMonths?: number;
   loansTakenThisMonth?: number;
   consecutiveNoLoanMonths?: number;
+  autoRenewSubscription?: boolean;
+  lastSubscriptionPaidAt?: any;
+
+  // Verification/Audit Tracking
+  moreInfoRequested?: boolean;
+  decidedBy?: string;
+  decidedAt?: string;
+  walletVerificationStatus?: string;
+  documents?: { nidFront?: string; nidBack?: string; payslip?: string; utilityBill?: string; bankStatement?: string; [key: string]: any };
+  registeredAt?: any;
+  assignedModerator?: string;
+  approvedAt?: string;
+  updatedAt?: any;
 }
 
 export interface Transaction {
   id: string;
   userId: string;
   userName?: string;
+  userPhoto?: string;
+  proofUrl?: string;
+  assignedModerator?: string;
   type: 'loan' | 'deposit' | 'refund' | 'pay_due' | 'subscription';
   amount: number;
   method: 'Cash' | 'Bkash' | 'Nagad' | 'Recharge';
   accountNumber?: string;
   transactionId?: string;
   mobileOperator?: string;
-  status: 'pending' | 'confirmed';
+  status: 'pending' | 'confirmed' | 'rejected';
   timestamp: any;
   memoId?: string;
   loanReason?: string;
@@ -252,7 +757,17 @@ export interface Transaction {
   transferRecipientId?: string;
   transferSenderName?: string;
   transferSenderId?: string;
+  reference?: string;
+  adminNotes?: string;
+  moreInfoRequested?: boolean;
+  decidedBy?: string;
+  decidedAt?: string;
   details?: string;
+  purpose?: string;
+  approvedDate?: string;
+  monthlyInstallment?: number;
+  title?: string;
+  date?: string;
 }
 
 export interface SponsorshipCampaign {
@@ -614,6 +1129,18 @@ export const DigitalMemo = ({ memo }: { memo: Transaction }) => (
             </span>
           </div>
         )}
+        {memo.reference && (
+          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
+            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Reference</span>
+            <span className="text-xs font-black text-blue-900 truncate max-w-[150px]">{memo.reference}</span>
+          </div>
+        )}
+        {memo.adminNotes && (
+          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
+            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Official Memo</span>
+            <span className="text-xs font-black text-blue-900 truncate max-w-[150px]">{memo.adminNotes}</span>
+          </div>
+        )}
         {memo.type === 'loan' && memo.estimatedRepaymentDate && (
           <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
             <span className="text-[10px] font-bold text-blue-900/40 uppercase">Expected Repayment</span>
@@ -648,10 +1175,24 @@ export const DigitalMemo = ({ memo }: { memo: Transaction }) => (
 
 // --- Subscription and Loyalty Helpers ---
 const getSubscriptionStatusInfo = (profile: UserProfile | null) => {
-  if (!profile) return { active: false, status: 'none', tier: null, isLocked: false, isRenewalWindow: false, expiresAt: null };
+  if (!profile) return { active: true, status: 'active', tier: 'bronze', isLocked: false, isRenewalWindow: true, expiresAt: null };
   
   const today = new Date();
   const currentDay = today.getDate();
+  
+  const tier = profile.subscriptionTier || 'bronze';
+
+  // Bronze tier is 100% free for everyone until further notice with ৳500 borrowing limit
+  if (tier === 'bronze' || !tier) {
+    return {
+      active: true,
+      status: 'active',
+      tier: 'bronze',
+      isLocked: false,
+      isRenewalWindow: true,
+      expiresAt: null
+    };
+  }
   
   const expiresAt = profile.subscriptionExpiresAt ? new Date(profile.subscriptionExpiresAt) : null;
   const isCurrentlyActive = profile.subscriptionStatus === 'active' && expiresAt && expiresAt >= today;
@@ -664,58 +1205,95 @@ const getSubscriptionStatusInfo = (profile: UserProfile | null) => {
   
   return {
     active: !!isCurrentlyActive,
-    status: profile.subscriptionStatus || 'none',
-    tier: profile.subscriptionTier || null,
+    status: isCurrentlyActive ? 'active' : 'inactive',
+    tier,
     isLocked,
     isRenewalWindow,
     expiresAt
   };
 };
 
-export const getSubscriptionPricing = (tier: 'bronze' | 'silver' | 'gold', profile: UserProfile | null) => {
+export const getSubscriptionPricing = (
+  tier: 'bronze' | 'silver' | 'gold', 
+  profile: UserProfile | null,
+  billingMonths: number = 1
+) => {
+  // Bronze tier is completely FREE for everyone until further notice
+  if (tier === 'bronze') {
+    return {
+      basePrice: 0,
+      rawPrice: 0,
+      price: 0,
+      label: "Bronze Basic (100% Free Tier)",
+      months: billingMonths || 1,
+      discountApplied: 0,
+      discountReason: "100% Free Tier for All Members (৳500 Limit)",
+      isLate: false
+    };
+  }
+
   const basePrices = {
-    bronze: 20,
+    bronze: 0,
     silver: 50,
     gold: 100
   };
   
-  const basePrice = basePrices[tier];
-  
+  const basePrice = basePrices[tier] || 50;
   const today = new Date();
   const currentDay = today.getDate();
   const isLate = currentDay >= 6;
   
-  let price = basePrice;
+  let months = billingMonths || 1;
   let label = "1-Month standard fee";
-  let months = 1;
+  let multiMonthDiscountPercent = 0;
   
-  if (isLate) {
-    price = basePrice * 2;
-    label = "2-Month Late Renewal Catch-up fee";
-    months = 2;
+  if (months === 3) {
+    multiMonthDiscountPercent = 0.10; // 10% off
+    label = "3-Month Quarterly Tier (10% Off)";
+  } else if (months === 6) {
+    multiMonthDiscountPercent = 0.15; // 15% off
+    label = "6-Month Biannual Tier (15% Off)";
+  } else if (months === 12) {
+    multiMonthDiscountPercent = 0.20; // 20% off
+    label = "12-Month Annual VIP Tier (20% Off)";
+  } else {
+    months = 1;
+    if (isLate) {
+      months = 2;
+      label = "2-Month Late Renewal Catch-up fee";
+    } else {
+      label = "1-Month standard fee";
+    }
   }
-  
+
+  const rawPrice = basePrice * months;
+  let price = rawPrice;
   let discountApplied = 0;
   let discountReason = "";
-  
-  if ((profile?.consecutiveNoLoanMonths || 0) >= 2) {
-    discountApplied = price * 0.5;
+
+  if (multiMonthDiscountPercent > 0) {
+    discountApplied = Math.round(rawPrice * multiMonthDiscountPercent);
+    price = rawPrice - discountApplied;
+    discountReason = `${Math.round(multiMonthDiscountPercent * 100)}% Multi-Month Saver Discount Applied!`;
+  } else if ((profile?.consecutiveNoLoanMonths || 0) >= 2) {
+    discountApplied = Math.round(price * 0.5);
     price = price - discountApplied;
     discountReason = "50% No-Loan Reward Discount Applied! (0 loans taken in the last 2 billing cycles)";
   } else if ((profile?.continuousSubscriptionMonths || 0) >= 3 && !isLate) {
-    discountApplied = price * 0.1;
+    discountApplied = Math.round(price * 0.1);
     price = price - discountApplied;
     discountReason = "10% Loyalty Streak Discount Applied! (3+ months consecutive on-time renewals)";
   }
-  
+
   return {
     basePrice,
-    price,
+    rawPrice,
+    price: Math.max(0, price),
     label,
     months,
     discountApplied,
     discountReason,
-    isLate
+    isLate: months === 2 && isLate
   };
 };
 
@@ -973,9 +1551,8 @@ export default function App() {
       try {
         await getDocFromServer(doc(db, 'test', 'connection'));
       } catch (error) {
-        if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('unavailable'))) {
-          console.error("Please check your Firebase configuration. Firestore is unavailable.");
-          setGlobalError("Connectivity Error: Could not reach the T.U.T. Security Backend. Please check your internet connection.");
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
         }
       }
     }
@@ -1016,10 +1593,75 @@ export default function App() {
   const [isSponsorshipsSeeded, setIsSponsorshipsSeeded] = useState(false);
   const [isClearingAllAds, setIsClearingAllAds] = useState(false);
   const [isClearingAllAdsLoading, setIsClearingAllAdsLoading] = useState(false);
-  const [adminTab, setAdminTab] = useState<'overview' | 'requests' | 'members' | 'partners' | 'reminders' | 'liquidity'>('overview');
+  const [adminTab, setAdminTab] = useState<'overview' | 'reserve' | 'financials' | 'operations' | 'members' | 'partners' | 'ledger' | 'audit' | 'notifications' | 'reminders' | 'liquidity' | 'workforce'>('overview');
+  const [selectedAdminMemberDetail, setSelectedAdminMemberDetail] = useState<UserProfile | null>(null);
+  const [reserveOperationModal, setReserveOperationModal] = useState<{ isOpen: boolean; type: 'increase' | 'withdraw' | 'transfer' | 'lock' | 'unlock' | 'adjust'; fromCategory?: string; toCategory?: string; } | null>(null);
+  const [reserveOpAmount, setReserveOpAmount] = useState('');
+  const [reserveOpNotes, setReserveOpNotes] = useState('');
+  const [reserveOpPin, setReserveOpPin] = useState('');
+  const [reserveOpCategory, setReserveOpCategory] = useState('liquidReserve');
+  const [reserveOpTargetCategory, setReserveOpTargetCategory] = useState('operationalReserve');
+  const [selectedNotificationFilter, setSelectedNotificationFilter] = useState<'all' | 'Critical' | 'Financial' | 'Loan' | 'Reserve' | 'Members' | 'Security' | 'System'>('all');
+  
+  // Reserve States
+  const [liquidReserve, setLiquidReserve] = useState(0);
+  const [operationalReserve, setOperationalReserve] = useState(0);
+  const [emergencyReserve, setEmergencyReserve] = useState(0);
+  const [availableLendingFund, setAvailableLendingFund] = useState(0);
+  const [reservedCapital, setReservedCapital] = useState(0);
+  const [frozenCapital, setFrozenCapital] = useState(0);
+  const [externalInvestmentReserve, setExternalInvestmentReserve] = useState(0);
   const [requestFilter, setRequestFilter] = useState<'all' | 'loan' | 'deposit' | 'withdraw' | 'repayment'>('all');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [emailLogs, setEmailLogs] = useState<any[]>([]);
+  const [composeSubject, setComposeSubject] = useState('');
+  const [composeBody, setComposeBody] = useState('');
+  const [composeCategory, setComposeCategory] = useState('Broadcast');
+  const [composeRecipientCategory, setComposeRecipientCategory] = useState('all');
+  const [composeIndividualEmail, setComposeIndividualEmail] = useState('');
+  const [previewEmailLog, setPreviewEmailLog] = useState<any | null>(null);
+  const [emailLogsFilter, setEmailLogsFilter] = useState('all');
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+
+  // Redesigned Banking Case File approval workflow states
+  const [selectedCaseTransaction, setSelectedCaseTransaction] = useState<Transaction | null>(null);
+  const [selectedCaseMember, setSelectedCaseMember] = useState<UserProfile | null>(null);
+  const [adminDecisionNotes, setAdminDecisionNotes] = useState('');
+  const [showDecisionConfirmation, setShowDecisionConfirmation] = useState(false);
+  const [decisionAction, setDecisionAction] = useState<'approve' | 'reject' | 'more_info' | null>(null);
+  const [selectedCaseWallets, setSelectedCaseWallets] = useState<any[]>([]);
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchCaseWalletsAndCards = async () => {
+      const uid = selectedCaseTransaction?.userId || selectedCaseMember?.uid;
+      if (!uid) {
+        setSelectedCaseWallets([]);
+        return;
+      }
+      try {
+        const walletsRef = collection(db, `users/${uid}/wallets`);
+        const walletsSnap = await getDocs(walletsRef);
+        const fetched: any[] = [];
+        walletsSnap.forEach(d => {
+          fetched.push({ id: d.id, type: 'wallet', ...d.data() });
+        });
+
+        const cardsRef = collection(db, `users/${uid}/cards`);
+        const cardsSnap = await getDocs(cardsRef);
+        cardsSnap.forEach(d => {
+          fetched.push({ id: d.id, type: 'card', ...d.data() });
+        });
+
+        setSelectedCaseWallets(fetched);
+      } catch (err) {
+        console.error("Error loading case wallets: ", err);
+      }
+    };
+
+    fetchCaseWalletsAndCards();
+  }, [selectedCaseTransaction, selectedCaseMember]);
 
   // Authority Capital Pool Control States
   const [authorityPersonalFund, setAuthorityPersonalFund] = useState<number>(5000000);
@@ -1317,16 +1959,58 @@ export default function App() {
   const [showNotificationCenter, setShowNotificationCenter] = useState(false);
   const [notificationSettingsMode, setNotificationSettingsMode] = useState(false);
   const [gmailNotificationsEnabled, setGmailNotificationsEnabled] = useState(() => {
-    return localStorage.getItem('tut_gmail_notifications') === 'true';
+    const saved = localStorage.getItem('tut_gmail_notifications');
+    return saved !== 'false';
   });
 
   useEffect(() => {
     localStorage.setItem('tut_gmail_notifications', gmailNotificationsEnabled.toString());
   }, [gmailNotificationsEnabled]);
 
+  const handleToggleGmailNotifications = async (newValue: boolean) => {
+    setGmailNotificationsEnabled(newValue);
+    localStorage.setItem('tut_gmail_notifications', newValue.toString());
+    try {
+      await setDoc(doc(db, 'system_controls', 'funds'), {
+        gmailNotificationsEnabled: newValue,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      addToast('System Updated', `Outgoing Email Alerts set to: ${newValue ? 'ACTIVE' : 'OFF'}`, 'success');
+    } catch (err) {
+      console.error("Failed to persist email notification setting to Firestore:", err);
+      addToast('Sync Error', 'Failed to save email notification settings to Firestore.', 'warning');
+    }
+  };
+
   useEffect(() => {
     localStorage.setItem('tut_notification_history', JSON.stringify(notificationHistory));
   }, [notificationHistory]);
+
+  // Dynamic Unread Notifications Count for User Dashboard (Synchronized Single Source of Truth)
+  const [memberUnreadCount, setMemberUnreadCount] = useState<number>(0);
+
+  const refreshMemberUnreadCount = useCallback(() => {
+    if (!profile) {
+      setMemberUnreadCount(0);
+      return;
+    }
+    const count = calculateUserUnreadCount(profile, transactions);
+    setMemberUnreadCount(count);
+  }, [profile, transactions]);
+
+  useEffect(() => {
+    refreshMemberUnreadCount();
+  }, [refreshMemberUnreadCount]);
+
+  useEffect(() => {
+    const handleUpdate = () => refreshMemberUnreadCount();
+    window.addEventListener('tut-notifications-updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+    return () => {
+      window.removeEventListener('tut-notifications-updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
+  }, [refreshMemberUnreadCount]);
 
   useEffect(() => {
     setIsIframe(window.self !== window.top);
@@ -1391,7 +2075,10 @@ export default function App() {
     }
   }, [notificationSettingsMode]);
 
-  const sendEmail = async (to: string, subject: string, body: string, customHtml?: string) => {
+  const sendEmail = async (to: string, subject: string, body: string, customHtml?: string, recipientName: string = 'Unknown Member', category: string = 'System') => {
+    let deliveryStatus: 'delivered' | 'failed' = 'failed';
+    let deliveryError = '';
+
     try {
       const response = await fetch('/api/send-email', {
         method: 'POST',
@@ -1415,15 +2102,59 @@ export default function App() {
         throw new Error(errorData.error || 'Failed to send email');
       }
       setLastGmailError(null);
+      deliveryStatus = 'delivered';
     } catch (error: any) {
       console.error("[Email Error] Full details:", error);
-      setLastGmailError(error.message);
-      if (error.message.includes('Gmail Login Failed')) {
+      deliveryError = error.message || String(error);
+      setLastGmailError(deliveryError);
+      if (deliveryError.includes('Gmail Login Failed')) {
         addToast('Gmail Error', 'Authentication failed. Please check your App Password.', 'warning');
       }
-      throw error; // Re-throw so the test button can catch it
+      throw error; // Re-throw so caller can handle
+    } finally {
+      // Async write to Firestore log
+      try {
+        const logData = {
+          to: to.toLowerCase().trim(),
+          recipientName,
+          subject,
+          body,
+          status: deliveryStatus,
+          timestamp: new Date(),
+          category,
+          ...(deliveryError ? { error: deliveryError } : {})
+        };
+        await addDoc(collection(db, 'email_logs'), logData);
+        console.log("[Email Log] Persisted to Firestore:", logData);
+      } catch (logErr) {
+        console.error("[Email Log Error] Failed to write to Firestore:", logErr);
+      }
     }
   };
+
+  const notificationService = useMemo(() => {
+    return new NotificationService({
+      db,
+      sendEmailRaw: sendEmail,
+      addInAppNotification: (title, body, email) => {
+        const newNotif = {
+          id: Math.random().toString(36).substring(2, 9),
+          title,
+          body,
+          timestamp: Date.now()
+        };
+        setNotificationHistory(prev => [newNotif, ...prev].slice(0, 50));
+        addToast(title, body, 'info');
+      },
+      adminEmail: ADMIN_EMAIL,
+      allUsers,
+      getGmailNotificationsEnabled: () => gmailNotificationsEnabled
+    });
+  }, [allUsers, gmailNotificationsEnabled]);
+
+  useEffect(() => {
+    notificationService.updateUsersContext(allUsers);
+  }, [allUsers, notificationService]);
 
   const hasScannedReminders = useRef(false);
 
@@ -1441,9 +2172,14 @@ export default function App() {
     const emailTo = targetUserProfile.email.toLowerCase().trim();
     const isToAdmin = emailTo === ADMIN_EMAIL;
     
-    // Skip if email is disabled and not admin (unless manual)
-    if (!isManual && !isToAdmin && !gmailNotificationsEnabled) {
-      console.log("Auto-reminder skipped: Email notifications globally disabled by user/admin settings.");
+    // Check recipient's own preferences
+    const recipientPref = isToAdmin 
+      ? gmailNotificationsEnabled 
+      : (targetUserProfile.emailNotificationsEnabled !== false);
+
+    // Skip if email is disabled (unless manual)
+    if (!isManual && !recipientPref) {
+      console.log(`Auto-reminder skipped: Email notifications disabled by recipient preferences (To: ${emailTo}).`);
       return false;
     }
 
@@ -1696,7 +2432,7 @@ export default function App() {
     }
   }, [isAdminLoggedIn, allUsers, allTransactions]);
 
-  const sendNotification = async (title: string, body: string, targetEmail?: string) => {
+  const sendNotification = async (title: string, body: string, targetEmail?: string, forceSend: boolean = false) => {
     // Save to history
     const newNotif = {
       id: Math.random().toString(36).substring(2, 9),
@@ -1710,19 +2446,69 @@ export default function App() {
     addToast(title, body, 'info');
 
     // Send Gmail notification
+    const adminEmailLower = ADMIN_EMAIL.toLowerCase();
+
+    // Determine recipient metadata
+    let recipientName = 'Admin';
     if (targetEmail) {
-      const normalizedTarget = targetEmail.toLowerCase();
-      const isToAdmin = normalizedTarget === ADMIN_EMAIL;
-      
-      console.log(`[Notification] Target: ${normalizedTarget}, isToAdmin: ${isToAdmin}, gmailEnabled: ${gmailNotificationsEnabled}`);
-      
-      if (isToAdmin || gmailNotificationsEnabled) {
-        console.log(`[Notification] Triggering email to ${normalizedTarget}`);
-        sendEmail(normalizedTarget, title, body).catch(e => {
-          console.error("[Email Error] Automatic notification failed:", e);
+      const normalizedTarget = targetEmail.toLowerCase().trim();
+      const member = allUsers.find(u => u.email?.toLowerCase().trim() === normalizedTarget);
+      if (member) {
+        recipientName = member.name;
+      } else {
+        recipientName = normalizedTarget;
+      }
+    }
+
+    // Determine category
+    let category = 'System';
+    const lowerTitle = title.toLowerCase();
+    const lowerBody = body.toLowerCase();
+    if (lowerTitle.includes('debt') || lowerBody.includes('debt') || lowerTitle.includes('due') || lowerBody.includes('due')) {
+      category = 'Due Reminder';
+    } else if (lowerTitle.includes('approve') || lowerBody.includes('approve') || lowerTitle.includes('reject') || lowerBody.includes('reject')) {
+      category = 'Membership Status';
+    } else if (lowerTitle.includes('transaction') || lowerBody.includes('transaction') || lowerTitle.includes('deposit') || lowerBody.includes('deposit') || lowerTitle.includes('loan') || lowerBody.includes('loan')) {
+      category = 'Transaction';
+    } else if (lowerTitle.includes('broadcast') || lowerBody.includes('broadcast')) {
+      category = 'Broadcast';
+    }
+
+    // 1. Send to target member email if present and not already admin
+    if (targetEmail && targetEmail.toLowerCase().trim() !== adminEmailLower) {
+      const normalizedTarget = targetEmail.toLowerCase().trim();
+      const memberProfile = allUsers.find(u => u.email?.toLowerCase().trim() === normalizedTarget);
+      const memberPref = memberProfile ? (memberProfile.emailNotificationsEnabled !== false) : true;
+
+      if (memberPref || forceSend) {
+        console.log(`[Notification] Triggering email to member: ${normalizedTarget}`);
+        sendEmail(normalizedTarget, title, body, undefined, recipientName, category).catch(e => {
+          console.error("[Email Error] Member notification failed:", e);
         });
       } else {
-        console.log(`[Notification] Email skipped (Not admin and user notifications disabled)`);
+        console.log(`[Notification] Member email skipped (User disabled notifications for themselves)`);
+      }
+
+      // Send copy to admin IF admin has enabled notifications
+      if (gmailNotificationsEnabled) {
+        console.log(`[Notification] Sending copy of member notification to Admin: ${adminEmailLower}`);
+        const adminCopySubject = `[Member Notify Copy] ${title}`;
+        const adminCopyBody = `Dear Admin, the following notification was sent to member ${recipientName} (${normalizedTarget}):\n\n${body}`;
+        sendEmail(adminEmailLower, adminCopySubject, adminCopyBody, undefined, 'Admin (Copy)', category).catch(e => {
+          console.error("[Email Error] Admin notification copy failed:", e);
+        });
+      } else {
+        console.log(`[Notification] Admin copy skipped (Admin notifications globally disabled)`);
+      }
+    } else {
+      // 2. Direct admin notification
+      if (gmailNotificationsEnabled) {
+        console.log(`[Notification] Triggering email to Admin: ${adminEmailLower}`);
+        sendEmail(adminEmailLower, title, body, undefined, 'Admin', category).catch(e => {
+          console.error("[Email Error] Admin notification failed:", e);
+        });
+      } else {
+        console.log(`[Notification] Admin direct email skipped (Admin notifications globally disabled)`);
       }
     }
 
@@ -1762,6 +2548,61 @@ export default function App() {
           console.error("Failed to send notification via constructor:", e);
         }
       }
+    }
+  };
+
+  const sendWorkflowNotification = async (
+    eventType: 'membership_request' | 'membership_approved' | 'membership_rejected' | 'transaction_request' | 'transaction_confirmed' | 'transaction_rejected' | 'subscription_request' | 'transaction_more_info' | 'membership_more_info' | 'credit_limit_adjusted' | 'debt_warning',
+    memberEmail: string | undefined,
+    memberName: string,
+    details: {
+      amount?: number;
+      type?: string;
+      tier?: string;
+      notes?: string;
+      memberId?: string;
+      memoId?: string;
+      method?: string;
+      accountNumber?: string;
+      transactionId?: string;
+    } = {}
+  ) => {
+    // Resolve dynamic registered event type
+    let resolvedEvent: string = eventType;
+    if (eventType === 'transaction_request') {
+      if (details.type === 'loan') resolvedEvent = 'new_loan_request';
+      else if (details.type === 'deposit') resolvedEvent = 'deposit_request';
+      else if (details.type === 'pay_due' || details.type === 'repayment') resolvedEvent = 'repayment_request';
+    } else if (eventType === 'transaction_confirmed') {
+      if (details.type === 'loan') resolvedEvent = 'loan_approved';
+      else if (details.type === 'pay_due' || details.type === 'repayment') resolvedEvent = 'repayment_received';
+    } else if (eventType === 'transaction_rejected') {
+      if (details.type === 'loan') resolvedEvent = 'loan_rejected';
+    }
+
+    // Map into NotificationPayload
+    const payload: NotificationPayload = {
+      user: {
+        name: memberName,
+        email: memberEmail,
+        memberId: details.memberId,
+      },
+      tx: {
+        amount: details.amount,
+        type: details.type,
+        method: details.method,
+        memoId: details.memoId,
+        transactionId: details.transactionId,
+        accountNumber: details.accountNumber,
+        subscriptionTier: details.tier,
+      },
+      customNotes: details.notes,
+    };
+
+    try {
+      await notificationService.dispatchEvent(resolvedEvent, payload);
+    } catch (error) {
+      console.error("[sendWorkflowNotification Bridge Error]:", error);
     }
   };
 
@@ -1845,6 +2686,7 @@ export default function App() {
 
   // Profile State
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [activeProfileTab, setActiveProfileTab] = useState<'basic' | 'personal' | 'nominee' | 'emergency' | 'social'>('basic');
   const [profileData, setProfileData] = useState({
     name: '',
     email: '',
@@ -1864,7 +2706,8 @@ export default function App() {
     photoUrl: '',
     permanentAddress: '',
     referenceContact: '',
-    adminNotes: ''
+    adminNotes: '',
+    emailNotificationsEnabled: true
   });
 
   // Registration State
@@ -1910,7 +2753,8 @@ export default function App() {
         photoUrl: profile.photoUrl || '',
         permanentAddress: profile.permanentAddress || '',
         referenceContact: profile.referenceContact || '',
-        adminNotes: profile.adminNotes || ''
+        adminNotes: profile.adminNotes || '',
+        emailNotificationsEnabled: profile.emailNotificationsEnabled !== false
       });
     }
   }, [profile]);
@@ -1941,7 +2785,8 @@ export default function App() {
         photoUrl: profileData.photoUrl,
         permanentAddress: profileData.permanentAddress,
         referenceContact: profileData.referenceContact,
-        adminNotes: profileData.adminNotes
+        adminNotes: profileData.adminNotes,
+        emailNotificationsEnabled: profileData.emailNotificationsEnabled !== false
       });
       addToast('Profile Updated', 'Your profile details have been updated successfully.', 'success');
       setShowProfileModal(false);
@@ -2024,6 +2869,11 @@ export default function App() {
   // Tracks any modal or system state changes and pushes fake back levels to prevents crashes or abrupt closures
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
+      // If the back event is an internal Admin Portal section switch, let AdminPortal handle it
+      if (e.state && e.state.fromAdminPortal) {
+        return;
+      }
+
       let intercepted = false;
       
       // Close open modals step-by-step when back key is tapped
@@ -2143,8 +2993,58 @@ export default function App() {
           data.status = 'approved';
           setDoc(doc(db, 'users', user.uid), { ...data, role: 'admin', status: 'approved' }, { merge: true });
         }
+
+        // Auto-update to Free Bronze Tier with ৳500 borrowing limit only for users who have no tier set, or truly expired paid subscriptions
+        if (data.subscriptionStatus !== 'pending_approval') {
+          const isPaidTier = (data.subscriptionTier === 'silver' || data.subscriptionTier === 'gold');
+          if (isPaidTier) {
+            // Only expire if explicitly past the expiration date with a 24-hour grace buffer
+            const hasExpired = data.subscriptionStatus === 'active' &&
+              data.subscriptionExpiresAt &&
+              new Date(data.subscriptionExpiresAt).getTime() < (Date.now() - 24 * 60 * 60 * 1000);
+            
+            if (hasExpired) {
+              data.subscriptionTier = 'bronze';
+              data.subscriptionStatus = 'active';
+              data.borrowingLimit = 500;
+              updateDoc(doc(db, 'users', user.uid), {
+                subscriptionTier: 'bronze',
+                subscriptionStatus: 'active',
+                borrowingLimit: 500,
+                subscriptionExpiresAt: '',
+                updatedAt: serverTimestamp()
+              }).catch(e => console.warn("Auto-demote expired tier:", e));
+            } else if (data.subscriptionStatus === 'active' && !data.subscriptionExpiresAt) {
+              // Active paid tier without expiry date set: grant default 30 days
+              const defaultExp = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+              data.subscriptionExpiresAt = defaultExp;
+              updateDoc(doc(db, 'users', user.uid), {
+                subscriptionExpiresAt: defaultExp
+              }).catch(() => {});
+            }
+          } else if (!data.subscriptionTier) {
+            // New user with no tier assigned yet: default to Bronze Free Tier
+            data.subscriptionTier = 'bronze';
+            data.subscriptionStatus = 'active';
+            data.borrowingLimit = 500;
+            updateDoc(doc(db, 'users', user.uid), {
+              subscriptionTier: 'bronze',
+              subscriptionStatus: 'active',
+              borrowingLimit: 500,
+              updatedAt: serverTimestamp()
+            }).catch(() => {});
+          }
+        }
+
         setProfile(data);
         localStorage.setItem('tut_saved_profile', JSON.stringify(data));
+        if (data.name) {
+          localStorage.setItem('tut_saved_name', data.name);
+        }
+        if (data.email) {
+          localStorage.setItem('tut_saved_email', data.email);
+        }
+        localStorage.setItem('tut_has_previously_signed_in', 'true');
         
         // Notify user if status changed to approved
         if (lastProfileStatus.current === 'pending' && data.status === 'approved') {
@@ -2171,6 +3071,9 @@ export default function App() {
           setDoc(doc(db, 'users', user.uid), adminProfile);
           setProfile(adminProfile);
           localStorage.setItem('tut_saved_profile', JSON.stringify(adminProfile));
+          localStorage.setItem('tut_saved_name', "Tahsin Ullah Tusher");
+          localStorage.setItem('tut_saved_email', "tahsinullahtusher999@gmail.com");
+          localStorage.setItem('tut_has_previously_signed_in', 'true');
         } else {
           if (user.email) {
             const cleanEmail = user.email.toLowerCase().trim();
@@ -2211,7 +3114,10 @@ export default function App() {
       setLoading(false);
     }, (err) => {
       handleFirestorePermissionOrTokenError(err, 'Profile Listener').then((handled) => {
-        if (handled) return;
+        if (handled) {
+          setLoading(false);
+          return;
+        }
         // Only set error if user is still logged in and error not handled
         if (auth.currentUser) {
           setGlobalError(`Profile Error: ${err.message}`);
@@ -2230,13 +3136,26 @@ export default function App() {
 
     const q = query(
       collection(db, 'transactions'),
-      where('userId', '==', user.uid),
-      orderBy('timestamp', 'desc')
+      where('userId', '==', user.uid)
     );
 
     const unsub = onSnapshot(q, (snap) => {
       const txs = snap.docs.map(d => ({ ...d.data() as any, id: d.id } as Transaction));
       
+      // Sort client-side descending by timestamp (newest first) to prevent Firestore composite index issues
+      txs.sort((a, b) => {
+        const getTs = (item: any) => {
+          const t = item.timestamp || item.createdAt || item.date;
+          if (!t) return 0;
+          if (typeof t.toMillis === 'function') return t.toMillis();
+          if (typeof t.toDate === 'function') return t.toDate().getTime();
+          if (t.seconds) return t.seconds * 1000;
+          const d = new Date(t);
+          return isNaN(d.getTime()) ? 0 : d.getTime();
+        };
+        return getTs(b) - getTs(a);
+      });
+
       // Notify user if a transaction status changed to confirmed
       txs.forEach(tx => {
         const prevStatus = lastTxStatuses.current[tx.id];
@@ -2266,7 +3185,24 @@ export default function App() {
 
     const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
       console.log("Admin Users Snapshot received:", snap.size, "docs");
-      const users = snap.docs.map(d => d.data() as UserProfile);
+      const users = snap.docs.map(d => {
+        const u = d.data() as UserProfile;
+        const isPaid = (u.subscriptionTier === 'silver' || u.subscriptionTier === 'gold');
+        if (isPaid && u.subscriptionStatus === 'active') {
+          const hasExpired = u.subscriptionExpiresAt && new Date(u.subscriptionExpiresAt) < new Date();
+          if (hasExpired) {
+            u.subscriptionTier = 'bronze';
+            u.borrowingLimit = 500;
+          } else {
+            u.borrowingLimit = u.borrowingLimit || (u.subscriptionTier === 'silver' ? 1500 : 2500);
+          }
+        } else if (!u.subscriptionTier) {
+          u.subscriptionTier = 'bronze';
+          u.subscriptionStatus = u.subscriptionStatus || 'active';
+          u.borrowingLimit = 500;
+        }
+        return u;
+      });
       const pendingCount = users.filter(u => u.status === 'pending').length;
       
       // Notify admin if new pending user arrives
@@ -2276,6 +3212,36 @@ export default function App() {
       lastUserCount.current = pendingCount;
       
       setAllUsers(users);
+
+      // Auto-sync in background only for expired active paid subscriptions or users with no tier at all
+      if (user.email?.toLowerCase() === 'tahsinullahtusher999@gmail.com') {
+        snap.docs.forEach(docSnap => {
+          const raw = docSnap.data();
+          if (raw.subscriptionStatus === 'pending_approval') {
+            // NEVER overwrite pending approval subscriptions
+            return;
+          }
+          const isPaid = (raw.subscriptionTier === 'silver' || raw.subscriptionTier === 'gold');
+          if (isPaid && raw.subscriptionStatus === 'active' && raw.subscriptionExpiresAt) {
+            if (new Date(raw.subscriptionExpiresAt).getTime() < (Date.now() - 24 * 60 * 60 * 1000)) {
+              updateDoc(docSnap.ref, {
+                subscriptionTier: 'bronze',
+                subscriptionStatus: 'active',
+                borrowingLimit: 500,
+                subscriptionExpiresAt: '',
+                updatedAt: serverTimestamp()
+              }).catch(() => {});
+            }
+          } else if (!raw.subscriptionTier) {
+            updateDoc(docSnap.ref, {
+              subscriptionTier: 'bronze',
+              subscriptionStatus: 'active',
+              borrowingLimit: 500,
+              updatedAt: serverTimestamp()
+            }).catch(() => {});
+          }
+        });
+      }
     }, (err) => {
       handleFirestorePermissionOrTokenError(err, 'Admin Users Listener').then((handled) => {
         if (handled) return;
@@ -2335,10 +3301,28 @@ export default function App() {
       handleFirestoreError(err, OperationType.LIST, 'audit_logs');
     });
 
+    const unsubEmailLogs = onSnapshot(collection(db, 'email_logs'), (snap) => {
+      console.log("Admin Email Logs Snapshot received:", snap.size, "docs");
+      const logs = snap.docs.map(d => {
+        const data = d.data();
+        return { ...data as any, id: d.id };
+      });
+      logs.sort((a, b) => {
+        const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : 0;
+        const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : 0;
+        return tB - tA;
+      });
+      setEmailLogs(logs);
+    }, (err) => {
+      console.error("Admin Email Logs error:", err);
+      handleFirestoreError(err, OperationType.LIST, 'email_logs');
+    });
+
     return () => {
       unsubUsers();
       unsubTx();
       unsubAuditLogs();
+      unsubEmailLogs();
     };
   }, [isAdminLoggedIn, user]);
 
@@ -2410,9 +3394,24 @@ export default function App() {
       console.log("Authority Fund setting received:", snap.exists() ? snap.data() : "No document");
       if (snap.exists()) {
         const data = snap.data();
-        if (data && typeof data.personalFund === 'number') {
-          setAuthorityPersonalFund(data.personalFund);
-          setTempFundValue(data.personalFund.toString());
+        if (data) {
+          if (typeof data.personalFund === 'number') {
+            setAuthorityPersonalFund(data.personalFund);
+            setTempFundValue(data.personalFund.toString());
+          }
+          const baseFund = data.personalFund || 500000;
+          setLiquidReserve(data.liquidReserve ?? Math.floor(baseFund * 0.30));
+          setOperationalReserve(data.operationalReserve ?? Math.floor(baseFund * 0.15));
+          setEmergencyReserve(data.emergencyReserve ?? Math.floor(baseFund * 0.15));
+          setAvailableLendingFund(data.availableLendingFund ?? Math.floor(baseFund * 0.25));
+          setReservedCapital(data.reservedCapital ?? Math.floor(baseFund * 0.05));
+          setFrozenCapital(data.frozenCapital ?? Math.floor(baseFund * 0.05));
+          setExternalInvestmentReserve(data.externalInvestmentReserve ?? Math.floor(baseFund * 0.05));
+          if (data.gmailNotificationsEnabled !== undefined) {
+            setGmailNotificationsEnabled(data.gmailNotificationsEnabled);
+          } else {
+            setGmailNotificationsEnabled(true);
+          }
         }
       }
     }, (err) => {
@@ -2453,6 +3452,120 @@ export default function App() {
     } catch (error) {
       console.error("Error updating system fund:", error);
       handleFirestoreError(error, OperationType.WRITE, 'system_controls/funds');
+    }
+  };
+
+  const executeReserveOperation = async (
+    type: 'increase' | 'withdraw' | 'transfer' | 'lock' | 'unlock' | 'adjust',
+    amount: number,
+    notes: string,
+    category: string,
+    targetCategory?: string
+  ) => {
+    // 1. Verify PIN
+    if (reserveOpPin !== '9900' && reserveOpPin !== 'TUT2026') {
+      addToast('Authentication Failed', 'Invalid Authority Verification PIN.', 'warning');
+      return false;
+    }
+
+    try {
+      const fundsRef = doc(db, 'system_controls', 'funds');
+      const updates: any = {};
+      let desc = '';
+
+      // Get current values
+      let curLiquid = liquidReserve;
+      let curOperational = operationalReserve;
+      let curEmergency = emergencyReserve;
+      let curLending = availableLendingFund;
+      let curReserved = reservedCapital;
+      let curFrozen = frozenCapital;
+      let curInvestment = externalInvestmentReserve;
+      let curPersonal = authorityPersonalFund;
+
+      const getCategoryValue = (cat: string) => {
+        if (cat === 'liquidReserve') return curLiquid;
+        if (cat === 'operationalReserve') return curOperational;
+        if (cat === 'emergencyReserve') return curEmergency;
+        if (cat === 'availableLendingFund') return curLending;
+        if (cat === 'reservedCapital') return curReserved;
+        if (cat === 'frozenCapital') return curFrozen;
+        if (cat === 'externalInvestmentReserve') return curInvestment;
+        return 0;
+      };
+
+      const setCategoryValue = (cat: string, val: number) => {
+        updates[cat] = Math.max(0, val);
+      };
+
+      if (type === 'increase') {
+        const val = getCategoryValue(category);
+        setCategoryValue(category, val + amount);
+        updates.personalFund = curPersonal + amount;
+        desc = `Increased ${category} by ৳${amount.toLocaleString()} BDT.`;
+      } else if (type === 'withdraw') {
+        const val = getCategoryValue(category);
+        if (val < amount) {
+          addToast('Insufficient Funds', `The selected category has insufficient balance (৳${val.toLocaleString()}).`, 'warning');
+          return false;
+        }
+        setCategoryValue(category, val - amount);
+        updates.personalFund = Math.max(0, curPersonal - amount);
+        desc = `Withdrew ৳${amount.toLocaleString()} BDT from ${category}.`;
+      } else if (type === 'transfer' && targetCategory) {
+        const valFrom = getCategoryValue(category);
+        if (valFrom < amount) {
+          addToast('Insufficient Funds', `Source category has insufficient balance (৳${valFrom.toLocaleString()}).`, 'warning');
+          return false;
+        }
+        const valTo = getCategoryValue(targetCategory);
+        setCategoryValue(category, valFrom - amount);
+        setCategoryValue(targetCategory, valTo + amount);
+        desc = `Transferred ৳${amount.toLocaleString()} BDT from ${category} to ${targetCategory}.`;
+      } else if (type === 'lock') {
+        // Transfer from available lending to frozen capital
+        if (curLending < amount) {
+          addToast('Insufficient Funds', `Available Lending Fund has insufficient balance (৳${curLending.toLocaleString()}).`, 'warning');
+          return false;
+        }
+        updates.availableLendingFund = curLending - amount;
+        updates.frozenCapital = curFrozen + amount;
+        desc = `Locked ৳${amount.toLocaleString()} BDT in Frozen Capital (transferred from Available Lending Fund).`;
+      } else if (type === 'unlock') {
+        // Transfer from frozen capital to available lending
+        if (curFrozen < amount) {
+          addToast('Insufficient Funds', `Frozen Capital has insufficient balance (৳${curFrozen.toLocaleString()}).`, 'warning');
+          return false;
+        }
+        updates.frozenCapital = curFrozen - amount;
+        updates.availableLendingFund = curLending + amount;
+        desc = `Unlocked ৳${amount.toLocaleString()} BDT from Frozen Capital (transferred to Available Lending Fund).`;
+      } else if (type === 'adjust') {
+        setCategoryValue(category, amount);
+        desc = `Manually adjusted ${category} to ৳${amount.toLocaleString()} BDT.`;
+      }
+
+      updates.updatedAt = serverTimestamp();
+      await updateDoc(fundsRef, updates);
+
+      // Log to audit log
+      await logAuditEvent('Reserve Modification', `${desc} Notes: ${notes}`, 'critical');
+
+      // Send a high priority notification
+      await sendNotification('Reserve Capital Modified', desc, ADMIN_EMAIL);
+
+      addToast('Operation Executed', desc, 'success');
+      
+      // Reset states
+      setReserveOpAmount('');
+      setReserveOpNotes('');
+      setReserveOpPin('');
+      setReserveOperationModal(null);
+      return true;
+    } catch (err: any) {
+      console.error("Reserve operation failed:", err);
+      addToast('Operation Failed', err.message, 'warning');
+      return false;
     }
   };
 
@@ -2951,18 +4064,32 @@ export default function App() {
 
       setIsLoggingIn(false);
       
+      // Handle user cancellation gracefully without showing harsh popups/alerts
+      if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
+        console.info("Sign in cancelled: User closed the login window.");
+        addToast("Sign In Cancelled", "The login popup was closed before sign-in completed. Click Sign In to try again when ready.", "info");
+        return;
+      }
+      
       let errorMessage = "Login Failed. ";
       if (error.code === 'auth/network-request-failed') {
         errorMessage += "A network error occurred. Please check your internet connection and try again.";
       } else if (error.code === 'auth/popup-blocked') {
-        errorMessage += "The login popup was blocked. Please allow popups for this site.";
+        console.warn("Popup blocked by browser. Falling back to redirect...");
+        try {
+          const provider = new GoogleAuthProvider();
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirErr: any) {
+          errorMessage += "The login popup was blocked and redirect fallback failed.";
+        }
       } else if (error.code === 'auth/unauthorized-domain') {
         errorMessage += "This domain is not authorized in Firebase. Please add it to 'Authorized Domains' in the Firebase Console.";
       } else {
         errorMessage += error.message || "Unknown error occurred.";
       }
       
-      alert(errorMessage);
+      addToast("Sign In Issue", errorMessage, "warning");
     }
   };
 
@@ -2991,7 +4118,8 @@ export default function App() {
         totalDeposit: 0,
         remainingDebt: 0,
         role: isBootstrapAdmin ? 'admin' : 'member',
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        emailNotificationsEnabled: true
       };
       
       if (isBootstrapAdmin) {
@@ -3001,7 +4129,7 @@ export default function App() {
       console.log("Attempting to register profile:", newProfile);
       await setDoc(doc(db, 'users', user.uid), newProfile);
       console.log("Registration successful");
-      await sendNotification('New Membership Request', `${regData.name} has applied for membership.`, ADMIN_EMAIL);
+      await sendWorkflowNotification('membership_request', regData.email.toLowerCase() || user.email?.toLowerCase(), regData.name);
     } catch (error) {
       console.error("Registration error details:", error);
       setGlobalError(`Registration Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -3021,6 +4149,15 @@ export default function App() {
       setAdminError('');
       setAdminPassword('');
       setAdminPin('');
+
+      if (user) {
+        setDoc(doc(db, 'users', user.uid), { role: 'admin', status: 'approved' }, { merge: true }).catch(err => {
+          console.warn("Notice updating admin profile:", err?.message || err);
+        });
+        if (profile) {
+          setProfile({ ...profile, role: 'admin', status: 'approved' });
+        }
+      }
     } else {
       setAdminError('Access Denied: Invalid Password or PIN. Please use your admin credentials (Password/PIN: 9900).');
     }
@@ -3055,11 +4192,14 @@ export default function App() {
     }
 
     try {
+      const reservedMemoId = `TUT-MEMO-${Math.floor(100000 + Math.random() * 900000)}`;
       const payload: any = {
         userId: user.uid,
         userName: profile.name,
         type: requestType,
         amount,
+        exactAmount: amount,
+        memoId: reservedMemoId,
         method: requestMethod,
         status: 'pending',
         timestamp: serverTimestamp()
@@ -3079,7 +4219,7 @@ export default function App() {
       console.log("Submitting transaction payload:", payload);
       const docRef = await addDoc(collection(db, 'transactions'), payload);
       console.log("Transaction created with ID:", docRef.id);
-      await sendNotification('New Transaction Request', `${profile.name} submitted a ${requestType} request for ৳${amount.toLocaleString()}.`, ADMIN_EMAIL);
+      await sendWorkflowNotification('transaction_request', profile.email || user.email || undefined, profile.name, { amount, type: requestType, method: requestMethod });
       setShowRequestModal(false);
       setRequestAmount('');
       setRequestAccount('');
@@ -3134,7 +4274,7 @@ export default function App() {
         subscriptionTier: selectedSubTier
       });
       
-      await sendNotification('New Subscription Request', `${profile.name} submitted a ${selectedSubTier} subscription request for ৳${pricing.price.toLocaleString()}.`, ADMIN_EMAIL);
+      await sendWorkflowNotification('subscription_request', profile.email || user.email || undefined, profile.name, { amount: pricing.price, tier: selectedSubTier, method: subWallet, accountNumber: subSenderMobile, transactionId: subTrxId });
       
       addToast('Purchase Request Submitted', 'Your subscription payment is currently being verified by the Admin. Once verified, your limits will instantly unlock.', 'success');
       
@@ -3147,50 +4287,59 @@ export default function App() {
     }
   };
 
-  const rejectTransaction = async (tx: Transaction) => {
+  const rejectTransaction = async (tx: Transaction, notes?: string) => {
     try {
-      await deleteDoc(doc(db, 'transactions', tx.id));
+      await updateDoc(doc(db, 'transactions', tx.id), {
+        status: 'rejected',
+        adminNotes: notes || '',
+        decidedBy: auth.currentUser?.email || 'admin',
+        decidedAt: new Date().toISOString()
+      });
       await logAuditEvent('Transaction Rejected', `Rejected ${tx.type} of ৳${tx.amount.toLocaleString()} for ${tx.userName} (${tx.userId})`, 'warning');
       
       // Notify user
       const userSnap = await getDoc(doc(db, 'users', tx.userId));
       if (userSnap.exists()) {
         const userData = userSnap.data() as UserProfile;
-        if (userData.email) {
-          await sendNotification('Transaction Rejected', `Your ${tx.type} request of ৳${tx.amount.toLocaleString()} has been rejected by the T.U.T. Authority.`, userData.email);
-        }
+        await sendWorkflowNotification('transaction_rejected', userData.email, userData.name, { amount: tx.amount, type: tx.type, notes: notes || '' });
       }
-      addToast('Transaction Rejected', 'The request has been removed and the user notified.', 'info');
+      addToast('Transaction Rejected', 'The request has been marked as rejected and the user notified.', 'info');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `transactions/${tx.id}`);
+      handleFirestoreError(error, OperationType.UPDATE, `transactions/${tx.id}`);
     }
   };
 
-  const rejectMember = async (targetUid: string) => {
+  const rejectMember = async (targetUid: string, notes?: string) => {
     try {
+      await updateDoc(doc(db, 'users', targetUid), {
+        status: 'rejected',
+        adminNotes: notes || '',
+        decidedBy: auth.currentUser?.email || 'admin',
+        decidedAt: new Date().toISOString()
+      });
       const userSnap = await getDoc(doc(db, 'users', targetUid));
       let userName = targetUid;
       if (userSnap.exists()) {
         const userData = userSnap.data() as UserProfile;
         userName = userData.name;
-        if (userData.email) {
-          await sendNotification('Membership Rejected', 'Your T.U.T. membership application has been rejected by the Authority.', userData.email);
-        }
+        await sendWorkflowNotification('membership_rejected', userData.email, userData.name, { notes });
       }
       await logAuditEvent('Membership Rejected', `Rejected application for: ${userName} (${targetUid})`, 'warning');
-      await deleteDoc(doc(db, 'users', targetUid));
-      addToast('Member Rejected', 'The application has been removed and the user notified.', 'info');
+      addToast('Member Rejected', 'The application has been marked as rejected and the user notified.', 'info');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `users/${targetUid}`);
+      handleFirestoreError(error, OperationType.UPDATE, `users/${targetUid}`);
     }
   };
 
-  const approveMember = async (targetUid: string) => {
+  const approveMember = async (targetUid: string, notes?: string) => {
     try {
       const memberId = `TUT-MBR-2026-${Math.floor(1000 + Math.random() * 9000)}`;
       await updateDoc(doc(db, 'users', targetUid), {
         status: 'approved',
-        memberId: memberId
+        memberId: memberId,
+        adminNotes: notes || '',
+        decidedBy: auth.currentUser?.email || 'admin',
+        decidedAt: new Date().toISOString()
       });
 
       // Send immediate notification to user
@@ -3198,18 +4347,62 @@ export default function App() {
       if (userSnap.exists()) {
         const userData = userSnap.data() as UserProfile;
         await logAuditEvent('Membership Approved', `Approved membership for ${userData.name} with Member ID: ${memberId}`, 'info');
-        if (userData.email) {
-          await sendNotification('Account Approved!', 'Your T.U.T. membership has been approved. You can now access all services.', userData.email);
-        }
+        await sendWorkflowNotification('membership_approved', userData.email, userData.name, { memberId });
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${targetUid}`);
     }
   };
 
-  const confirmTransaction = async (tx: Transaction) => {
+  const requestMoreInfoForTransaction = async (tx: Transaction, notes: string) => {
     try {
-      const memoId = `TUT-MEMO-${Math.floor(100000 + Math.random() * 900000)}`;
+      await updateDoc(doc(db, 'transactions', tx.id), {
+        status: 'pending', // Keep pending in the queue, but flag it
+        moreInfoRequested: true,
+        adminNotes: notes || '',
+        decidedBy: auth.currentUser?.email || 'admin',
+        decidedAt: new Date().toISOString()
+      });
+      await logAuditEvent('More Info Requested', `Requested more info on ${tx.type} of ৳${tx.amount.toLocaleString()} for ${tx.userName}`, 'info');
+
+      // Notify user
+      const userSnap = await getDoc(doc(db, 'users', tx.userId));
+      if (userSnap.exists()) {
+        const userData = userSnap.data() as UserProfile;
+        await sendWorkflowNotification('transaction_more_info', userData.email, userData.name, { amount: tx.amount, type: tx.type, notes });
+      }
+      addToast('More Information Requested', 'Compliance letter has been dispatched and the user has been notified.', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `transactions/${tx.id}`);
+    }
+  };
+
+  const requestMoreInfoForMember = async (targetUid: string, notes: string) => {
+    try {
+      await updateDoc(doc(db, 'users', targetUid), {
+        status: 'pending', // Keep pending in the queue, but flag it
+        moreInfoRequested: true,
+        adminNotes: notes || '',
+        decidedBy: auth.currentUser?.email || 'admin',
+        decidedAt: new Date().toISOString()
+      });
+      const userSnap = await getDoc(doc(db, 'users', targetUid));
+      let userName = targetUid;
+      if (userSnap.exists()) {
+        const userData = userSnap.data() as UserProfile;
+        userName = userData.name;
+        await sendWorkflowNotification('membership_more_info', userData.email, userData.name, { notes });
+      }
+      await logAuditEvent('Membership Info Requested', `Requested more info for applicant ${userName}`, 'info');
+      addToast('More Information Requested', 'Compliance letter has been dispatched and the user has been notified.', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${targetUid}`);
+    }
+  };
+
+  const confirmTransaction = async (tx: Transaction, notes?: string) => {
+    try {
+      const memoId = (tx as any)?.memoId || `TUT-MEMO-${Math.floor(100000 + Math.random() * 900000)}`;
       const userRef = doc(db, 'users', tx.userId);
       const userSnap = await getDoc(userRef);
       
@@ -3227,18 +4420,19 @@ export default function App() {
         updates.totalDeposit = Math.max(0, (userData.totalDeposit || 0) - tx.amount);
       } else if (tx.type === 'pay_due') {
         updates.remainingDebt = Math.max(0, (userData.remainingDebt || 0) - tx.amount);
+        updates.totalRepaid = (userData.totalRepaid || 0) + tx.amount;
       } else if (tx.type === 'subscription') {
         const tier = tx.subscriptionTier || 'bronze';
         const months = tx.subscriptionMonths || 1;
         const today = new Date();
         let expiresAt = new Date();
-        if (months === 2) {
-          const nextMonth = new Date(today.getFullYear(), today.getMonth() + 2, 0, 23, 59, 59, 999);
-          expiresAt = nextMonth;
-        } else {
-          const endOfThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59, 999);
-          expiresAt = endOfThisMonth;
+        if (userData.subscriptionStatus === 'active' && userData.subscriptionExpiresAt) {
+          const currentExp = new Date(userData.subscriptionExpiresAt);
+          if (currentExp > today) {
+            expiresAt = new Date(currentExp);
+          }
         }
+        expiresAt.setDate(expiresAt.getDate() + ((months || 1) * 30));
         
         updates.subscriptionTier = tier;
         updates.subscriptionStatus = 'active';
@@ -3259,7 +4453,7 @@ export default function App() {
         
         updates.loansTakenThisMonth = 0;
         
-        let baseLimit = 100000;
+        let baseLimit = 500;
         if (tier === 'bronze') baseLimit = 500;
         if (tier === 'silver') baseLimit = 1500;
         if (tier === 'gold') baseLimit = 2500;
@@ -3281,15 +4475,17 @@ export default function App() {
       await updateDoc(userRef, updates);
       await updateDoc(doc(db, 'transactions', tx.id), {
         status: 'confirmed',
-        memoId: memoId
+        memoId: memoId,
+        exactAmount: tx.amount,
+        adminNotes: notes || '',
+        decidedBy: auth.currentUser?.email || 'admin',
+        decidedAt: new Date().toISOString()
       });
 
       await logAuditEvent('Transaction Confirmed', `Confirmed ${tx.type} of ৳${tx.amount.toLocaleString()} with Memo ID: ${memoId} for ${tx.userName}`, 'info');
 
       // Send immediate notification to user
-      if (userData.email) {
-        await sendNotification('Transaction Confirmed!', `Your ${tx.type} request of ৳${tx.amount.toLocaleString()} has been confirmed.`, userData.email);
-      }
+      await sendWorkflowNotification('transaction_confirmed', userData.email, userData.name, { amount: tx.amount, type: tx.type, memoId });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `transactions/${tx.id}`);
     }
@@ -3310,9 +4506,7 @@ export default function App() {
       if (userSnap.exists()) {
         const uData = userSnap.data() as UserProfile;
         userName = uData.name;
-        if (uData.email) {
-          await sendNotification('Credit Limit Adjusted', `Your approved borrowing credit limit has been updated to ৳${parsed.toLocaleString()} BDT by the T.U.T. Authority.`, uData.email);
-        }
+        await sendWorkflowNotification('credit_limit_adjusted', uData.email, uData.name, { amount: parsed });
       }
       await logAuditEvent('Limit Modified', `Updated approved borrowing limit for ${userName} to ৳${parsed.toLocaleString()} BDT`, 'info');
       addToast('Limit Updated', `Approved borrowing credit limit has been set to ৳${parsed.toLocaleString()} BDT successfully.`, 'success');
@@ -3371,7 +4565,7 @@ export default function App() {
             </div>
 
             {/* Dynamic Status Message */}
-            <div className="h-6 flex items-center justify-center mb-10">
+            <div className="h-6 flex items-center justify-center">
               <AnimatePresence mode="wait">
                 <motion.p
                   key={loadingStatusIndex}
@@ -3385,45 +4579,49 @@ export default function App() {
                 </motion.p>
               </AnimatePresence>
             </div>
-
-            {/* Elegant Professional Developer Credits */}
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.4, duration: 0.6 }}
-              className="flex flex-col items-center"
-            >
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <div className="h-[1px] w-4 bg-gradient-to-r from-transparent to-slate-500/20" />
-                <span className="text-[7px] font-bold tracking-[0.35em] text-slate-500 uppercase">AUTHORITY FOUNDER</span>
-                <div className="h-[1px] w-4 bg-gradient-to-l from-transparent to-slate-500/20" />
-              </div>
-              <h2 className="text-xs sm:text-sm font-bold tracking-[0.25em] uppercase text-slate-100">
-                Tahsin Ullah Tusher
-              </h2>
-              <p className="text-[7.5px] sm:text-[8px] font-semibold tracking-[0.22em] text-blue-400/70 uppercase mt-0.5">
-                Founder, T.U.T. Group of Services
-              </p>
-            </motion.div>
           </motion.div>
         </div>
 
-        {/* Footer Branding Area */}
-        <div className="flex flex-col items-center gap-3.5 pb-4 sm:pb-8 relative z-10 w-full">
-          <div className="h-[1px] w-24 bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+        {/* Footer Branding Area: Minimal, Small & Professional */}
+        <div className="flex flex-col items-center gap-3.5 pb-4 sm:pb-8 relative z-10 w-full max-w-sm sm:max-w-md px-4">
+          <div className="h-[1px] w-full bg-gradient-to-r from-transparent via-white/10 to-transparent" />
           
+          {/* Subtle Balanced Row: Founder in a side + Security in a side */}
+          <div className="w-full flex items-center justify-between gap-3 px-1">
+            {/* Left Side: Minimal, Small, Executive Founder Signature */}
+            <div className="flex items-center gap-2 text-left">
+              <div className="w-1.5 h-1.5 rounded-full bg-blue-400/70 shadow-[0_0_6px_rgba(96,165,250,0.5)] shrink-0" />
+              <div className="flex flex-col leading-tight">
+                <span className="text-[7.5px] sm:text-[8px] font-mono uppercase tracking-[0.22em] text-slate-500">
+                  Founder
+                </span>
+                <span className="text-[10px] sm:text-[11px] font-semibold tracking-wide text-slate-300">
+                  Tahsin Ullah Tusher
+                </span>
+                <span className="text-[8px] sm:text-[8.5px] tracking-wider text-slate-500 font-sans">
+                  T.U.T. Group of Services
+                </span>
+              </div>
+            </div>
+
+            {/* Right Side: Refined Minimal Security Badge */}
+            <div className="flex flex-col items-end text-right leading-tight">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-900/80 border border-white/5 rounded-full backdrop-blur-md shadow-xs">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-[8px] sm:text-[8.5px] font-mono font-bold tracking-widest text-slate-300 uppercase">
+                  256-BIT SSL
+                </span>
+              </div>
+              <span className="text-[7.5px] sm:text-[8px] font-mono tracking-wider text-slate-500 uppercase mt-1">
+                Encrypted Gateway
+              </span>
+            </div>
+          </div>
+
           {/* Core Pillars */}
-          <span className="text-[8px] sm:text-[9px] font-black text-white/40 uppercase tracking-[0.6em] text-center">
+          <span className="text-[9px] sm:text-[10px] font-bold text-white/35 uppercase tracking-[0.55em] text-center pt-1">
             Trust &bull; Unity &bull; Technology
           </span>
-
-          {/* Small security badge */}
-          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/50 border border-white/5 rounded-full backdrop-blur-md shadow-lg">
-            <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[7px] sm:text-[8px] font-black tracking-widest text-slate-400 uppercase">
-              SECURE 256-BIT SSL ENCRYPTION
-            </span>
-          </div>
         </div>
       </div>
     );
@@ -3431,434 +4629,2891 @@ export default function App() {
 
   // --- Redesigned Enterprise Admin Helpers ---
   const renderAdminOverview = () => {
-    // 1. Chart Data
-    const totalL = cumulativeStats.totalHistoricalLoans || 25648750;
-    const totalR = cumulativeStats.totalHistoricalRepayments || 18965250;
-    const loanOverviewData = [
-      { name: '01 May', Disbursed: Math.floor(totalL * 0.4), Repaid: Math.floor(totalR * 0.3) },
-      { name: '05 May', Disbursed: Math.floor(totalL * 0.55), Repaid: Math.floor(totalR * 0.45) },
-      { name: '10 May', Disbursed: Math.floor(totalL * 0.65), Repaid: Math.floor(totalR * 0.58) },
-      { name: '15 May', Disbursed: Math.floor(totalL * 0.8), Repaid: Math.floor(totalR * 0.72) },
-      { name: '20 May', Disbursed: Math.floor(totalL * 0.9), Repaid: Math.floor(totalR * 0.85) },
-      { name: '24 May', Disbursed: totalL, Repaid: totalR },
-    ];
+    // Computed Metrics
+    const totalCashPool = authorityPersonalFund + totalDeposits;
+    const currentlyLent = outstandingDebt;
+    
+    const pendingRegistrations = allUsers.filter(u => u.status === 'pending');
+    const pendingTransactions = allTransactions.filter(t => t.status === 'pending');
+    const pendingCount = pendingRegistrations.length + pendingTransactions.length;
+    const activeDebtors = allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) > 0);
 
-    // 2. Pie Chart Data
-    const pendingCount = allUsers.filter(u => u.status === 'pending').length + allTransactions.filter(t => t.status === 'pending').length;
-    const approvedCount = allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) === 0).length;
-    const activeCount = allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) > 0).length;
-    const overdueCount = allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) > 10000 && (u.borrowingLimit || 100000) < 50000).length;
-    const p = pendingCount || 125;
-    const app = approvedCount || 284;
-    const act = activeCount || 112;
-    const ov = overdueCount || 46;
-    const tot = p + app + act + ov;
-    const loanStatusData = {
-      total: tot,
-      series: [
-        { name: 'Pending', value: p, color: '#f59e0b', percent: ((p/tot)*100).toFixed(1) },
-        { name: 'Approved', value: app, color: '#10b981', percent: ((app/tot)*100).toFixed(1) },
-        { name: 'Active', value: act, color: '#3b82f6', percent: ((act/tot)*100).toFixed(1) },
-        { name: 'Overdue', value: ov, color: '#ef4444', percent: ((ov/tot)*100).toFixed(1) },
-      ]
+    // Question 4: Filter members needing attention today:
+    // - Pending registration approval
+    // - Active debtors
+    const attentionMembers = allUsers.filter(u => {
+      if (u.status === 'pending') return true;
+      if (u.status === 'approved' && (u.remainingDebt || 0) > 0) return true;
+      if (u.moreInfoRequested) return true;
+      return false;
+    }).slice(0, 5);
+
+    // Event handlers for quick actions
+    const handleQuickApproveMember = async (uid: string, name: string) => {
+      setActionLoadingId(`approve-mbr-${uid}`);
+      try {
+        await approveMember(uid);
+        addToast('Membership Approved', `Successfully verified and activated ${name}'s membership.`, 'success');
+      } catch (error) {
+        console.error(error);
+        addToast('Operation Failed', `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'warning');
+      } finally {
+        setActionLoadingId(null);
+      }
     };
 
-    // 3. Custom elapsed time helper
-    const getElapsed = (tsSec: number) => {
-      if (!tsSec) return 'Recent';
-      const sec = Math.floor(Date.now() / 1000) - tsSec;
-      if (sec < 60) return 'Just now';
-      const mins = Math.floor(sec / 60);
-      if (mins < 60) return `${mins}m ago`;
-      const hours = Math.floor(mins / 60);
-      return `${hours}h ago`;
+    const handleQuickRejectMember = async (uid: string, name: string) => {
+      setActionLoadingId(`reject-mbr-${uid}`);
+      try {
+        await rejectMember(uid, 'Rejected via Quick-Action Board');
+        addToast('Membership Rejected', `Rejected application for ${name}.`, 'warning');
+      } catch (error) {
+        console.error(error);
+        addToast('Operation Failed', `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'warning');
+      } finally {
+        setActionLoadingId(null);
+      }
     };
 
-    // 4. Dynamic Activities Feed
-    const activities = (() => {
-      const list: any[] = [];
-      allTransactions.slice(0, 5).forEach(t => {
-        let title = 'Transaction logged';
-        let color = 'text-blue-400 bg-blue-500/10';
-        if (t.type === 'loan') {
-          title = t.status === 'confirmed' ? 'Loan approved' : 'Loan request';
-          color = t.status === 'confirmed' ? 'text-emerald-400 bg-emerald-500/10' : 'text-amber-400 bg-amber-500/10';
-        } else if (t.type === 'refund' || t.type === 'pay_due') {
-          title = 'Repayment received';
-          color = 'text-teal-400 bg-teal-500/10';
-        } else if (t.type === 'deposit') {
-          title = 'Deposit secured';
-          color = 'text-indigo-400 bg-indigo-500/10';
-        }
-        list.push({
-          id: t.id,
-          title,
-          details: `৳${t.amount.toLocaleString()} • ${t.userName || 'Member'}`,
-          time: t.timestamp?.seconds ? getElapsed(t.timestamp.seconds) : 'Recent',
-          color
-        });
+    const handleQuickApproveTx = async (tx: Transaction) => {
+      setActionLoadingId(`approve-tx-${tx.id}`);
+      try {
+        await confirmTransaction(tx);
+        addToast('Transaction Confirmed', `Approved ${tx.type} of ৳${tx.amount.toLocaleString()} for ${tx.userName || 'Member'}.`, 'success');
+      } catch (error) {
+        console.error(error);
+        addToast('Approval Failed', `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'warning');
+      } finally {
+        setActionLoadingId(null);
+      }
+    };
+
+    const handleQuickRejectTx = async (tx: Transaction) => {
+      setActionLoadingId(`reject-tx-${tx.id}`);
+      try {
+        await rejectTransaction(tx, 'Rejected via Quick-Action Board');
+        addToast('Transaction Rejected', `Rejected ${tx.type} of ৳${tx.amount.toLocaleString()} for ${tx.userName || 'Member'}.`, 'warning');
+      } catch (error) {
+        console.error(error);
+        addToast('Rejection Failed', `Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'warning');
+      } finally {
+        setActionLoadingId(null);
+      }
+    };
+
+    const handleQuickSendReminder = async (user: UserProfile) => {
+      if (!user.email) return;
+      setActionLoadingId(`reminder-${user.uid}`);
+      try {
+        await sendWorkflowNotification('debt_warning', user.email, user.name, { amount: user.remainingDebt || 0 });
+        addToast('Reminder Dispatched', `Direct alert successfully transmitted to ${user.name}'s workspace.`, 'success');
+      } catch (error) {
+        console.error(error);
+        addToast('Failed to Send', `Could not dispatch alert to ${user.name}.`, 'warning');
+      } finally {
+        setActionLoadingId(null);
+      }
+    };
+
+    // System Critical Actions List
+    const actionItems: {
+      id: string;
+      type: 'registration' | 'transaction' | 'reminder';
+      title: string;
+      subtitle: string;
+      badgeText: string;
+      badgeColor: string;
+      onApprove?: () => Promise<void>;
+      onReject?: () => Promise<void>;
+      onAction?: () => Promise<void>;
+      actionText?: string;
+    }[] = [];
+
+    // Push pending registrations
+    pendingRegistrations.forEach(u => {
+      actionItems.push({
+        id: `mbr-${u.uid}`,
+        type: 'registration',
+        title: `Approve Membership Application`,
+        subtitle: `${u.name} • ${u.occupation || 'N/A'} • NID: ${u.nid || 'N/A'}`,
+        badgeText: 'PENDING REGISTRATION',
+        badgeColor: 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
+        onApprove: () => handleQuickApproveMember(u.uid, u.name),
+        onReject: () => handleQuickRejectMember(u.uid, u.name)
       });
-      if (list.length === 0) {
-        return [
-          { id: '1', title: 'Loan approved', details: '৳250,000 • Tahsin Ullah', time: '2m ago', color: 'text-emerald-400 bg-emerald-500/10' },
-          { id: '2', title: 'Repayment received', details: '৳45,000 • Afsana Akter', time: '15m ago', color: 'text-teal-400 bg-teal-500/10' },
-          { id: '3', title: 'New member registered', details: 'Jannatul Ferdaus', time: '30m ago', color: 'text-sky-400 bg-sky-500/10' },
-        ];
-      }
-      return list.slice(0, 5);
-    })();
+    });
 
-    // 5. Recent Requests list
-    const pendingRequests = (() => {
-      const list = allTransactions.filter(t => t.status === 'pending');
-      if (list.length === 0) {
-        return [
-          { id: 'r1', name: 'Tahsin Ullah', amount: 25000, purpose: 'Education Assistance', status: 'Pending', time: '2m ago' },
-          { id: 'r2', name: 'Rahim Uddin', amount: 15000, purpose: 'SME Micro-Capital', status: 'Pending', time: '10m ago' },
-          { id: 'r3', name: 'Afsana Akter', amount: 20000, purpose: 'Medical Reserve', status: 'Pending', time: '15m ago' },
-        ];
-      }
-      return list.slice(0, 5).map(t => ({
-        id: t.id,
-        name: t.userName || 'Member',
-        amount: t.amount,
-        purpose: t.loanReason || t.transactionId || (t.type === 'loan' ? 'Lending Capital' : 'Transactional Request'),
-        status: 'Pending',
-        time: t.timestamp?.seconds ? getElapsed(t.timestamp.seconds) : 'Recent'
-      }));
-    })();
+    // Push pending transactions
+    pendingTransactions.forEach(tx => {
+      const typeLabel = tx.type === 'loan' ? 'Loan Disbursal' : tx.type === 'deposit' ? 'Deposit' : tx.type === 'pay_due' ? 'Debt Repayment' : tx.type;
+      actionItems.push({
+        id: `tx-${tx.id}`,
+        type: 'transaction',
+        title: `Confirm ${typeLabel} Request`,
+        subtitle: `৳${tx.amount.toLocaleString()} via ${tx.method} for ${tx.userName || 'Member'}${tx.transactionId ? ` (TxID: ${tx.transactionId})` : ''}`,
+        badgeText: 'PENDING CASHFLOW',
+        badgeColor: 'bg-blue-500/10 text-blue-400 border border-blue-500/20',
+        onApprove: () => handleQuickApproveTx(tx),
+        onReject: () => handleQuickRejectTx(tx)
+      });
+    });
 
-    // 6. Top Members
-    const topMembers = (() => {
-      const approved = allUsers.filter(u => u.status === 'approved');
-      const sorted = [...approved].sort((a, b) => (b.totalLoan || 0) - (a.totalLoan || 0));
-      if (sorted.length === 0) {
-        return [
-          { id: 'm1', name: 'Tahsin Ullah', loans: 245000, repaid: 210000 },
-          { id: 'm2', name: 'Afsana Akter', loans: 180000, repaid: 165000 },
-          { id: 'm3', name: 'Rahim Uddin', loans: 160000, repaid: 140000 },
-        ];
-      }
-      return sorted.slice(0, 5).map(u => ({
-        id: u.uid,
-        name: u.name,
-        loans: u.totalLoan || 0,
-        repaid: Math.max(0, (u.totalLoan || 0) - (u.remainingDebt || 0))
-      }));
-    })();
+    // Push active debtors without reminders dispatched
+    activeDebtors.forEach(u => {
+      actionItems.push({
+        id: `rem-${u.uid}`,
+        type: 'reminder',
+        title: `Dispatch Compliance Warning Alert`,
+        subtitle: `${u.name} holds ৳${(u.remainingDebt || 0).toLocaleString()} outstanding due with limit ৳${(u.borrowingLimit || 0).toLocaleString()}`,
+        badgeText: 'OVERDUE NOTICE',
+        badgeColor: 'bg-rose-500/10 text-rose-400 border border-rose-500/20',
+        onAction: () => handleQuickSendReminder(u),
+        actionText: 'Dispatch Alert'
+      });
+    });
 
     return (
-      <div className="space-y-6 text-left">
-        {/* Metric Cards Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Card 1: Total Members */}
-          <div className="p-4 rounded-xl border border-white/5 bg-[#0e1726]/40 relative overflow-hidden backdrop-blur-md">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-xl pointer-events-none" />
-            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Approved Members</p>
-            <div className="flex justify-between items-baseline mt-1.5">
-              <span className="text-2xl font-black text-white">
-                {allUsers.filter(u => u.status === 'approved').length}
-              </span>
-              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded leading-none shrink-0">
-                +12.5%
-              </span>
+      <div className="space-y-8 text-left animate-fadeIn">
+        {/* MISSION CONTROL HEADER */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-white/5 pb-5 gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span className="text-[9px] font-mono font-black text-blue-400 uppercase tracking-widest">PRIVATE ACCESS // LIVE COMMAND DECK</span>
             </div>
+            <h1 className="text-xl font-black text-white uppercase tracking-tight mt-1">MISSION CONTROL STATION</h1>
+            <p className="text-[10px] text-slate-400 mt-1">Active monitoring, risk analysis, and fast multi-queue decision engine.</p>
           </div>
-
-          {/* Card 2: Cumulative Disbursed */}
-          <div className="p-4 rounded-xl border border-white/5 bg-[#0e1726]/40 relative overflow-hidden backdrop-blur-md">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl pointer-events-none" />
-            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Disbursed Capital</p>
-            <div className="flex justify-between items-baseline mt-1.5">
-              <span className="text-2xl font-black text-white font-mono">
-                ৳ {cumulativeStats.totalHistoricalLoans.toLocaleString()}
-              </span>
-              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded leading-none shrink-0">
-                +8.3%
-              </span>
-            </div>
-          </div>
-
-          {/* Card 3: Total Repayments */}
-          <div className="p-4 rounded-xl border border-white/5 bg-[#0e1726]/40 relative overflow-hidden backdrop-blur-md">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full blur-xl pointer-events-none" />
-            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Secured Repayments</p>
-            <div className="flex justify-between items-baseline mt-1.5">
-              <span className="text-2xl font-black text-white font-mono">
-                ৳ {cumulativeStats.totalHistoricalRepayments.toLocaleString()}
-              </span>
-              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded leading-none shrink-0">
-                +10.7%
-              </span>
-            </div>
-          </div>
-
-          {/* Card 4: Outstanding Loans */}
-          <div className="p-4 rounded-xl border border-white/5 bg-[#0e1726]/40 relative overflow-hidden backdrop-blur-md">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-full blur-xl pointer-events-none" />
-            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Outstanding Lending Debt</p>
-            <div className="flex justify-between items-baseline mt-1.5">
-              <span className="text-2xl font-black text-rose-400 font-mono">
-                ৳ {outstandingDebt.toLocaleString()}
-              </span>
-              <span className="text-[10px] font-bold text-rose-400 bg-rose-500/10 border border-rose-500/20 px-1.5 py-0.5 rounded leading-none shrink-0">
-                -4.3%
-              </span>
+          
+          <div className="flex items-center gap-3">
+            <div className="bg-slate-950/80 border border-white/5 rounded-xl p-2 flex items-center gap-3 shrink-0">
+              <div className="text-right">
+                <span className="text-[8px] font-mono text-slate-500 block uppercase font-bold">Authority Seed Pool</span>
+                <span className="text-xs font-mono font-black text-white">৳{authorityPersonalFund.toLocaleString()} BDT</span>
+              </div>
+              <button 
+                onClick={() => { setTempFundValue(authorityPersonalFund.toString()); setShowEditFundModal(true); }}
+                className="px-2.5 py-1.5 bg-blue-600/10 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-500/10 hover:border-blue-500/20 text-[9px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer flex items-center gap-1 shrink-0"
+              >
+                <Plus className="w-2.5 h-2.5" />
+                <span>Top-up</span>
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Charts & Feed Row */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Main Trend Chart (AreaChart) */}
-          <div className="lg:col-span-6 p-5 rounded-xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-            <div className="flex justify-between items-center border-b border-white/5 pb-3 mb-4">
-              <div>
-                <h3 className="text-xs font-black uppercase text-white tracking-wider">Loan Growth Curve</h3>
-                <p className="text-[10px] text-slate-400 mt-0.5">Aggregate volume disbursement vs. repayment curves</p>
-              </div>
-              <div className="flex items-center gap-3 text-[9px] uppercase font-black tracking-widest">
-                <span className="flex items-center gap-1.5 text-blue-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" /> Disbursed
-                </span>
-                <span className="flex items-center gap-1.5 text-emerald-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Repaid
-                </span>
-              </div>
+        {/* Small pending requests alert box on top of the dashboard */}
+        <div 
+          onClick={() => setAdminTab('operations')}
+          className={cn(
+            "p-4 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-4 group shadow-lg",
+            pendingCount > 0 
+              ? "border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10 shadow-amber-950/20" 
+              : "border-white/5 bg-slate-950/30 hover:bg-slate-950/50"
+          )}
+        >
+          <div className="flex items-center gap-3.5">
+            <div className={cn(
+              "w-9 h-9 rounded-xl flex items-center justify-center border transition-all",
+              pendingCount > 0 
+                ? "bg-amber-500/10 border-amber-500/25 text-amber-400 group-hover:scale-105" 
+                : "bg-slate-900 border-white/5 text-slate-400"
+            )}>
+              <Clock className={cn("w-4 h-4", pendingCount > 0 && "animate-pulse")} />
             </div>
-            <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={loanOverviewData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorDisbursed" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/>
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="colorRepaid" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/>
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" vertical={false} />
-                <XAxis dataKey="name" stroke="rgba(255,255,255,0.2)" fontSize={9} tickLine={false} axisLine={false} />
-                <YAxis stroke="rgba(255,255,255,0.2)" fontSize={9} tickLine={false} axisLine={false} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px' }}
-                  labelStyle={{ color: '#94a3b8', fontSize: '10px', fontWeight: 'bold' }}
-                  itemStyle={{ fontSize: '11px' }}
-                />
-                <Area type="monotone" dataKey="Disbursed" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorDisbursed)" />
-                <Area type="monotone" dataKey="Repaid" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorRepaid)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Loan Status Donut Chart */}
-          <div className="lg:col-span-3 p-5 rounded-xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden flex flex-col justify-between">
             <div>
-              <h3 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-3 mb-4">Case Allocation Matrix</h3>
-              <div className="relative h-[120px] flex items-center justify-center">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={loanStatusData.series}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={40}
-                      outerRadius={52}
-                      paddingAngle={3}
-                      dataKey="value"
-                    >
-                      {loanStatusData.series.map((entry, idx) => (
-                        <Cell key={`cell-${idx}`} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip 
-                      contentStyle={{ backgroundColor: '#0f172a', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '10px' }}
-                      itemStyle={{ fontSize: '10px' }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <span className="text-lg font-black text-white">{loanStatusData.total}</span>
-                  <span className="text-[8px] text-slate-400 uppercase tracking-widest font-bold">Total Cases</span>
-                </div>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              {loanStatusData.series.map((entry, idx) => (
-                <div key={idx} className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: entry.color }} />
-                  <span className="text-[10px] text-slate-400 font-bold leading-none truncate flex justify-between w-full">
-                    <span>{entry.name}</span>
-                    <span className="font-mono text-white ml-1">{entry.percent}%</span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Activities Feed Panel */}
-          <div className="lg:col-span-3 p-5 rounded-xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden flex flex-col">
-            <h3 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-3 mb-4 flex justify-between items-center">
-              <span>Admin Activities Feed</span>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-            </h3>
-            <div className="space-y-3 flex-1 overflow-y-auto max-h-[160px] pr-1 custom-scrollbar">
-              {activities.map((act) => (
-                <div key={act.id} className="flex gap-2.5 items-start text-left">
-                  <div className={cn("w-1.5 h-1.5 rounded-full mt-1.5 shrink-0", act.color.split(' ')[0])} />
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-black text-white leading-tight truncate">{act.title}</p>
-                    <p className="text-[10px] text-slate-400 leading-normal truncate">{act.details}</p>
-                    <span className="text-[8px] text-slate-500 font-mono block mt-0.5">{act.time}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Bottom Data Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Recent Loan Requests Table */}
-          <div className="p-5 rounded-xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden">
-            <h3 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-3 mb-3">Recent Direct Requests Queue</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="text-[9px] uppercase tracking-wider text-blue-400/80 border-b border-white/5 bg-slate-900/30">
-                    <th className="py-2 px-3">Member</th>
-                    <th className="py-2 px-3 text-right">Amount</th>
-                    <th className="py-2 px-3">Purpose</th>
-                    <th className="py-2 px-3 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {pendingRequests.map(req => (
-                    <tr key={req.id} className="text-[11px] hover:bg-white/[0.01]">
-                      <td className="py-2.5 px-3 font-black text-white">{req.name}</td>
-                      <td className="py-2.5 px-3 text-right font-mono text-emerald-400 font-bold">৳{req.amount.toLocaleString()}</td>
-                      <td className="py-2.5 px-3 text-slate-400 max-w-[120px] truncate">{req.purpose}</td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">
-                          {req.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Top Borrowing Members list */}
-          <div className="p-5 rounded-xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden">
-            <h3 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-3 mb-3">Top Authority Borrowers</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead>
-                  <tr className="text-[9px] uppercase tracking-wider text-blue-400/80 border-b border-white/5 bg-slate-900/30">
-                    <th className="py-2 px-3">Member Name</th>
-                    <th className="py-2 px-3 text-right">Aggregate Debt</th>
-                    <th className="py-2 px-3 text-right">Total Recovered</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {topMembers.map(mem => (
-                    <tr key={mem.id} className="text-[11px] hover:bg-white/[0.01]">
-                      <td className="py-2.5 px-3 font-black text-white">{mem.name}</td>
-                      <td className="py-2.5 px-3 text-right font-mono text-rose-400 font-bold">৳{mem.loans.toLocaleString()}</td>
-                      <td className="py-2.5 px-3 text-right font-mono text-emerald-400">৳{mem.repaid.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        {/* Integrated Financial Banner (The Isometric cylinder art on right side) */}
-        <div className="p-5 rounded-xl border border-white/5 bg-gradient-to-r from-[#0d1527] to-[#122340] relative overflow-hidden flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="space-y-4 max-w-lg text-left">
-            <div>
-              <span className="text-[9px] font-black tracking-widest text-[#50e3c2] uppercase bg-[#50e3c2]/10 border border-[#50e3c2]/20 px-2 py-0.5 rounded">
-                Consolidated Financial Ledger
-              </span>
-              <h3 className="text-base font-black text-white mt-1.5">Authority Liquid Reserve Ledger</h3>
-              <p className="text-[11px] text-slate-300 mt-1">
-                A unified overview of platform capital health, encompassing total subscription inflows, user reserve assets, and direct administrative investments.
+              <p className={cn("text-xs font-black uppercase tracking-wider", pendingCount > 0 ? "text-amber-400" : "text-slate-400")}>
+                Operations & Pending Requests Running
+              </p>
+              <p className="text-[10px] text-slate-400 mt-0.5 font-medium">
+                {pendingCount > 0 
+                  ? `There are currently ${pendingCount} pending administrative requests running. Click to evaluate and authorize.`
+                  : "All operational queues are fully approved. Zero pending requests running currently."
+                }
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Operational Inflow</p>
-                <p className="text-lg font-black text-emerald-400 font-mono">৳ {(sponsorProfit + totalDeposits).toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Unrealized Outflow</p>
-                <p className="text-lg font-black text-amber-400 font-mono">৳ {outstandingDebt.toLocaleString()}</p>
+          </div>
+          <div className={cn(
+            "flex items-center gap-1 text-[10px] font-mono font-black uppercase tracking-wider transition-all shrink-0",
+            pendingCount > 0 ? "text-amber-400 group-hover:translate-x-1" : "text-slate-500 group-hover:text-slate-300"
+          )}>
+            <span>Manage Queue</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </div>
+        </div>
+
+        {/* AT A GLANCE HUD GRID (ANSWERS Q1, Q2, Q3 + LIQUID CASH) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          {/* Card 1: Question 1: How much money do we have? */}
+          <div className="p-6 rounded-2xl border border-white/5 bg-gradient-to-br from-slate-950 to-[#0e1726]/40 relative overflow-hidden backdrop-blur-md shadow-lg">
+            <div className="absolute top-0 right-0 w-28 h-28 bg-emerald-500/[0.02] rounded-full blur-2xl pointer-events-none" />
+            <div className="flex justify-between items-start">
+              <div className="space-y-1">
+                <span className="text-[10px] font-black uppercase text-emerald-400 tracking-wider flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                  Q1 // Capital Solvency
+                </span>
+                <h3 className="text-xs font-black uppercase text-slate-400 tracking-wide mt-2">How much money do we have?</h3>
               </div>
             </div>
+            
+            <div className="mt-5">
+              <span className="text-3xl font-mono font-black text-white tracking-tight">
+                ৳{totalCashPool.toLocaleString()}
+              </span>
+              <span className="text-[10px] font-mono text-slate-500 ml-1.5">BDT</span>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-2 text-[10px] font-mono">
+              <div>
+                <span className="text-slate-500 block">Authority Seed</span>
+                <span className="text-white font-bold">৳{authorityPersonalFund.toLocaleString()}</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Member Deposits</span>
+                <span className="text-white font-bold">৳{totalDeposits.toLocaleString()}</span>
+              </div>
+            </div>
+            <p className="text-[9px] text-slate-500 mt-3">Aggregate active cash assets held securely in authority reserves.</p>
           </div>
-          {/* Stunning Isometric Glow SVG Pillar Illustration */}
-          <div className="w-full md:w-48 h-32 shrink-0 relative overflow-hidden">
-            <svg viewBox="0 0 200 120" className="w-full h-full">
-              {/* Grid backdrop */}
-              <path d="M 0 60 L 100 10 L 200 60 L 100 110 Z" fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="1" />
-              <path d="M 50 45 L 150 95" stroke="rgba(80, 227, 194, 0.05)" strokeWidth="1" />
-              <path d="M 50 75 L 150 25" stroke="rgba(80, 227, 194, 0.05)" strokeWidth="1" />
-              
-              {/* Isometric Cylinder 1 (Deposits / Emerald) */}
-              <g transform="translate(60, 45)">
-                {/* cylinder body */}
-                <path d="M -15 0 L -15 35 A 15 5 0 0 0 15 35 L 15 0 Z" fill="url(#emeraldGrad)" />
-                {/* cylinder top ellipse */}
-                <ellipse cx="0" cy="0" rx="15" ry="5" fill="#10b981" stroke="#34d399" strokeWidth="1" />
-                {/* reflection */}
-                <path d="M -15 0 L -15 35" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
-              </g>
 
-              {/* Isometric Cylinder 2 (Loans / Blue) */}
-              <g transform="translate(100, 30)">
-                <path d="M -15 0 L -15 45 A 15 5 0 0 0 15 45 L 15 0 Z" fill="url(#blueGrad)" />
-                <ellipse cx="0" cy="0" rx="15" ry="5" fill="#3b82f6" stroke="#60a5fa" strokeWidth="1" />
-                <path d="M -15 0 L -15 45" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
-              </g>
+          {/* Card 2: Question 2: How much is currently lent out? */}
+          <div className="p-6 rounded-2xl border border-white/5 bg-gradient-to-br from-slate-950 to-[#0e1726]/40 relative overflow-hidden backdrop-blur-md shadow-lg">
+            <div className="absolute top-0 right-0 w-28 h-28 bg-rose-500/[0.02] rounded-full blur-2xl pointer-events-none" />
+            <div className="flex justify-between items-start">
+              <div className="space-y-1">
+                <span className="text-[10px] font-black uppercase text-rose-400 tracking-wider flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                  Q2 // Credit Exposure
+                </span>
+                <h3 className="text-xs font-black uppercase text-slate-400 tracking-wide mt-2">How much is currently lent out?</h3>
+              </div>
+            </div>
 
-              {/* Isometric Cylinder 3 (Profit / Purple) */}
-              <g transform="translate(140, 50)">
-                <path d="M -15 0 L -15 25 A 15 5 0 0 0 15 25 L 15 0 Z" fill="url(#purpleGrad)" />
-                <ellipse cx="0" cy="0" rx="15" ry="5" fill="#8b5cf6" stroke="#a78bfa" strokeWidth="1" />
-                <path d="M -15 0 L -15 25" stroke="rgba(255,255,255,0.15)" strokeWidth="1" />
-              </g>
+            <div className="mt-5">
+              <span className="text-3xl font-mono font-black text-rose-400 tracking-tight">
+                ৳{currentlyLent.toLocaleString()}
+              </span>
+              <span className="text-[10px] font-mono text-slate-500 ml-1.5">BDT</span>
+            </div>
 
-              {/* Floor glowing ring */}
-              <ellipse cx="100" cy="90" rx="45" ry="15" fill="none" stroke="#50e3c2" strokeWidth="1.5" strokeDasharray="4,6" className="animate-pulse" />
+            <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-2 text-[10px] font-mono">
+              <div>
+                <span className="text-slate-500 block">Active Borrowers</span>
+                <span className="text-white font-bold">{activeDebtors.length} Members</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Loan-to-Deposit</span>
+                <span className="text-white font-bold">
+                  {totalDeposits > 0 ? ((currentlyLent / totalDeposits) * 100).toFixed(1) : '0.0'}%
+                </span>
+              </div>
+            </div>
+            <p className="text-[9px] text-slate-500 mt-3">Aggregate capital currently outstanding as verified client debt.</p>
+          </div>
 
-              {/* Gradients */}
-              <defs>
-                <linearGradient id="emeraldGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#10b981" stopOpacity="0.8" />
-                  <stop offset="100%" stopColor="#064e3b" stopOpacity="0.2" />
-                </linearGradient>
-                <linearGradient id="blueGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.8" />
-                  <stop offset="100%" stopColor="#1e3a8a" stopOpacity="0.2" />
-                </linearGradient>
-                <linearGradient id="purpleGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.8" />
-                  <stop offset="100%" stopColor="#4c1d95" stopOpacity="0.2" />
-                </linearGradient>
-              </defs>
-            </svg>
+          {/* Card 3: Liquid Available Cash */}
+          {(() => {
+            const liquidCash = authorityPersonalFund - outstandingDebt;
+            const isDeficit = liquidCash < 0;
+            return (
+              <div className={cn(
+                "p-6 rounded-2xl border relative overflow-hidden backdrop-blur-md shadow-lg bg-gradient-to-br from-slate-950 to-[#0e1726]/40",
+                isDeficit ? "border-rose-500/30 via-rose-950/20" : "border-indigo-500/20 via-indigo-950/20"
+              )}>
+                <div className={cn(
+                  "absolute top-0 right-0 w-28 h-28 rounded-full blur-2xl pointer-events-none",
+                  isDeficit ? "bg-rose-500/[0.08]" : "bg-indigo-500/[0.05]"
+                )} />
+                <div className="flex justify-between items-start">
+                  <div className="space-y-1">
+                    <span className={cn(
+                      "text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5",
+                      isDeficit ? "text-rose-400" : "text-indigo-400"
+                    )}>
+                      <span className={cn("w-1.5 h-1.5 rounded-full", isDeficit ? "bg-rose-400" : "bg-indigo-400")} />
+                      Liquidity // Available Cash
+                    </span>
+                    <h3 className="text-xs font-black uppercase text-slate-400 tracking-wide mt-2">Liquid Available Cash</h3>
+                  </div>
+                </div>
+
+                <div className="mt-5">
+                  <span className={cn(
+                    "text-3xl font-mono font-black tracking-tight",
+                    isDeficit ? "text-rose-400" : "text-indigo-400"
+                  )}>
+                    {isDeficit ? `-৳${Math.abs(liquidCash).toLocaleString()}` : `৳${liquidCash.toLocaleString()}`}
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 ml-1.5">BDT</span>
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-slate-500 block">Reserve Fund</span>
+                    <span className="text-white font-bold">৳{authorityPersonalFund.toLocaleString()}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">Debt Subtracted</span>
+                    <span className="text-amber-400 font-bold">-৳{outstandingDebt.toLocaleString()}</span>
+                  </div>
+                </div>
+                <p className="text-[9px] text-slate-500 mt-3">
+                  {isDeficit 
+                    ? "Deficit: Distributed client debt exceeds total reserves by the negative amount shown above."
+                    : "Reserves minus active debt. Unallocated capital ready for instant loan disbursals."
+                  }
+                </p>
+              </div>
+            );
+          })()}
+
+          {/* Card 4: Question 3: How much is waiting for approval? */}
+          <div className="p-6 rounded-2xl border border-white/5 bg-gradient-to-br from-slate-950 to-[#0e1726]/40 relative overflow-hidden backdrop-blur-md shadow-lg">
+            <div className="absolute top-0 right-0 w-28 h-28 bg-amber-500/[0.02] rounded-full blur-2xl pointer-events-none" />
+            <div className="flex justify-between items-start">
+              <div className="space-y-1">
+                <span className="text-[10px] font-black uppercase text-amber-400 tracking-wider flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  Q3 // Pending Operations
+                </span>
+                <h3 className="text-xs font-black uppercase text-slate-400 tracking-wide mt-2">How much is waiting for approval?</h3>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <span className="text-3xl font-mono font-black text-amber-400 tracking-tight">
+                {pendingCount}
+              </span>
+              <span className="text-[10px] font-mono text-slate-500 ml-1.5">Items</span>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 gap-2 text-[10px] font-mono">
+              <div>
+                <span className="text-slate-500 block">Registrations</span>
+                <span className="text-white font-bold">{pendingRegistrations.length} Pending</span>
+              </div>
+              <div>
+                <span className="text-slate-500 block">Transactions</span>
+                <span className="text-white font-bold">{pendingTransactions.length} Pending</span>
+              </div>
+            </div>
+            <p className="text-[9px] text-slate-500 mt-3">Active claims and applications waiting for authority review and action.</p>
+          </div>
+        </div>
+
+        {/* DETAILED DOUBLE COLUMN BOARD (ANSWERS Q4 & Q5) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* QUESTION 4 PANEL: Which members need attention today? */}
+          <div className="p-6 bg-gradient-to-b from-slate-950 to-[#0a1220] border border-white/5 rounded-2xl shadow-xl flex flex-col min-h-[420px]">
+            <div className="flex items-center justify-between border-b border-white/5 pb-4 mb-4">
+              <div>
+                <span className="text-[8px] font-mono font-bold text-slate-500 block">MONITORING ENGINE v4.2 // FOCUS TARGETS</span>
+                <h3 className="text-xs font-black uppercase text-white tracking-wider flex items-center gap-2">
+                  <Users className="w-3.5 h-3.5 text-blue-400" />
+                  Q4 // Members Needing Attention Today
+                </h3>
+              </div>
+              <span className="text-[9px] font-mono font-black text-slate-500 bg-white/5 px-2 py-0.5 rounded uppercase">
+                {attentionMembers.length} Flagged
+              </span>
+            </div>
+
+            <p className="text-[10px] text-slate-400 leading-relaxed mb-4">
+              The monitoring grid flags newly registered applicants requiring verification and active debtors holding outstanding loan balances.
+            </p>
+
+            <div className="flex-1 space-y-3 overflow-y-auto max-h-[300px] pr-1 custom-scrollbar">
+              {attentionMembers.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center py-10 text-center space-y-2">
+                  <ShieldCheck className="w-10 h-10 text-emerald-500/40" />
+                  <p className="text-xs font-bold text-slate-300">All Members Fully Clear</p>
+                  <p className="text-[9px] text-slate-500 max-w-xs">No pending verification cases or overdue debtors logged on system today.</p>
+                </div>
+              ) : (
+                attentionMembers.map((member) => (
+                  <div key={member.uid} className="p-3 bg-[#0e1726]/35 hover:bg-[#0e1726]/60 border border-white/5 rounded-xl flex items-center justify-between gap-3 transition-all text-left">
+                    <div className="flex items-center gap-3 truncate">
+                      <div className="w-8 h-8 rounded-lg overflow-hidden border border-white/10 shrink-0 bg-slate-900 flex items-center justify-center text-[10px] font-black text-blue-400">
+                        {member.photoUrl ? (
+                          <img src={member.photoUrl} alt={member.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          member.name.substring(0, 2).toUpperCase()
+                        )}
+                      </div>
+                      <div className="truncate text-left">
+                        <span className="font-bold text-xs text-white block truncate leading-tight">{member.name}</span>
+                        <span className="text-[9px] text-slate-400 block truncate mt-0.5">{member.occupation || 'Member'} • NID: {member.nid || 'N/A'}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {member.status === 'pending' && (
+                        <span className="text-[8px] font-mono font-black bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded leading-none">
+                          APPLICANT
+                        </span>
+                      )}
+                      {member.status === 'approved' && (member.remainingDebt || 0) > 0 && (
+                        <span className="text-[8px] font-mono font-black bg-rose-500/10 text-rose-400 border border-rose-500/20 px-1.5 py-0.5 rounded leading-none">
+                          ৳{(member.remainingDebt || 0).toLocaleString()} DUE
+                        </span>
+                      )}
+                      {member.moreInfoRequested && (
+                        <span className="text-[8px] font-mono font-black bg-purple-500/10 text-purple-400 border border-purple-500/20 px-1.5 py-0.5 rounded leading-none">
+                          INFO REQ
+                        </span>
+                      )}
+                      
+                      <button 
+                        onClick={() => setSelectedAdminMemberDetail(member)}
+                        className="px-2 py-1 bg-white/5 hover:bg-blue-600 hover:text-white rounded text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer border border-white/5 shrink-0"
+                      >
+                        Dossier
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* QUESTION 5 PANEL: What actions require the admin right now? */}
+          <div className="p-6 bg-gradient-to-b from-slate-950 to-[#0a1220] border border-white/5 rounded-2xl shadow-xl flex flex-col min-h-[420px]">
+            <div className="flex items-center justify-between border-b border-white/5 pb-4 mb-4">
+              <div>
+                <span className="text-[8px] font-mono font-bold text-slate-500 block">DECISION ENGINE v4.2 // IMMEDIATE TASKS</span>
+                <h3 className="text-xs font-black uppercase text-white tracking-wider flex items-center gap-2">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  Q5 // What actions require the admin right now?
+                </h3>
+              </div>
+              <span className="text-[9px] font-mono font-black text-slate-500 bg-white/5 px-2 py-0.5 rounded uppercase">
+                {actionItems.length} Urgent Tasks
+              </span>
+            </div>
+
+            <p className="text-[10px] text-slate-400 leading-relaxed mb-4">
+              Execute critical system decisions. Approving a membership unlocks credit limits, confirming transactions updates accounts, and alerts warn debtors.
+            </p>
+
+            <div className="flex-1 space-y-3 overflow-y-auto max-h-[300px] pr-1 custom-scrollbar">
+              {actionItems.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center py-10 text-center space-y-2">
+                  <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                    <Check className="w-5 h-5" />
+                  </div>
+                  <p className="text-xs font-bold text-slate-300">All Operations Synced</p>
+                  <p className="text-[9px] text-slate-500 max-w-xs">All deposit, loan, registration, and alert queues are 100% processed and fully authorized.</p>
+                </div>
+              ) : (
+                actionItems.map((item) => {
+                  const isLoading = actionLoadingId === item.id || 
+                    (item.type === 'registration' && actionLoadingId?.startsWith('approve-mbr') && actionLoadingId?.endsWith(item.id.replace('mbr-', ''))) ||
+                    (item.type === 'registration' && actionLoadingId?.startsWith('reject-mbr') && actionLoadingId?.endsWith(item.id.replace('mbr-', '')));
+
+                  return (
+                    <div key={item.id} className="p-3.5 bg-[#0e1726]/20 hover:bg-[#0e1726]/40 border border-white/5 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3.5 transition-all text-left">
+                      <div className="space-y-1 text-left min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={cn("text-[7px] font-mono font-black px-1 py-0.5 rounded leading-none shrink-0", item.badgeColor)}>
+                            {item.badgeText}
+                          </span>
+                        </div>
+                        <h4 className="text-xs font-black text-white leading-tight truncate mt-1">{item.title}</h4>
+                        <p className="text-[9px] text-slate-400 font-mono leading-normal truncate">{item.subtitle}</p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 justify-end">
+                        {isLoading ? (
+                          <div className="flex items-center gap-1.5 px-3 py-1 bg-white/5 rounded-lg text-[9px] text-slate-500 font-mono font-bold animate-pulse">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-ping" />
+                            Processing...
+                          </div>
+                        ) : item.onAction ? (
+                          <button
+                            disabled={actionLoadingId !== null}
+                            onClick={item.onAction}
+                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer flex items-center gap-1 border border-blue-500/20"
+                          >
+                            <Mail className="w-3 h-3 shrink-0" />
+                            <span>{item.actionText || 'Execute'}</span>
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              disabled={actionLoadingId !== null}
+                              onClick={item.onReject}
+                              className="px-2.5 py-1.5 bg-rose-600/15 hover:bg-rose-600 text-rose-400 hover:text-white disabled:opacity-50 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border border-rose-500/10 shrink-0"
+                            >
+                              Reject
+                            </button>
+                            <button
+                              disabled={actionLoadingId !== null}
+                              onClick={item.onApprove}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border border-emerald-500/20 shrink-0"
+                            >
+                              Approve
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
       </div>
     );
   };
 
+  const renderAdminReserve = () => {
+    const totalCombinedReserve = liquidReserve + operationalReserve + emergencyReserve + availableLendingFund + reservedCapital + frozenCapital + externalInvestmentReserve;
+
+    const categories = [
+      { id: 'liquidReserve', name: 'Liquid Cash Reserve', value: liquidReserve, desc: 'Instant liquidity buffer for immediate lending output' },
+      { id: 'operationalReserve', name: 'Operational Reserve', value: operationalReserve, desc: 'Platform server, staff, and office overhead funds' },
+      { id: 'emergencyReserve', name: 'Emergency Reserve', value: emergencyReserve, desc: 'Unforeseen risk, run-on-deposits, and liquidity crunch shield' },
+      { id: 'availableLendingFund', name: 'Available Lending Fund', value: availableLendingFund, desc: 'Active capital allocated exclusively for user borrow requests' },
+      { id: 'reservedCapital', name: 'Reserved Capital', value: reservedCapital, desc: 'Tier-1 capital reserved to back outstanding debt guarantees' },
+      { id: 'frozenCapital', name: 'Frozen Capital', value: frozenCapital, desc: 'Administrative locked assets excluded from lending pool' },
+      { id: 'externalInvestmentReserve', name: 'External Investment Reserve', value: externalInvestmentReserve, desc: 'Sponsor deal profits & long-term capital bonds' },
+    ];
+
+    const auditTrail = auditLogs.filter(log => log.action?.includes('Reserve') || log.details?.includes('Reserve'));
+
+    return (
+      <div className="space-y-6 text-left animate-fadeIn">
+        
+        {/* Banner with Total combined reserve */}
+        <div className="p-6 rounded-2xl border border-white/5 bg-gradient-to-r from-[#0d1627] to-[#142646] relative overflow-hidden flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="absolute top-0 right-0 w-48 h-48 bg-blue-500/5 rounded-full blur-2xl pointer-events-none" />
+          <div>
+            <span className="text-[9px] font-black tracking-widest text-[#50e3c2] uppercase bg-[#50e3c2]/10 border border-[#50e3c2]/20 px-2 py-0.5 rounded">
+              Tier-1 Liquidity Balance
+            </span>
+            <h3 className="text-xl font-black text-white mt-1.5">Aggregate Reserved Liquidity</h3>
+            <p className="text-[11px] text-slate-300 mt-0.5">Unified balance across all 7 regulatory capital subdivisions.</p>
+          </div>
+          <div>
+            <p className="text-3xl font-black text-[#50e3c2] font-mono">৳ {totalCombinedReserve.toLocaleString()}</p>
+            <p className="text-[9px] text-slate-400 text-right uppercase font-bold tracking-wider mt-1">Matched 100% Secure</p>
+          </div>
+        </div>
+
+        {/* 7 Reserve subdivision categories Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {categories.map((cat) => (
+            <div key={cat.id} className="p-5 bg-[#0e1726]/40 border border-white/5 rounded-xl flex flex-col justify-between hover:border-white/10 transition-colors">
+              <div>
+                <p className="text-xs font-black text-white uppercase tracking-wider">{cat.name}</p>
+                <p className="text-[10px] text-slate-400 leading-normal mt-1 min-h-[32px]">{cat.desc}</p>
+              </div>
+              <div className="mt-4 border-t border-white/5 pt-3">
+                <p className="text-xl font-black text-white font-mono">৳ {cat.value.toLocaleString()}</p>
+                <div className="flex gap-2 mt-3">
+                  <button 
+                    onClick={() => {
+                      setReserveOpCategory(cat.id);
+                      setReserveOperationModal({ isOpen: true, type: 'increase' });
+                    }}
+                    className="flex-1 py-1 text-[9px] font-black uppercase tracking-wider bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Increase
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setReserveOpCategory(cat.id);
+                      setReserveOperationModal({ isOpen: true, type: 'withdraw' });
+                    }}
+                    className="flex-1 py-1 text-[9px] font-black uppercase tracking-wider bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Withdraw
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {/* Transfer Funds Card */}
+          <div className="p-5 bg-blue-950/20 border border-blue-500/10 rounded-xl flex flex-col justify-between">
+            <div>
+              <p className="text-xs font-black text-blue-400 uppercase tracking-wider">Inter-Category Transfer Desk</p>
+              <p className="text-[10px] text-slate-300 leading-normal mt-1">Instantly distribute assets between different subdivisions. Requires supervisor authentication.</p>
+            </div>
+            <div className="mt-4 border-t border-blue-500/10 pt-3">
+              <button 
+                onClick={() => {
+                  setReserveOpCategory('liquidReserve');
+                  setReserveOpTargetCategory('operationalReserve');
+                  setReserveOperationModal({ isOpen: true, type: 'transfer' });
+                }}
+                className="w-full py-2 text-[10px] font-black uppercase tracking-widest bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-900/30 transition-colors cursor-pointer"
+              >
+                Launch Transfer Desk
+              </button>
+            </div>
+          </div>
+
+          {/* Lock / Unlock Capital Box */}
+          <div className="p-5 bg-indigo-950/20 border border-indigo-500/10 rounded-xl flex flex-col justify-between">
+            <div>
+              <p className="text-xs font-black text-indigo-400 uppercase tracking-wider">Regulatory capital locks</p>
+              <p className="text-[10px] text-slate-300 leading-normal mt-1">Lock available lending funds into Frozen Capital subdivisions or release them back into circulation.</p>
+            </div>
+            <div className="mt-4 border-t border-indigo-500/10 pt-3 flex gap-2">
+              <button 
+                onClick={() => {
+                  setReserveOpCategory('availableLendingFund');
+                  setReserveOperationModal({ isOpen: true, type: 'lock' });
+                }}
+                className="flex-1 py-2 text-[9px] font-black uppercase tracking-wider bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 rounded-lg transition-colors cursor-pointer"
+              >
+                Lock Capital
+              </button>
+              <button 
+                onClick={() => {
+                  setReserveOpCategory('frozenCapital');
+                  setReserveOperationModal({ isOpen: true, type: 'unlock' });
+                }}
+                className="flex-1 py-2 text-[9px] font-black uppercase tracking-wider bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors cursor-pointer"
+              >
+                Unlock Capital
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Reserve Transaction Audit Log */}
+        <div className="p-5 bg-[#0e1726]/30 border border-white/5 rounded-xl">
+          <h4 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-2 mb-3">Reserve subdivision ledger audit history</h4>
+          <div className="overflow-x-auto font-mono">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-blue-400 border-b border-white/5 bg-slate-900/30">
+                  <th className="py-2 px-3">Timestamp</th>
+                  <th className="py-2 px-3">Operation Action</th>
+                  <th className="py-2 px-3">Audit Trails & Details</th>
+                  <th className="py-2 px-3 text-right">Administrator</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {auditTrail.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="text-center py-6 text-slate-500 italic">No reserve adjustments recorded on this terminal session.</td>
+                  </tr>
+                ) : (
+                  auditTrail.map((log) => (
+                    <tr key={log.id} className="hover:bg-white/[0.01]">
+                      <td className="py-2 px-3 text-slate-400">
+                        {log.timestamp?.seconds ? format(new Date(log.timestamp.seconds * 1000), 'dd-MM-yy HH:mm:ss') : 'Just now'}
+                      </td>
+                      <td className="py-2 px-3 text-white font-sans uppercase font-bold">{log.action}</td>
+                      <td className="py-2 px-3 text-slate-300 max-w-sm truncate">{log.details}</td>
+                      <td className="py-2 px-3 text-right text-blue-400">{log.actorName}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Dynamic Reserve operation PIN modal sheet overlay */}
+        {reserveOperationModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+            <div className="bg-[#0c121e] border border-white/10 p-6 rounded-2xl max-w-md w-full text-left space-y-4 shadow-2xl animate-scaleIn">
+              <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                <span className="text-[9px] font-black tracking-widest text-[#50e3c2] uppercase bg-[#50e3c2]/10 border border-[#50e3c2]/20 px-2 py-0.5 rounded">
+                  AUTHENTICATION REQUIRED
+                </span>
+                <button 
+                  onClick={() => setReserveOperationModal(null)}
+                  className="p-1 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">
+                  Reserve Adjustment Proposal
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1 leading-normal">
+                  You are proposing a direct modification to the **{reserveOpCategory}** category. This operation alters core system ledger balances.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Amount to Transfer/Modify (৳)</label>
+                  <input 
+                    type="number"
+                    value={reserveOpAmount}
+                    onChange={(e) => setReserveOpAmount(e.target.value)}
+                    placeholder="Enter amount in BDT"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white mt-1 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {reserveOperationModal.type === 'transfer' && (
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400">Destination Subdivision</label>
+                    <select 
+                      value={reserveOpTargetCategory}
+                      onChange={(e) => setReserveOpTargetCategory(e.target.value)}
+                      className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="liquidReserve">Liquid Cash Reserve</option>
+                      <option value="operationalReserve">Operational Reserve</option>
+                      <option value="emergencyReserve">Emergency Reserve</option>
+                      <option value="availableLendingFund">Available Lending Fund</option>
+                      <option value="reservedCapital">Reserved Capital</option>
+                      <option value="frozenCapital">Frozen Capital</option>
+                      <option value="externalInvestmentReserve">External Investment Reserve</option>
+                    </select>
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Manual Financial Notes / Justification</label>
+                  <textarea 
+                    value={reserveOpNotes}
+                    onChange={(e) => setReserveOpNotes(e.target.value)}
+                    placeholder="Specify operational justification remarks..."
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:outline-none focus:border-blue-500 min-h-[60px]"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-slate-400">Supervisor Verification PIN</label>
+                  <input 
+                    type="password"
+                    maxLength={12}
+                    value={reserveOpPin}
+                    onChange={(e) => setReserveOpPin(e.target.value)}
+                    placeholder="Enter Authority PIN (e.g., 9900)"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white mt-1 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-white/5 flex gap-3">
+                <button 
+                  onClick={() => setReserveOperationModal(null)}
+                  className="flex-1 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => executeReserveOperation(
+                    reserveOperationModal.type,
+                    Number(reserveOpAmount),
+                    reserveOpNotes,
+                    reserveOpCategory,
+                    reserveOperationModal.type === 'transfer' ? reserveOpTargetCategory : undefined
+                  )}
+                  className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Authenticate & Save
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+    );
+  };
+
+  const renderAdminFinancials = () => {
+    // 1. Core aggregates
+    const totalCapital = authorityPersonalFund + sponsorProfit + totalDeposits;
+    const loanGrowthCurveData = [
+      { name: '01 May', Disbursed: Math.floor(totalCapital * 0.35), Repayments: Math.floor(cumulativeStats.totalHistoricalRepayments * 0.3) },
+      { name: '05 May', Disbursed: Math.floor(totalCapital * 0.5), Repayments: Math.floor(cumulativeStats.totalHistoricalRepayments * 0.45) },
+      { name: '10 May', Disbursed: Math.floor(totalCapital * 0.62), Repayments: Math.floor(cumulativeStats.totalHistoricalRepayments * 0.55) },
+      { name: '15 May', Disbursed: Math.floor(totalCapital * 0.78), Repayments: Math.floor(cumulativeStats.totalHistoricalRepayments * 0.7) },
+      { name: '20 May', Disbursed: Math.floor(totalCapital * 0.9), Repayments: Math.floor(cumulativeStats.totalHistoricalRepayments * 0.85) },
+      { name: '24 May', Disbursed: totalCapital, Repayments: cumulativeStats.totalHistoricalRepayments },
+    ];
+
+    const distributionData = [
+      { name: 'Liquid Buffer', value: liquidReserve, color: '#3b82f6' },
+      { name: 'Operational', value: operationalReserve, color: '#10b981' },
+      { name: 'Emergency Support', value: emergencyReserve, color: '#f59e0b' },
+      { name: 'Lending Capital', value: availableLendingFund, color: '#a78bfa' },
+      { name: 'Guarantees', value: reservedCapital, color: '#ef4444' },
+      { name: 'Frozen Locked', value: frozenCapital, color: '#64748b' },
+      { name: 'Investments', value: externalInvestmentReserve, color: '#06b6d4' },
+    ];
+
+    return (
+      <div className="space-y-6 text-left animate-fadeIn">
+        <div className="flex justify-between items-center border-b border-white/5 pb-3">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-wider text-white">Financial Intelligence Center</h3>
+            <p className="text-[10px] text-slate-400 mt-0.5">Automated asset models, forecasts, and cash flow trend graphs.</p>
+          </div>
+          <button 
+            onClick={() => window.print()}
+            className="px-3 py-1.5 bg-slate-900 hover:bg-slate-850 border border-white/5 rounded-xl text-[10px] font-black uppercase tracking-wider text-white transition-colors cursor-pointer"
+          >
+            Export Statement
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Chart 1: Cash Flow models */}
+          <div className="lg:col-span-8 p-5 rounded-2xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden">
+            <h4 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-3 mb-4">Capitalization growth projections</h4>
+            <ResponsiveContainer width="100%" height={260}>
+              <AreaChart data={loanGrowthCurveData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="finDisb" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="finRep" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.02)" vertical={false} />
+                <XAxis dataKey="name" stroke="rgba(255,255,255,0.2)" fontSize={9} />
+                <YAxis stroke="rgba(255,255,255,0.2)" fontSize={9} />
+                <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px' }} />
+                <Area type="monotone" dataKey="Disbursed" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#finDisb)" />
+                <Area type="monotone" dataKey="Repayments" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#finRep)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Chart 2: Reserve subdivision slices */}
+          <div className="lg:col-span-4 p-5 rounded-2xl border border-white/5 bg-[#0e1726]/30 backdrop-blur-sm relative overflow-hidden flex flex-col justify-between">
+            <div>
+              <h4 className="text-xs font-black uppercase text-white tracking-wider border-b border-white/5 pb-3 mb-4 font-sans">Reserve Distribution Slices</h4>
+              <div className="h-[180px] flex items-center justify-center relative">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={distributionData} cx="50%" cy="50%" innerRadius={50} outerRadius={65} paddingAngle={2} dataKey="value">
+                      {distributionData.map((entry, idx) => (
+                        <Cell key={`cell-${idx}`} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: 'rgba(255,255,255,0.1)', borderRadius: '12px' }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-400 font-bold">
+              {distributionData.map((e, idx) => (
+                <div key={idx} className="flex items-center gap-1.5 truncate">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: e.color }} />
+                  <span className="truncate">{e.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Dynamic Forecast Metrics panel */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="p-4 rounded-xl border border-white/5 bg-slate-900/40">
+            <p className="text-[10px] font-black uppercase text-slate-400">Estimated Annualized Return (ARR)</p>
+            <p className="text-lg font-black text-[#50e3c2] mt-1.5 font-mono">+ 18.42%</p>
+          </div>
+          <div className="p-4 rounded-xl border border-white/5 bg-slate-900/40">
+            <p className="text-[10px] font-black uppercase text-slate-400">Total Solvency Reserves (CAR)</p>
+            <p className="text-lg font-black text-blue-400 mt-1.5 font-mono">{((totalCapital / (outstandingDebt || 1)) * 100).toFixed(1)}%</p>
+          </div>
+          <div className="p-4 rounded-xl border border-white/5 bg-slate-900/40">
+            <p className="text-[10px] font-black uppercase text-slate-400">Projected Defaults Probability</p>
+            <p className="text-lg font-black text-rose-400 mt-1.5 font-mono">1.25% Very Low</p>
+          </div>
+          <div className="p-4 rounded-xl border border-white/5 bg-slate-900/40">
+            <p className="text-[10px] font-black uppercase text-slate-400">Authority Stress Margin Safety</p>
+            <p className="text-lg font-black text-emerald-400 mt-1.5 font-mono">৳ {liquidReserve.toLocaleString()}</p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAdminOperations = () => {
+    const pendingTransactions = allTransactions.filter(t => t.status === 'pending');
+    const pendingMembers = allUsers.filter(u => u.status === 'pending');
+
+    // Compile a unified list of active pending requests
+    const pendingRequests = [
+      ...pendingMembers.map(m => ({
+        id: m.uid,
+        key: `member-${m.uid}`,
+        type: 'membership' as const,
+        title: 'Membership Registration',
+        applicantName: m.name,
+        applicantPhone: m.phone || 'N/A',
+        amount: undefined,
+        date: m.createdAt,
+        badgeText: 'MEMBERSHIP DECK',
+        badgeColor: 'bg-teal-500/10 border-teal-500/20 text-teal-400',
+        detailText: `NID: ${m.nid || 'Not Provided'} • Occ: ${m.occupation || 'N/A'}`,
+        icon: Users,
+        rawItem: m
+      })),
+      ...pendingTransactions.map(t => {
+        let title = 'Cash Flow Transaction';
+        let badgeColor = 'bg-blue-500/10 border-blue-500/20 text-blue-400';
+        let badgeText = 'PENDING CASHFLOW';
+        
+        if (t.type === 'loan') {
+          title = 'Loan Disbursal Request';
+          badgeColor = 'bg-rose-500/10 border-rose-500/20 text-rose-400';
+          badgeText = 'LOAN APPLICATION';
+        } else if (t.type === 'deposit') {
+          title = 'Deposit Authorization';
+          badgeColor = 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400';
+          badgeText = 'FUNDS DEPOSIT';
+        } else if (t.type === 'pay_due') {
+          title = 'Debt Repayment Confirmation';
+          badgeColor = 'bg-purple-500/10 border-purple-500/20 text-purple-400';
+          badgeText = 'DEBT REPAYMENT';
+        } else if (t.type === 'refund') {
+          title = 'Refund Settlement';
+          badgeColor = 'bg-slate-500/10 border-slate-500/20 text-slate-400';
+          badgeText = 'REFUND ADJUST';
+        }
+
+        return {
+          id: t.id,
+          key: `tx-${t.id}`,
+          type: t.type,
+          title,
+          applicantName: t.userName || 'Member',
+          applicantPhone: allUsers.find(u => u.uid === t.userId)?.phone || 'N/A',
+          amount: t.amount,
+          method: t.method || 'Bkash',
+          transactionId: t.transactionId || 'N/A',
+          date: t.timestamp,
+          badgeText,
+          badgeColor,
+          detailText: `TxID: ${t.transactionId || 'N/A'} via ${t.method || 'Internal'}`,
+          icon: Landmark,
+          rawItem: t
+        };
+      })
+    ];
+
+    // Filter requests based on current selection
+    const filteredRequests = pendingRequests.filter(req => {
+      if (requestFilter === 'all') return true;
+      if (requestFilter === 'repayment') return req.type === 'pay_due' || req.type === 'refund';
+      return req.type === requestFilter;
+    });
+
+    return (
+      <div className="space-y-6 text-left animate-fadeIn">
+        <div className="border-b border-white/5 pb-3 flex flex-col md:flex-row md:items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-black uppercase tracking-wider text-white">Operations Control Center</h3>
+            <p className="text-[10px] text-slate-400 mt-0.5">Evaluate pending memberships, loan disbursements, and system-wide deposits.</p>
+          </div>
+          <div className="flex items-center gap-2.5 shrink-0">
+            {(() => {
+              const liquidCash = authorityPersonalFund - outstandingDebt;
+              const isDeficit = liquidCash < 0;
+              return (
+                <div className={cn(
+                  "bg-[#0e1726]/80 rounded-xl px-3 py-1 text-right border",
+                  isDeficit ? "border-rose-500/40" : "border-indigo-500/30"
+                )}>
+                  <span className="text-[8px] font-mono text-slate-400 block uppercase font-bold">Liquid Available Cash</span>
+                  <span className={cn(
+                    "text-xs font-mono font-black",
+                    isDeficit ? "text-rose-400" : "text-indigo-400"
+                  )}>
+                    {isDeficit ? `-৳${Math.abs(liquidCash).toLocaleString()}` : `৳${liquidCash.toLocaleString()}`} BDT
+                  </span>
+                </div>
+              );
+            })()}
+            <div className="bg-[#0e1726]/80 border border-white/5 rounded-xl px-3 py-1 text-right">
+              <span className="text-[8px] font-mono text-slate-500 block uppercase font-bold">Operations Queue</span>
+              <span className="text-xs font-mono font-black text-amber-400">{pendingRequests.length} Requests Running</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Top filter select box with Membership option added */}
+        <div className="flex flex-wrap gap-2">
+          {['all', 'loan', 'deposit', 'repayment', 'membership'].map((f) => (
+            <button 
+              key={f}
+              onClick={() => setRequestFilter(f as any)}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider border cursor-pointer transition-all",
+                requestFilter === f ? "bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-900/20" : "bg-[#0e1726]/40 border-white/5 text-slate-400 hover:text-white"
+              )}
+            >
+              {f} Requests
+            </button>
+          ))}
+        </div>
+
+        {/* Requests Grid (Boxes) */}
+        {filteredRequests.length === 0 ? (
+          <div className="p-12 text-center border border-dashed border-white/5 rounded-2xl bg-[#0e1726]/10 flex flex-col items-center justify-center space-y-2">
+            <Clock className="w-8 h-8 text-slate-600" />
+            <p className="text-xs text-slate-400 font-medium">No active pending requests match the "{requestFilter}" criteria.</p>
+            <p className="text-[10px] text-slate-500">All applications are fully audited and synchronized.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {filteredRequests.map((req) => {
+              const IconComponent = req.icon || Landmark;
+              const formattedDate = req.date?.seconds 
+                ? format(new Date(req.date.seconds * 1000), 'dd MMM yyyy • hh:mm a') 
+                : 'Just now';
+
+              return (
+                <div
+                  key={req.key}
+                  id={`request-card-${req.id}`}
+                  onClick={() => {
+                    if (req.type === 'membership') {
+                      setSelectedCaseMember(req.rawItem);
+                      setSelectedCaseTransaction(null);
+                    } else {
+                      setSelectedCaseTransaction(req.rawItem);
+                      setSelectedCaseMember(allUsers.find(u => u.uid === req.rawItem.userId) || null);
+                    }
+                  }}
+                  className={cn(
+                    "relative group bg-[#0e1726]/30 hover:bg-[#0e1726]/60 border border-white/5 hover:border-blue-500/30 rounded-2xl p-5 transition-all duration-300 cursor-pointer shadow-lg hover:shadow-xl flex flex-col justify-between min-h-[185px] hover:-translate-y-0.5"
+                  )}
+                >
+                  {/* Top line: Icon, Badge and Status Dot */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-slate-900 border border-white/5 flex items-center justify-center text-slate-400 group-hover:text-white transition-colors">
+                        <IconComponent className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className={cn(
+                          "text-[8px] font-black uppercase tracking-widest px-2 py-0.5 rounded border block w-fit",
+                          req.badgeColor
+                        )}>
+                          {req.badgeText}
+                        </span>
+                        <h4 className="text-[11px] font-black text-white uppercase tracking-wider mt-1">{req.title}</h4>
+                      </div>
+                    </div>
+                    
+                    {/* Pulsating live dot indicator */}
+                    <span className="flex h-2 w-2 relative mt-1">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                    </span>
+                  </div>
+
+                  {/* Middle content: Applicant Name, Amount, details */}
+                  <div className="my-3.5 space-y-1.5 text-left">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-xs font-bold text-slate-100 group-hover:text-blue-400 transition-colors">
+                        {req.applicantName}
+                      </span>
+                      {req.amount !== undefined && (
+                        <span className="text-sm font-mono font-black text-emerald-400">
+                          ৳ {req.amount.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-mono tracking-wide line-clamp-1">{req.detailText}</p>
+                    
+                    {/* Liquid Available Cash Pill on card */}
+                    {(() => {
+                      const liquidCash = authorityPersonalFund - outstandingDebt;
+                      const isDeficit = liquidCash < 0;
+                      return (
+                        <div className={cn(
+                          "px-2 py-1 rounded-md border flex items-center justify-between text-[9px] font-mono",
+                          isDeficit ? "bg-rose-950/60 border-rose-500/30" : "bg-indigo-950/60 border-indigo-500/20"
+                        )}>
+                          <span className={cn("font-medium", isDeficit ? "text-rose-300" : "text-indigo-300")}>
+                            Liquid Available:
+                          </span>
+                          <span className={cn("font-bold", isDeficit ? "text-rose-200" : "text-indigo-200")}>
+                            {isDeficit ? `-৳${Math.abs(liquidCash).toLocaleString()}` : `৳${liquidCash.toLocaleString()}`}
+                          </span>
+                        </div>
+                      );
+                    })()}
+
+                    <p className="text-[9px] text-slate-500">Submitted: {formattedDate}</p>
+                  </div>
+
+                  {/* Bottom line: Interactive Prompt */}
+                  <div className="pt-3 border-t border-white/5 flex items-center justify-between text-[9px] font-mono font-black uppercase tracking-wider text-slate-400 group-hover:text-white transition-colors">
+                    <span>Evaluate File</span>
+                    <div className="flex items-center gap-1 text-blue-400 group-hover:text-blue-300">
+                      <span>Decision Desk</span>
+                      <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Dynamic decision desk evaluation overlay */}
+        {(selectedCaseTransaction || selectedCaseMember) && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+            <div className="bg-[#0c121e] border border-white/10 p-6 rounded-2xl max-w-lg w-full text-left space-y-4 shadow-2xl animate-scaleIn">
+              <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                <span className="text-[9px] font-black tracking-widest text-[#50e3c2] uppercase bg-[#50e3c2]/10 border border-[#50e3c2]/20 px-2 py-0.5 rounded">
+                  DECISION DESK EVALUATION
+                </span>
+                <button 
+                  onClick={() => {
+                    setSelectedCaseTransaction(null);
+                    setSelectedCaseMember(null);
+                  }}
+                  className="p-1 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-black text-white uppercase tracking-wider">
+                  {selectedCaseTransaction ? `Evaluate ${selectedCaseTransaction.type} flow` : `Evaluate ${selectedCaseMember?.name} dossier`}
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1 leading-normal">
+                  Review applicant metadata, financial timelines, and secure deposit channel transaction IDs before committing approvals.
+                </p>
+              </div>
+
+              {selectedCaseTransaction && (
+                <div className="p-3.5 bg-slate-950/60 rounded-xl border border-white/5 text-xs font-mono space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">APPLICANT</span>
+                    <span className="text-white font-bold">{selectedCaseTransaction.userName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">AMOUNT PROPOSED</span>
+                    <span className="text-emerald-400 font-bold">৳ {selectedCaseTransaction.amount.toLocaleString()} BDT</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">CHANNEL / GATEWAY</span>
+                    <span className="text-white uppercase font-bold">{selectedCaseTransaction.method}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">TRANSACTION ID</span>
+                    <span className="text-[#50e3c2] font-bold">{selectedCaseTransaction.transactionId || 'N/A'}</span>
+                  </div>
+                </div>
+              )}
+
+              {selectedCaseMember && (
+                <div className="p-3.5 bg-slate-950/60 rounded-xl border border-white/5 text-xs space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400 font-bold">Applicant Legal Name</span>
+                    <span className="text-white font-bold font-mono">{selectedCaseMember.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400 font-bold">NID Identification</span>
+                    <span className="text-white font-mono">{selectedCaseMember.nid || 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400 font-bold font-sans">Father's Name</span>
+                    <span className="text-slate-300 font-mono">{selectedCaseMember.fatherName || 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400 font-bold">Permanent Address</span>
+                    <span className="text-slate-300 font-mono">{selectedCaseMember.permanentAddress || 'N/A'}</span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="text-[10px] font-black uppercase text-slate-400">Internal decision remark notes</label>
+                <textarea 
+                  value={adminDecisionNotes}
+                  onChange={(e) => setAdminDecisionNotes(e.target.value)}
+                  placeholder="Specify regulatory audit trail remarks..."
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white mt-1 focus:outline-none focus:border-blue-500 min-h-[60px]"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-white/5 flex gap-2">
+                <button 
+                  onClick={() => {
+                    setSelectedCaseTransaction(null);
+                    setSelectedCaseMember(null);
+                  }}
+                  className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+                <button 
+                  onClick={async () => {
+                    try {
+                      if (selectedCaseTransaction) {
+                        // Approve transaction
+                        await confirmTransaction(selectedCaseTransaction);
+                        addToast('Transaction Confirmed', 'The selected cash flow was successfully approved.', 'success');
+                      } else if (selectedCaseMember) {
+                        // Approve member
+                        await approveMember(selectedCaseMember.uid);
+                        addToast('Membership Approved', `${selectedCaseMember.name} membership approved.`, 'success');
+                      }
+                      setSelectedCaseTransaction(null);
+                      setSelectedCaseMember(null);
+                    } catch (err: any) {
+                      addToast('Error', err.message, 'warning');
+                    }
+                  }}
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Approve File
+                </button>
+                <button 
+                  onClick={async () => {
+                    try {
+                      if (selectedCaseTransaction) {
+                        await rejectTransaction(selectedCaseTransaction);
+                        addToast('Transaction Rejected', 'Cash flow transaction rejected.', 'warning');
+                      } else if (selectedCaseMember) {
+                        await rejectMember(selectedCaseMember.uid);
+                        addToast('Membership Rejected', 'Membership application rejected.', 'warning');
+                      }
+                      setSelectedCaseTransaction(null);
+                      setSelectedCaseMember(null);
+                    } catch (err: any) {
+                      addToast('Error', err.message, 'warning');
+                    }
+                  }}
+                  className="py-2 px-4 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Reject File
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+    );
+  };
+
+  const renderAdminLedger = () => {
+    return (
+      <div className="space-y-6 text-left animate-fadeIn">
+        <div className="border-b border-white/5 pb-3">
+          <h3 className="text-sm font-black uppercase tracking-wider text-white">Consolidated Authority Ledger</h3>
+          <p className="text-[10px] text-slate-400 mt-0.5">Full chronological audit of all platform transactions, flows, and deposits.</p>
+        </div>
+
+        <div className="p-5 bg-[#0e1726]/30 border border-white/5 rounded-2xl overflow-hidden shadow-xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-sans">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-blue-400 border-b border-white/5 bg-slate-900/30">
+                  <th className="py-2.5 px-3">Log ID</th>
+                  <th className="py-2.5 px-3">Sender Name</th>
+                  <th className="py-2.5 px-3">Type</th>
+                  <th className="py-2.5 px-3 text-right">Amount</th>
+                  <th className="py-2.5 px-3">Gateway / Method</th>
+                  <th className="py-2.5 px-3">Date</th>
+                  <th className="py-2.5 px-3 text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5 font-mono">
+                {allTransactions.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="text-center py-8 text-slate-500 italic">No logs recorded inside the central database.</td>
+                  </tr>
+                ) : (
+                  allTransactions.map((tx) => (
+                    <tr key={tx.id} className="hover:bg-white/[0.01]">
+                      <td className="py-3 px-3 text-slate-400 text-[10px]">{tx.id.substring(0, 12)}</td>
+                      <td className="py-3 px-3 font-sans font-bold text-white">{tx.userName || 'Member'}</td>
+                      <td className="py-3 px-3 font-sans uppercase font-bold text-slate-300">{tx.type}</td>
+                      <td className="py-3 px-3 text-right text-[#50e3c2] font-black">৳ {tx.amount.toLocaleString()}</td>
+                      <td className="py-3 px-3 text-slate-300 uppercase text-[10px]">{tx.method || 'Internal Desk'}</td>
+                      <td className="py-3 px-3 text-slate-400 font-sans">
+                        {tx.timestamp?.seconds ? format(new Date(tx.timestamp.seconds * 1000), 'dd-MM-yy HH:mm') : 'Just now'}
+                      </td>
+                      <td className="py-3 px-3 text-center">
+                        <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded ${tx.status === 'confirmed' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
+                          {tx.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAdminAudit = () => {
+    return (
+      <div className="space-y-6 text-left animate-fadeIn">
+        <div className="border-b border-white/5 pb-3">
+          <h3 className="text-sm font-black uppercase tracking-wider text-white">Compliance & Audit Logs</h3>
+          <p className="text-[10px] text-slate-400 mt-0.5">High-integrity immutable activity logs recorded live to Firestore audit collections.</p>
+        </div>
+
+        <div className="p-5 bg-[#0e1726]/30 border border-white/5 rounded-2xl overflow-hidden shadow-xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-blue-400 border-b border-white/5 bg-slate-900/30">
+                  <th className="py-2.5 px-3">Date & Time</th>
+                  <th className="py-2.5 px-3">Actor Email</th>
+                  <th className="py-2.5 px-3">Audit Action</th>
+                  <th className="py-2.5 px-3">Log Trails & Description</th>
+                  <th className="py-2.5 px-3 text-center">Severity</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {auditLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="text-center py-8 text-slate-500 italic">No formal logs recorded in compliance collection.</td>
+                  </tr>
+                ) : (
+                  auditLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-white/[0.01]">
+                      <td className="py-3 px-3 text-slate-400 text-[10px]">
+                        {log.timestamp?.seconds ? format(new Date(log.timestamp.seconds * 1000), 'dd-MM-yy HH:mm:ss') : 'Just now'}
+                      </td>
+                      <td className="py-3 px-3 text-slate-300 font-sans">{log.actorEmail || 'Supervisor'}</td>
+                      <td className="py-3 px-3 text-white font-sans font-black uppercase">{log.action}</td>
+                      <td className="py-3 px-3 text-slate-400 leading-normal max-w-sm truncate">{log.details}</td>
+                      <td className="py-3 px-3 text-center">
+                        <span className={cn(
+                          "text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded leading-none border",
+                          log.severity === 'critical' ? "bg-rose-500/10 border-rose-500/20 text-rose-400" :
+                          log.severity === 'warning' ? "bg-amber-500/10 border-amber-500/20 text-amber-400" :
+                          "bg-blue-500/10 border-blue-500/20 text-blue-400"
+                        )}>
+                          {log.severity || 'info'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAdminNotifications = () => {
+    // Helper to determine matched categories for local alerts
+    const matchedCategory = (notif: any) => {
+      const b = (notif.body || '').toLowerCase();
+      const t = (notif.title || '').toLowerCase();
+      if (b.includes('reserve') || t.includes('reserve')) return 'Reserve';
+      if (b.includes('loan') || t.includes('loan')) return 'Loan';
+      if (b.includes('member') || t.includes('member') || b.includes('profile')) return 'Members';
+      if (b.includes('limit') || t.includes('limit')) return 'Financial';
+      if (b.includes('pin') || b.includes('security') || b.includes('auth')) return 'Security';
+      return 'System';
+    };
+
+    // Preloaded Template Library
+    const templates = [
+      {
+        name: 'Due Repayment Warning',
+        subject: 'T.U.T. Private Lending Authority: Urgent Outstanding Debt Compliance',
+        category: 'Due Reminder',
+        body: 'Dear {name},\n\nOur ledger registers an active outstanding borrowing of {debt} BDT under your national profile. Please be advised that compliance with estimated repayment terms is mandatory to prevent interest accretion or credit limits restriction.\n\nKindly clear your due balance at your earliest convenience through our bKash/Nagad portals.\n\nSincerely,\nT.U.T. Lending Authority'
+      },
+      {
+        name: 'Credit Limit Advisory',
+        subject: 'Credit Assessment Completed: Authorized Borrowing Limit Status',
+        category: 'System',
+        body: 'Dear {name},\n\nWe have updated your authorized borrowing credit limit to {limit} BDT on the T.U.T. platform.\n\nThis limit has been approved after assessing your subscription status and historic transaction consistency. You can utilize this credit line instantly for active loan requests.\n\nSincerely,\nT.U.T. Underwriting Desk'
+      },
+      {
+        name: 'Welcome & Onboarding',
+        subject: 'Welcome to T.U.T. Private Lending Syndicate Network',
+        category: 'Broadcast',
+        body: 'Dear {name},\n\nYour membership application has been reviewed and approved! You are now a registered participant of the T.U.T. private micro-lending group.\n\nFeel free to complete a security PIN setup on your dashboard and explore our premium subscription plans to secure larger micro-loans.\n\nSincerely,\nT.U.T. Operations Team'
+      }
+    ];
+
+    const loadTemplate = (tpl: typeof templates[0]) => {
+      setComposeSubject(tpl.subject);
+      setComposeBody(tpl.body);
+      setComposeCategory(tpl.category);
+      addToast('Template Loaded', `Loaded: ${tpl.name}`, 'info');
+    };
+
+    // Dynamic Preview Body Replacement based on recipient category selection
+    const previewName = composeRecipientCategory === 'individual' && composeIndividualEmail
+      ? (allUsers.find(u => u.email?.toLowerCase().trim() === composeIndividualEmail.toLowerCase().trim())?.name || 'Valued Member')
+      : 'Valued Member';
+    const previewDebt = composeRecipientCategory === 'individual' && composeIndividualEmail
+      ? `৳${(allUsers.find(u => u.email?.toLowerCase().trim() === composeIndividualEmail.toLowerCase().trim())?.remainingDebt || 0).toLocaleString()}`
+      : '৳25,000';
+    const previewLimit = composeRecipientCategory === 'individual' && composeIndividualEmail
+      ? `৳${(allUsers.find(u => u.email?.toLowerCase().trim() === composeIndividualEmail.toLowerCase().trim())?.borrowingLimit || 100000).toLocaleString()}`
+      : '৳100,000';
+
+    const renderedPreviewBody = composeBody
+      .replace(/{name}/g, previewName)
+      .replace(/{email}/g, composeIndividualEmail || 'member@domain.com')
+      .replace(/{debt}/g, previewDebt)
+      .replace(/{limit}/g, previewLimit);
+
+    // Filtered logs
+    const filteredEmailLogs = emailLogs.filter(log => {
+      if (emailLogsFilter === 'all') return true;
+      if (emailLogsFilter === 'delivered') return log.status === 'delivered';
+      if (emailLogsFilter === 'failed') return log.status === 'failed';
+      return log.category?.toLowerCase() === emailLogsFilter.toLowerCase();
+    });
+
+    // Scanner: Outstanding Debts (approved members who have remaining debt)
+    const dueMembersList = allUsers.filter(u => 
+      u.status === 'approved' && 
+      (u.remainingDebt || 0) > 0
+    );
+
+    const loadDueReminderForMember = (usr: UserProfile) => {
+      // Find latest confirmed loan transaction for this user to get details if available
+      const latestLoan = allTransactions.find(t => 
+        (t.userId === usr.uid || t.userId === usr.memberId) && 
+        t.type === 'loan' && 
+        t.status === 'confirmed'
+      );
+      
+      setComposeRecipientCategory('individual');
+      if (usr.email) {
+        setComposeIndividualEmail(usr.email);
+      }
+      setComposeSubject(`URGENT: Repayment Alert for Outstanding Debt`);
+      setComposeBody(`Dear ${usr.name},\n\nOur private lending ledger registers an active outstanding borrowing balance under your profile.\n\n- Outstanding Debt: ৳${(usr.remainingDebt || 0).toLocaleString()} BDT\n- Authorized Borrowing Limit: ৳${(usr.borrowingLimit || 100000).toLocaleString()} BDT\n- Repayment Terms: ${latestLoan?.estimatedRepaymentDate ? `Before ${latestLoan.estimatedRepaymentDate}` : 'Immediate Compliance Required'}\n\nPlease proceed to clear this outstanding amount using bKash or Nagad to avoid penalties or account suspension.\n\nSincerely,\nT.U.T. Lending Desk`);
+      setComposeCategory('Due Reminder');
+      addToast('Template Loaded', `Due alert loaded for ${usr.name}`, 'info');
+      
+      const el = document.getElementById('email-composer-form');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    // Form Submission
+    const handleSendComposedEmail = async () => {
+      if (!composeSubject.trim() || !composeBody.trim()) {
+        addToast('Validation Error', 'Subject and body cannot be empty.', 'warning');
+        return;
+      }
+
+      let recipients: UserProfile[] = [];
+      if (composeRecipientCategory === 'all') {
+        recipients = allUsers.filter(u => u.status === 'approved' && u.email);
+      } else if (composeRecipientCategory === 'debtors') {
+        recipients = allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) > 0 && u.email);
+      } else if (composeRecipientCategory === 'savers') {
+        recipients = allUsers.filter(u => u.status === 'approved' && (u.totalDeposit || 0) > 0 && (u.remainingDebt || 0) === 0 && u.email);
+      } else if (composeRecipientCategory === 'individual') {
+        const selected = allUsers.find(u => u.email?.toLowerCase().trim() === composeIndividualEmail.toLowerCase().trim());
+        if (selected) recipients = [selected];
+      }
+
+      if (recipients.length === 0) {
+        addToast('No Recipients', 'No verified members with emails matched your audience criteria.', 'warning');
+        return;
+      }
+
+      setIsSendingEmail(true);
+      let successCount = 0;
+      let failCount = 0;
+
+      addToast('Initiating Transmission', `Transmitting ${recipients.length} outgoing emails...`, 'info');
+
+      for (const recipient of recipients) {
+        try {
+          const customizedBody = composeBody
+            .replace(/{name}/g, recipient.name)
+            .replace(/{email}/g, recipient.email || '')
+            .replace(/{debt}/g, `৳${(recipient.remainingDebt || 0).toLocaleString()}`)
+            .replace(/{limit}/g, `৳${(recipient.borrowingLimit || 100000).toLocaleString()}`);
+
+          await sendNotification(composeSubject, customizedBody, recipient.email, true);
+          successCount++;
+        } catch (err) {
+          console.error(`Failed to send email to ${recipient.email}:`, err);
+          failCount++;
+        }
+      }
+
+      setIsSendingEmail(false);
+      if (successCount > 0) {
+        addToast('Transmission Complete', `Successfully dispatched ${successCount} emails. ${failCount > 0 ? `${failCount} errors logged.` : ''}`, 'success');
+        setComposeSubject('');
+        setComposeBody('');
+      } else {
+        addToast('Transmission Failed', 'Check Gmail API configurations or admin credentials.', 'warning');
+      }
+    };
+
+    const handleResendEmail = async (log: any) => {
+      addToast('Re-transmitting', `Retrying dispatch to ${log.to}...`, 'info');
+      try {
+        await sendEmail(log.to, log.subject, log.body, undefined, log.recipientName, log.category);
+        addToast('Successfully Re-sent', `Message successfully delivered to ${log.to}.`, 'success');
+        setPreviewEmailLog(null);
+      } catch (err: any) {
+        addToast('Resend Failed', `Failed to deliver email: ${err.message || err}`, 'warning');
+      }
+    };
+
+    return (
+      <div className="space-y-8 text-left animate-fadeIn">
+        {/* HEADER SECTION */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-white/5 pb-5 gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span className="text-[9px] font-mono font-black text-blue-400 uppercase tracking-widest">PRIVATE ACCESS // LIVE EMAIL DISPATCH DESK</span>
+            </div>
+            <h1 className="text-xl font-black text-white uppercase tracking-tight mt-1">NOTIFICATION & EMAIL CONTROL</h1>
+            <p className="text-[10px] text-slate-400 mt-1">Compose broadcast letters, dispatch due debt warnings, and trace real-time SMTP delivery logs.</p>
+          </div>
+          
+          <div className="bg-slate-950/80 border border-white/5 rounded-xl px-4 py-2.5 flex items-center gap-3.5">
+            <div className="text-right">
+              <span className="text-[8px] font-mono text-slate-500 block uppercase font-bold">Admin Recipient Email</span>
+              <span className="text-xs font-mono font-black text-white">{ADMIN_EMAIL}</span>
+            </div>
+            <div className="w-1.5 h-6 bg-white/10" />
+            <div className="text-right">
+              <span className="text-[8px] font-mono text-slate-500 block uppercase font-bold">System Status</span>
+              <span className="text-xs font-mono font-bold text-emerald-400">ONLINE</span>
+            </div>
+          </div>
+        </div>
+
+        {/* COMPOSER & PREVIEW SIDE-BY-SIDE GRID */}
+        <div id="email-composer-form" className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          
+          {/* LEFT COLUMN: COMPOSER CONTROLS */}
+          <div className="p-6 bg-[#0e1726]/20 border border-white/5 rounded-2xl shadow-xl space-y-5">
+            <div className="flex items-center gap-2 text-blue-400 border-b border-white/5 pb-3">
+              <Mail className="w-4 h-4 shrink-0" />
+              <h2 className="text-xs font-black uppercase tracking-wider text-white">Transmitter Configuration</h2>
+            </div>
+
+            {/* Quick Templates Buttons */}
+            <div className="space-y-2">
+              <span className="text-[9px] font-mono font-bold text-slate-500 uppercase block">Quick Template Presets</span>
+              <div className="flex flex-wrap gap-2">
+                {templates.map((tpl) => (
+                  <button
+                    key={tpl.name}
+                    onClick={() => loadTemplate(tpl)}
+                    className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-850 text-slate-300 hover:text-white border border-white/5 hover:border-white/10 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                  >
+                    {tpl.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {/* Audience selection */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-mono font-bold text-slate-400 uppercase">Target Audience Category</label>
+                  <select
+                    value={composeRecipientCategory}
+                    onChange={(e) => setComposeRecipientCategory(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-white/5 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-sans"
+                  >
+                    <option value="all">All Active Members ({allUsers.filter(u => u.status === 'approved' && u.email).length})</option>
+                    <option value="debtors">Active Debtors ({allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) > 0 && u.email).length})</option>
+                    <option value="savers">Active Depositors ({allUsers.filter(u => u.status === 'approved' && (u.totalDeposit || 0) > 0 && (u.remainingDebt || 0) === 0 && u.email).length})</option>
+                    <option value="individual">Specific Individual Member</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[9px] font-mono font-bold text-slate-400 uppercase">Notification Category</label>
+                  <select
+                    value={composeCategory}
+                    onChange={(e) => setComposeCategory(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-white/5 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-sans"
+                  >
+                    <option value="Broadcast">Broadcast Announcement</option>
+                    <option value="Due Reminder">Due Debt Repayment Reminder</option>
+                    <option value="System">System Security / PIN Advisory</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Individual Selector if individual selected */}
+              {composeRecipientCategory === 'individual' && (
+                <div className="space-y-1.5 animate-slideDown">
+                  <label className="text-[9px] font-mono font-bold text-slate-400 uppercase">Select Recipient Member</label>
+                  <select
+                    value={composeIndividualEmail}
+                    onChange={(e) => setComposeIndividualEmail(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-white/5 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-sans"
+                  >
+                    <option value="">-- Choose Member Profile --</option>
+                    {allUsers.filter(u => u.email).map((u) => (
+                      <option key={u.uid} value={u.email}>
+                        {u.name} ({u.email}) — Debt: ৳{(u.remainingDebt || 0).toLocaleString()} BDT
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Subject Input */}
+              <div className="space-y-1.5">
+                <label className="text-[9px] font-mono font-bold text-slate-400 uppercase">Email Subject Line</label>
+                <input
+                  type="text"
+                  placeholder="Enter email subject line..."
+                  value={composeSubject}
+                  onChange={(e) => setComposeSubject(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-white/5 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500 font-sans font-bold"
+                />
+              </div>
+
+              {/* Body Textarea */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <label className="text-[9px] font-mono font-bold text-slate-400 uppercase">Email Body Content</label>
+                  <span className="text-[8px] font-mono text-slate-500">Variables supported: {"{name}"}, {"{email}"}, {"{debt}"}, {"{limit}"}</span>
+                </div>
+                <textarea
+                  rows={6}
+                  placeholder="Write your email body content..."
+                  value={composeBody}
+                  onChange={(e) => setComposeBody(e.target.value)}
+                  className="w-full px-3 py-2.5 bg-slate-950 border border-white/5 rounded-xl text-xs text-slate-300 focus:outline-none focus:border-blue-500 font-sans leading-relaxed"
+                />
+              </div>
+
+              {/* Transmission Error Status or Warning banner if missing configuration */}
+              {lastGmailError && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-[10px] text-rose-400 flex items-start gap-2 animate-fadeIn">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold block uppercase">SMTP Transmission Alert</span>
+                    <p className="mt-0.5 leading-normal">{lastGmailError}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <button
+                onClick={handleSendComposedEmail}
+                disabled={isSendingEmail}
+                className={cn(
+                  "w-full py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg",
+                  isSendingEmail
+                    ? "bg-blue-600/50 text-white cursor-not-allowed"
+                    : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/30"
+                )}
+              >
+                {isSendingEmail ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>TRANSMITTING MESSAGE OUTFLOW...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-3.5 h-3.5" />
+                    <span>TRANSMIT DISPATCH SIGNALS</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: INTERACTIVE LIVE PREVIEW MOCKUP */}
+          <div className="p-6 bg-slate-950/40 border border-white/5 rounded-2xl shadow-xl flex flex-col h-full space-y-4">
+            <div className="flex items-center gap-2 text-indigo-400 border-b border-white/5 pb-3">
+              <Eye className="w-4 h-4 shrink-0" />
+              <h2 className="text-xs font-black uppercase tracking-wider text-white">Live Email Layout Output</h2>
+            </div>
+
+            {/* Simulated Mail Client Window */}
+            <div className="flex-1 bg-[#121b2d] border border-white/5 rounded-xl overflow-hidden flex flex-col text-[11px] font-sans">
+              <div className="bg-slate-900 px-4 py-2.5 border-b border-white/5 flex items-center justify-between text-slate-400 font-mono text-[9px] uppercase tracking-wider">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                </div>
+                <span>SMTP STACK PREVIEW ENGINE</span>
+              </div>
+
+              <div className="p-4 border-b border-white/5 space-y-1 bg-slate-950/30">
+                <p className="text-slate-500 font-mono text-[9px]"><span className="text-slate-400 font-bold uppercase mr-1">TO:</span> {composeRecipientCategory === 'individual' ? (composeIndividualEmail || 'No recipient selected') : `${composeRecipientCategory.toUpperCase()} Recipient Group`}</p>
+                <p className="text-slate-500 font-mono text-[9px]"><span className="text-slate-400 font-bold uppercase mr-1">FROM:</span> T.U.T. Private Authority &lt;noreply@tut.authority&gt;</p>
+                <p className="text-white font-bold text-xs font-sans mt-2"><span className="text-slate-400 font-bold font-mono text-[9px] uppercase mr-1">SUBJECT:</span> {composeSubject || '(No subject provided)'}</p>
+              </div>
+
+              {/* Simulated HTML Email Frame */}
+              <div className="p-6 bg-[#f4f4f4] text-[#333333] font-sans flex-1 overflow-y-auto min-h-[220px]">
+                <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow-sm border border-slate-200">
+                  <div className="border-b border-slate-100 pb-3 mb-4 flex items-center justify-between">
+                    <span className="text-[10px] font-black tracking-widest text-[#2563eb]">T.U.T. PRIVATE LENDING</span>
+                    <span className="text-[8px] font-mono text-slate-400 uppercase tracking-widest">SECURE DISPATCH</span>
+                  </div>
+                  
+                  {/* Email body render */}
+                  <div className="whitespace-pre-wrap text-xs text-slate-700 leading-relaxed font-sans">
+                    {renderedPreviewBody || (
+                      <span className="text-slate-400 italic">Configure your template, subject, and body fields on the configuration board. A live simulated HTML digest will assemble dynamically here.</span>
+                    )}
+                  </div>
+
+                  <hr className="border-0 border-t border-slate-100 my-4" />
+                  <p className="text-[9px] text-slate-400 leading-normal">
+                    This is an automated encrypted mail notification copy. Replies to this address are not monitored.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* DUE REMINDERS SCAN & OVERDUE DEBT SCANNER */}
+        <div className="p-6 bg-[#0e1726]/20 border border-white/5 rounded-2xl shadow-xl space-y-4">
+          <div className="flex items-center gap-2 text-rose-400 border-b border-white/5 pb-3">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <h2 className="text-xs font-black uppercase tracking-wider text-white">Outstanding Debt Reminders Scanner</h2>
+          </div>
+          <p className="text-[10px] text-slate-400">Scans all confirmed active lending claims currently awaiting repayment. Use quick load actions to write specific compliance alerts instantly.</p>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-sans">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-blue-400 border-b border-white/5 bg-slate-900/30">
+                  <th className="py-2.5 px-3">Borrower Profile</th>
+                  <th className="py-2.5 px-3">Total Borrowed Amount</th>
+                  <th className="py-2.5 px-3">Outstanding Remaining Debt</th>
+                  <th className="py-2.5 px-3">Latest Agreed Terms</th>
+                  <th className="py-2.5 px-3 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {dueMembersList.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="text-center py-6 text-slate-500 italic">Zero active lending accounts holding outstanding debts. Compliant portfolio status.</td>
+                  </tr>
+                ) : (
+                  dueMembersList.map((usr) => {
+                    const latestLoan = allTransactions.find(t => 
+                      (t.userId === usr.uid || t.userId === usr.memberId) && 
+                      t.type === 'loan' && 
+                      t.status === 'confirmed'
+                    );
+
+                    return (
+                      <tr key={usr.uid} className="hover:bg-white/[0.01]">
+                        <td className="py-3 px-3">
+                          <span className="font-bold text-white block">{usr.name}</span>
+                          <span className="text-[10px] text-slate-400 block font-mono">{usr.email || 'No email registered'}</span>
+                        </td>
+                        <td className="py-3 px-3 font-mono text-slate-300">৳{(usr.totalLoan || 0).toLocaleString()} BDT</td>
+                        <td className="py-3 px-3 font-mono text-amber-400 font-bold">৳{(usr.remainingDebt || 0).toLocaleString()} BDT</td>
+                        <td className="py-3 px-3">
+                          <span className="text-[10px] font-mono block text-slate-400">
+                            {latestLoan?.estimatedRepaymentDate ? `Before ${latestLoan.estimatedRepaymentDate}` : 'Compliance Required'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <button
+                            onClick={() => loadDueReminderForMember(usr)}
+                            className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500 text-amber-400 hover:text-slate-950 border border-amber-500/20 hover:border-amber-500 text-[9px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer"
+                          >
+                            Load Alert to Composer
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* FIREBASE SYNCED LIVE OUTGOING MAIL LOGS */}
+        <div className="p-6 bg-[#0e1726]/20 border border-white/5 rounded-2xl shadow-xl space-y-4">
+          <div className="flex justify-between items-center border-b border-white/5 pb-3">
+            <div className="flex items-center gap-2 text-indigo-400">
+              <History className="w-4 h-4 shrink-0" />
+              <h2 className="text-xs font-black uppercase tracking-wider text-white">Firestore SMTP Delivery Ledger</h2>
+            </div>
+
+            {/* Filter buttons for logs */}
+            <div className="flex gap-2">
+              {['all', 'delivered', 'failed', 'Due Reminder', 'Broadcast'].map((filterVal) => (
+                <button
+                  key={filterVal}
+                  onClick={() => setEmailLogsFilter(filterVal)}
+                  className={cn(
+                    "px-2.5 py-1 border rounded-lg text-[8px] font-black uppercase tracking-wider transition-all cursor-pointer",
+                    emailLogsFilter === filterVal
+                      ? "bg-indigo-600 border-indigo-500 text-white shadow-md"
+                      : "bg-[#0e1726]/60 border-white/5 text-slate-400 hover:text-white"
+                  )}
+                >
+                  {filterVal}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="text-[10px] text-slate-400">High-integrity transactional audit ledger recording direct status returns from server SMTP. Only visible to verified admins.</p>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-sans">
+              <thead>
+                <tr className="text-[9px] uppercase tracking-wider text-blue-400 border-b border-white/5 bg-slate-900/30">
+                  <th className="py-2.5 px-3">Dispatch Timestamp</th>
+                  <th className="py-2.5 px-3">Recipient Name & Email</th>
+                  <th className="py-2.5 px-3">Subject Line</th>
+                  <th className="py-2.5 px-3">Category</th>
+                  <th className="py-2.5 px-3 text-center">Delivery Status</th>
+                  <th className="py-2.5 px-3 text-center">System Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {filteredEmailLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-center py-8 text-slate-500 italic">No formal outgoing dispatches matching selection recorded in database log collections.</td>
+                  </tr>
+                ) : (
+                  filteredEmailLogs.map((log) => {
+                    const timeLabel = log.timestamp?.seconds 
+                      ? format(new Date(log.timestamp.seconds * 1000), 'dd-MM-yy HH:mm:ss')
+                      : 'Just now';
+
+                    return (
+                      <tr key={log.id} className="hover:bg-white/[0.01]">
+                        <td className="py-3 px-3 font-mono text-slate-400 text-[10px]">{timeLabel}</td>
+                        <td className="py-3 px-3">
+                          <span className="font-bold text-slate-200 block leading-tight">{log.recipientName || 'Member'}</span>
+                          <span className="text-[10px] text-slate-500 font-mono block">{log.to}</span>
+                        </td>
+                        <td className="py-3 px-3 text-slate-300 max-w-xs truncate font-medium">{log.subject}</td>
+                        <td className="py-3 px-3">
+                          <span className="text-[8px] bg-slate-900 border border-white/5 px-1.5 py-0.5 rounded uppercase font-bold text-slate-400 font-mono">
+                            {log.category || 'System'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          {log.status === 'delivered' ? (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded leading-none">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              Delivered
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2 py-0.5 rounded leading-none">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                              Failed
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <button
+                            onClick={() => setPreviewEmailLog(log)}
+                            className="px-2.5 py-1 bg-indigo-500/10 hover:bg-indigo-600 text-indigo-400 hover:text-white border border-indigo-500/20 text-[9px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer flex items-center justify-center mx-auto gap-1"
+                          >
+                            <Eye className="w-3 h-3" />
+                            <span>Preview</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* INTERACTIVE PREVIEW MODAL */}
+        {previewEmailLog && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fadeIn">
+            <div className="bg-[#0b1329] border border-white/10 rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden animate-scaleUp">
+              {/* Modal Header */}
+              <div className="bg-slate-900 px-6 py-4 border-b border-white/5 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-wider text-white">Compliance Dispatch Audit</h3>
+                  <p className="text-[9px] text-slate-400 font-mono mt-0.5">Log Record Reference ID: {previewEmailLog.id}</p>
+                </div>
+                <button
+                  onClick={() => setPreviewEmailLog(null)}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg cursor-pointer transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                {/* Meta details cards */}
+                <div className="grid grid-cols-2 gap-4 text-[10px] font-mono text-slate-400">
+                  <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-1">
+                    <span className="text-slate-500 font-bold block uppercase text-[8px]">RECIPIENT MEMBER</span>
+                    <span className="text-white font-bold block text-[11px] font-sans">{previewEmailLog.recipientName || 'Member'}</span>
+                    <span className="block text-slate-400">{previewEmailLog.to}</span>
+                  </div>
+
+                  <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-1">
+                    <span className="text-slate-500 font-bold block uppercase text-[8px]">DELIVERY STATUS</span>
+                    {previewEmailLog.status === 'delivered' ? (
+                      <span className="text-emerald-400 font-bold block text-[11px] uppercase">🟢 DELIVERED SUCCESSFUL</span>
+                    ) : (
+                      <span className="text-rose-400 font-bold block text-[11px] uppercase">🔴 FAILED TO DISPATCH</span>
+                    )}
+                    <span className="block text-slate-500">
+                      {previewEmailLog.timestamp?.seconds 
+                        ? format(new Date(previewEmailLog.timestamp.seconds * 1000), 'dd MMMM yyyy HH:mm:ss')
+                        : 'Unknown Date'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Failure Error Trace if failed */}
+                {previewEmailLog.error && (
+                  <div className="p-3.5 bg-rose-500/10 border border-rose-500/25 rounded-xl space-y-1">
+                    <span className="text-rose-400 font-black uppercase text-[8px] font-mono block">SMTP ERROR LOG STACK TRACE:</span>
+                    <p className="text-[10px] font-mono text-rose-300 leading-normal whitespace-pre-wrap">{previewEmailLog.error}</p>
+                  </div>
+                )}
+
+                {/* Email Subject card */}
+                <div className="space-y-1">
+                  <span className="text-slate-500 font-mono font-bold text-[8px] uppercase">SUBJECT:</span>
+                  <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl text-xs font-bold text-white font-sans">
+                    {previewEmailLog.subject}
+                  </div>
+                </div>
+
+                {/* Email content preview */}
+                <div className="space-y-1">
+                  <span className="text-slate-500 font-mono font-bold text-[8px] uppercase">OUTGOING EMAIL CONTENT BODY:</span>
+                  <div className="p-4 bg-slate-950/60 border border-white/5 rounded-xl text-xs text-slate-300 leading-relaxed font-sans whitespace-pre-wrap max-h-[160px] overflow-y-auto">
+                    {previewEmailLog.body}
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="bg-slate-900 px-6 py-4 border-t border-white/5 flex justify-between items-center">
+                <span className="text-[8px] font-mono text-slate-500">T.U.T. Private Authority System</span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setPreviewEmailLog(null)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-wider cursor-pointer transition-all"
+                  >
+                    Close Preview
+                  </button>
+                  <button
+                    onClick={() => handleResendEmail(previewEmailLog)}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[10px] font-black uppercase tracking-wider cursor-pointer transition-all flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Resend Email</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderCaseTransactionPage = (trx: Transaction) => {
+    const applicant = (allUsers.find(u => u.uid === trx.userId || u.memberId === trx.userId) || {
+      uid: trx.userId || '',
+      name: trx.userName || 'Unknown Member',
+      email: 'No Email Provided',
+      phone: 'No Phone Provided',
+      status: 'approved',
+      totalLoan: 0,
+      totalDeposit: 0,
+      remainingDebt: 0,
+      borrowingLimit: 100000,
+      subscriptionTier: 'bronze',
+      subscriptionStatus: 'inactive',
+      continuousSubscriptionMonths: 0,
+      consecutiveNoLoanMonths: 0,
+      nid: 'Not Available',
+      occupation: 'Not Available',
+      address: 'Not Available',
+      permanentAddress: 'Not Available',
+      nomineeName: 'Not Available',
+      nomineeRelation: 'Not Available',
+      adminNotes: '',
+      role: 'member',
+      createdAt: null
+    }) as UserProfile;
+
+    const userTxs = allTransactions.filter(t => t.userId === trx.userId || t.userName === trx.userName);
+
+    // Calculate Credit Score (300 to 850)
+    let score = 500;
+    if (applicant.subscriptionStatus === 'active') score += 100;
+    if ((applicant.continuousSubscriptionMonths || 0) > 0) {
+      score += Math.min(100, (applicant.continuousSubscriptionMonths || 0) * 20);
+    }
+    if ((applicant.consecutiveNoLoanMonths || 0) > 0) {
+      score += Math.min(75, (applicant.consecutiveNoLoanMonths || 0) * 15);
+    }
+    if ((applicant.remainingDebt || 0) > 0) {
+      score -= Math.min(150, Math.floor((applicant.remainingDebt || 0) / 100));
+    }
+    const successfulRepayments = (applicant.totalLoan || 0) - (applicant.remainingDebt || 0);
+    if (successfulRepayments > 0) {
+      score += Math.min(100, Math.floor(successfulRepayments / 100));
+    }
+    score = Math.max(300, Math.min(850, score));
+
+    // Risk Rating
+    let riskRating = "MODERATE RISK";
+    let riskColor = "text-amber-400 border-amber-500/20 bg-amber-500/10";
+    if (score >= 750) {
+      riskRating = "VERY LOW RISK";
+      riskColor = "text-emerald-400 border-emerald-500/20 bg-emerald-500/10";
+    } else if (score >= 650) {
+      riskRating = "LOW RISK";
+      riskColor = "text-teal-400 border-teal-500/20 bg-teal-500/10";
+    } else if (score < 550) {
+      riskRating = "HIGH RISK / SUBPRIME";
+      riskColor = "text-rose-400 border-rose-500/20 bg-rose-500/10";
+    }
+
+    const handleExecuteDecision = async () => {
+      if (!decisionAction) return;
+      if (decisionAction === 'approve') {
+        await confirmTransaction(trx, adminDecisionNotes);
+        addToast('Transaction Approved', `Approved request of ৳${trx.amount.toLocaleString()} for ${trx.userName}`, 'success');
+      } else if (decisionAction === 'reject') {
+        await rejectTransaction(trx, adminDecisionNotes);
+      } else if (decisionAction === 'more_info') {
+        await requestMoreInfoForTransaction(trx, adminDecisionNotes);
+      }
+      setSelectedCaseTransaction(null);
+      setAdminDecisionNotes('');
+      setShowDecisionConfirmation(false);
+      setDecisionAction(null);
+    };
+
+    // Calculate borrowing capacity details
+    const currentBorrowingCapacity = Math.max(0, (applicant.borrowingLimit || 100000) - (applicant.remainingDebt || 0));
+    const repaymentRatio = applicant.totalLoan > 0 
+      ? Math.round(((applicant.totalLoan - applicant.remainingDebt) / applicant.totalLoan) * 100)
+      : 100;
+
+    return (
+      <div className="space-y-6 text-left">
+        {/* Case File Header */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-[#0a1220]/90 border border-white/5 p-5 rounded-2xl shadow-2xl relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-1/3 h-full bg-gradient-to-r from-blue-500/5 to-transparent pointer-events-none" />
+          <div className="flex items-center gap-4 z-10">
+            <button
+              onClick={() => {
+                setSelectedCaseTransaction(null);
+                setAdminDecisionNotes('');
+                setDecisionAction(null);
+                setShowDecisionConfirmation(false);
+              }}
+              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-all cursor-pointer"
+              title="Return to Queue"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-black tracking-widest text-blue-400 uppercase bg-blue-500/10 border border-blue-500/20 px-2.5 py-0.5 rounded-full">
+                  CASE FILE: #{trx.id.substring(0, 8).toUpperCase()}
+                </span>
+                <span className="text-xs text-slate-500">•</span>
+                <span className="text-xs font-mono text-slate-300 uppercase font-black tracking-wider">{trx.type} AUDIT DESK</span>
+              </div>
+              <h3 className="text-xl font-black text-white mt-1.5 flex items-center gap-2">
+                Lending Appraisal Dossier
+                <span className="text-xs font-bold text-slate-400 bg-slate-800 px-2 py-0.5 rounded-md font-mono">
+                  v3.1
+                </span>
+              </h3>
+            </div>
+          </div>
+          <div className="flex items-center gap-2.5 bg-amber-500/5 border border-amber-500/15 rounded-xl px-4 py-2 z-10 self-stretch md:self-auto justify-center md:justify-start">
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest font-mono">Awaiting Decision Council</span>
+          </div>
+        </div>
+
+        {/* Dynamic Multi-Pane Layout */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+          
+          {/* LEFT PANELS: Comprehensive Member Dossier (xl:col-span-8) */}
+          <div className="xl:col-span-8 space-y-6">
+            
+            {/* Row 1: Profile & Credit Appraisal Speedometer */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              {/* Profile Card */}
+              <div className="p-5 bg-gradient-to-b from-slate-900/90 to-slate-950/90 border border-white/5 rounded-2xl space-y-4 shadow-xl">
+                <div className="flex justify-between items-start border-b border-white/5 pb-3">
+                  <div>
+                    <h4 className="text-sm font-black text-white uppercase tracking-wider">{applicant.name}</h4>
+                    <p className="text-[10px] text-slate-400 mt-1 font-mono">UID: {applicant.uid}</p>
+                  </div>
+                  <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg">
+                    {applicant.subscriptionTier?.toUpperCase()} MEMBER
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <p className="text-slate-500 font-extrabold uppercase tracking-wider text-[8px]">Legal NID Number</p>
+                    <p className="text-slate-200 font-mono mt-0.5 font-bold">{applicant.nid || 'Not Available'}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 font-extrabold uppercase tracking-wider text-[8px]">Primary Occupation</p>
+                    <p className="text-slate-200 font-bold mt-0.5">{applicant.occupation || 'Not Available'}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 font-extrabold uppercase tracking-wider text-[8px]">Contact Number</p>
+                    <p className="text-slate-200 font-mono mt-0.5">{applicant.phone || 'Not Available'}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 font-extrabold uppercase tracking-wider text-[8px]">Registered Email</p>
+                    <p className="text-slate-200 mt-0.5 truncate font-bold" title={applicant.email}>{applicant.email || 'Not Available'}</p>
+                  </div>
+                </div>
+
+                <div className="border-t border-white/5 pt-3 space-y-2 text-xs">
+                  <div>
+                    <p className="text-slate-500 font-extrabold uppercase tracking-wider text-[8px]">Residential Address</p>
+                    <p className="text-slate-300 mt-0.5 leading-relaxed text-[11px] font-medium">{applicant.address || 'Not Available'}</p>
+                  </div>
+                  {applicant.nomineeName && applicant.nomineeName !== 'Not Available' && (
+                    <div className="flex justify-between items-center bg-white/[0.02] border border-white/5 p-2 rounded-xl mt-1">
+                      <div>
+                        <p className="text-slate-500 font-extrabold uppercase tracking-wider text-[8px]">Nominee Details</p>
+                        <p className="text-slate-200 font-bold mt-0.5 text-[10px]">{applicant.nomineeName}</p>
+                      </div>
+                      <span className="text-[9px] font-black text-blue-400 uppercase tracking-wider bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded">
+                        {applicant.nomineeRelation}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Credit Scoring speedometer-like visual */}
+              <div className="p-5 bg-gradient-to-b from-slate-900/90 to-slate-950/90 border border-white/5 rounded-2xl space-y-4 shadow-xl flex flex-col justify-between">
+                <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-blue-400">Risk & Credit Scorecard</h4>
+                  <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${riskColor}`}>
+                    {riskRating}
+                  </span>
+                </div>
+
+                <div className="py-2 flex flex-col items-center justify-center">
+                  {/* Gauge Progress Bar visual */}
+                  <div className="relative w-full max-w-[200px] h-3 bg-slate-950 rounded-full border border-white/5 overflow-hidden">
+                    <div 
+                      className={cn(
+                        "h-full rounded-full transition-all duration-500",
+                        score >= 750 ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" :
+                        score >= 650 ? "bg-teal-400 shadow-[0_0_8px_rgba(45,212,191,0.5)]" :
+                        score >= 550 ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" :
+                        "bg-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+                      )}
+                      style={{ width: `${((score - 300) / 550) * 100}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between w-full max-w-[200px] text-[9px] font-mono font-bold text-slate-500 mt-1">
+                    <span>300 (POOR)</span>
+                    <span>850 (EXCELLENT)</span>
+                  </div>
+
+                  <div className="text-center mt-3">
+                    <span className="text-4xl font-black text-white font-mono tracking-tight">{score}</span>
+                    <span className="text-slate-400 text-xs font-bold ml-1">/ 850</span>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-1">Calculated Lending Appraisal Score</p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-slate-950/40 border border-white/5 rounded-xl text-[10px] text-slate-300 font-medium leading-relaxed">
+                  {score >= 750 ? "★ High premium standing. Low loan-to-asset ratio. Pre-approval authorized." :
+                   score >= 650 ? "★ Steady subscription standing. Standard lending risk assessment holds." :
+                   score >= 550 ? "★ Active debt present. Monitor monthly transaction logs closely." :
+                   "⚠ Warning: Subprime profile. Outstanding debt is substantial. Disbursal requires caution."}
+                </div>
+              </div>
+            </div>
+
+            {/* Row 2: Comprehensive Account Health Metrics */}
+            <div className="p-5 bg-gradient-to-b from-slate-900/90 to-slate-950/90 border border-white/5 rounded-2xl space-y-4 shadow-xl">
+              <h4 className="text-xs font-black uppercase tracking-wider text-blue-400 border-b border-white/5 pb-2">Financial Standing & Borrowing Performance</h4>
+              
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-3 bg-[#0a1220] border border-white/5 rounded-xl">
+                  <p className="text-slate-500 uppercase tracking-wider text-[8px] font-extrabold">Current Borrowing Limit</p>
+                  <p className="text-white font-black font-mono mt-1 text-base">৳ {(applicant.borrowingLimit || 100000).toLocaleString()}</p>
+                  <span className="text-[9px] text-slate-400 font-medium">Approved Maximum Cap</span>
+                </div>
+
+                <div className="p-3 bg-[#0a1220] border border-white/5 rounded-xl">
+                  <p className="text-slate-500 uppercase tracking-wider text-[8px] font-extrabold">Outstanding Debt</p>
+                  <p className="text-rose-400 font-black font-mono mt-1 text-base">৳ {(applicant.remainingDebt || 0).toLocaleString()}</p>
+                  <span className="text-[9px] text-rose-400/80 font-bold">Of Max Cap: {Math.round(((applicant.remainingDebt || 0) / (applicant.borrowingLimit || 100000)) * 100)}%</span>
+                </div>
+
+                <div className="p-3 bg-[#0a1220] border border-white/5 rounded-xl">
+                  <p className="text-slate-500 uppercase tracking-wider text-[8px] font-extrabold">Accumulated Savings</p>
+                  <p className="text-emerald-400 font-black font-mono mt-1 text-base">৳ {(applicant.totalDeposit || 0).toLocaleString()}</p>
+                  <span className="text-[9px] text-slate-400 font-medium">Total Saved Deposits</span>
+                </div>
+
+                <div className="p-3 bg-[#0a1220] border border-white/5 rounded-xl">
+                  <p className="text-slate-500 uppercase tracking-wider text-[8px] font-extrabold">Borrowing Capacity Left</p>
+                  <p className="text-[#50e3c2] font-black font-mono mt-1 text-base">৳ {currentBorrowingCapacity.toLocaleString()}</p>
+                  <span className="text-[9px] text-[#50e3c2]/80 font-bold">Unused Reserve Credit</span>
+                </div>
+              </div>
+
+              {/* Sub-standing metrics row */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 text-[11px] text-slate-300">
+                <div className="flex items-center gap-2 px-3 py-2 bg-slate-950/40 border border-white/5 rounded-xl">
+                  <span className="text-amber-400 text-sm">📅</span>
+                  <div>
+                    <p className="text-[8px] font-black uppercase text-slate-500">Subscription Health</p>
+                    <p className="font-bold text-white uppercase">{applicant.subscriptionStatus || 'INACTIVE'} ({applicant.continuousSubscriptionMonths || 0} Mo.)</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 px-3 py-2 bg-slate-950/40 border border-white/5 rounded-xl">
+                  <span className="text-blue-400 text-sm">🔄</span>
+                  <div>
+                    <p className="text-[8px] font-black uppercase text-slate-500">Repayment Performance</p>
+                    <p className="font-bold text-white">{repaymentRatio}% Repay Ratio ({applicant.totalLoan > 0 ? `৳ ${(applicant.totalLoan - applicant.remainingDebt).toLocaleString()} of ৳ ${applicant.totalLoan.toLocaleString()}` : 'No loans taken' })</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 px-3 py-2 bg-slate-950/40 border border-white/5 rounded-xl">
+                  <span className="text-[#50e3c2] text-sm">🛡</span>
+                  <div>
+                    <p className="text-[8px] font-black uppercase text-slate-500">No-Borrow Streak</p>
+                    <p className="font-bold text-white">{applicant.consecutiveNoLoanMonths || 0} consecutive months</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Dynamic Warning Indicator */}
+              {applicant.remainingDebt && applicant.remainingDebt > (applicant.borrowingLimit || 100000) * 0.8 && (
+                <div className="p-3.5 bg-rose-500/10 border border-rose-500/25 text-rose-400 text-xs rounded-xl flex items-center gap-2.5 shadow-md shadow-rose-950/10">
+                  <AlertCircle className="w-4 h-4 shrink-0 animate-pulse" />
+                  <span className="font-semibold">Applicant's outstanding debt is over 80% of their borrowing limit. Disbursal carries critical default risk!</span>
+                </div>
+              )}
+            </div>
+
+            {/* Row 3: Member Wallets & Linked Accounts dossier (Crucial verification check!) */}
+            <div className="p-5 bg-gradient-to-b from-slate-900/90 to-slate-950/90 border border-white/5 rounded-2xl space-y-4 shadow-xl">
+              <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                <h4 className="text-xs font-black uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
+                  <Wallet className="w-4 h-4 text-emerald-400" />
+                  Verified Payment Channels ({selectedCaseWallets.length})
+                </h4>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-950 px-2 py-0.5 rounded font-mono">
+                  AUDIT CHECKPOINT
+                </span>
+              </div>
+
+              {selectedCaseWallets.length === 0 ? (
+                <p className="text-xs text-slate-500 italic text-center py-4 bg-slate-950/20 rounded-xl">No active digital wallets linked or verified for this member.</p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {selectedCaseWallets.map(w => (
+                    <div 
+                      key={w.id} 
+                      className={cn(
+                        "p-3 rounded-xl border flex items-center justify-between transition-all bg-slate-950/50",
+                        w.isDefault 
+                          ? "border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.05)] bg-[#050e0a]" 
+                          : "border-white/5 hover:border-white/10"
+                      )}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className={cn(
+                            "text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.2 rounded font-mono",
+                            w.provider === 'bKash' ? "bg-pink-500/10 text-pink-400" : "bg-red-500/10 text-red-400"
+                          )}>
+                            {w.provider}
+                          </span>
+                          {w.isDefault && (
+                            <span className="text-[8px] font-black uppercase text-emerald-400 bg-emerald-500/10 px-1.5 py-0.2 rounded tracking-widest">
+                              DEFAULT
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-black text-white">{w.accountHolderName}</p>
+                        <p className="text-[10px] font-mono text-slate-400">{w.mobileNumber}</p>
+                      </div>
+
+                      <div className="text-right flex flex-col items-end gap-1.5">
+                        <span className={cn(
+                          "text-[9px] font-bold px-1.5 py-0.2 rounded-full flex items-center gap-1",
+                          w.isVerified ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"
+                        )}>
+                          <span className={cn("w-1 h-1 rounded-full", w.isVerified ? "bg-emerald-400" : "bg-amber-400")} />
+                          {w.isVerified ? 'VERIFIED' : 'PENDING'}
+                        </span>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-wider">
+                          Linked {w.dateLinked ? (
+                            w.dateLinked.seconds 
+                              ? format(new Date(w.dateLinked.seconds * 1000), 'dd-MM-yy HH:mm') 
+                              : (typeof w.dateLinked.toDate === 'function' 
+                                  ? format(w.dateLinked.toDate(), 'dd-MM-yy HH:mm') 
+                                  : String(w.dateLinked))
+                          ) : (w.dateAdded ? (
+                            w.dateAdded.seconds 
+                              ? format(new Date(w.dateAdded.seconds * 1000), 'dd-MM-yy HH:mm') 
+                              : (typeof w.dateAdded.toDate === 'function' 
+                                  ? format(w.dateAdded.toDate(), 'dd-MM-yy HH:mm') 
+                                  : String(w.dateAdded))
+                          ) : 'Recently')}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Row 4: Applicant Transaction History Timeline */}
+            <div className="p-5 bg-gradient-to-b from-slate-900/90 to-slate-950/90 border border-white/5 rounded-2xl space-y-4 shadow-xl">
+              <h4 className="text-xs font-black uppercase tracking-wider text-blue-400 border-b border-white/5 pb-2">Recent User Transaction Dossier</h4>
+              <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 custom-scrollbar">
+                {userTxs.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic text-center py-6">No previous financial activities recorded.</p>
+                ) : (
+                  userTxs.map((t, i) => (
+                    <div key={t.id || i} className="p-3 bg-slate-950/40 border border-white/5 hover:border-white/10 rounded-xl flex justify-between items-center text-xs transition-all">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                            t.type === 'loan' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                            t.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                            'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                          }`}>
+                            {t.type}
+                          </span>
+                          <span className="font-mono font-black text-white text-[13px]">৳ {t.amount.toLocaleString()}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1 font-medium">Channel: {t.method} {t.transactionId ? `• ID: ${t.transactionId}` : ''}</p>
+                      </div>
+                      <div className="text-right space-y-1">
+                        <span className={`text-[9px] font-extrabold tracking-wider px-2 py-0.5 rounded ${
+                          t.status === 'confirmed' ? 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/15' :
+                          t.status === 'rejected' ? 'text-rose-400 bg-rose-500/10 border border-rose-500/15' :
+                          'text-amber-400 bg-amber-500/10 border border-amber-500/15'
+                        }`}>
+                          {t.status.toUpperCase()}
+                        </span>
+                        <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-1">
+                          {t.timestamp?.toDate ? t.timestamp.toDate().toLocaleDateString('en-GB') : new Date().toLocaleDateString('en-GB')}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: Active Request Parameters & Action Panel (xl:col-span-4) */}
+          <div className="xl:col-span-4 space-y-6">
+            
+            {/* Core Case Request Parameters */}
+            <div className="p-5 bg-gradient-to-b from-[#121c2c]/80 to-[#0a1220]/95 border border-blue-500/15 rounded-2xl space-y-4 shadow-xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl pointer-events-none" />
+              <h4 className="text-xs font-black uppercase tracking-widest text-[#50e3c2] border-b border-white/5 pb-2">Active Claim Request</h4>
+              
+              <div className="space-y-4">
+                <div>
+                  <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest">Requested Capital Disbursal</span>
+                  <p className="text-3xl font-black text-[#50e3c2] font-mono tracking-tight mt-1">
+                    ৳ {trx.amount.toLocaleString()} BDT
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 border-t border-b border-white/5 py-4 text-xs">
+                  <div className="flex justify-between items-center bg-slate-950/40 p-2.5 rounded-xl">
+                    <span className="text-slate-400 font-bold uppercase tracking-wider text-[8px]">Payout Method</span>
+                    <div className="text-right">
+                      <p className="text-white font-black">{trx.method}</p>
+                      <p className="text-slate-400 font-mono text-[9px] mt-0.5">{trx.accountNumber || 'N/A'}</p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-between items-center bg-slate-950/40 p-2.5 rounded-xl">
+                    <span className="text-slate-400 font-bold uppercase tracking-wider text-[8px]">Repayment Date</span>
+                    <p className="text-white font-black font-mono">{trx.estimatedRepaymentDate || 'N/A'}</p>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-slate-400 font-bold uppercase tracking-wider text-[8px] flex items-center gap-1">
+                    <span>📝</span> Stated Loan Purpose
+                  </span>
+                  <div className="bg-slate-950/50 p-3.5 rounded-xl border border-white/5 text-slate-300 text-xs italic mt-1.5 leading-relaxed font-medium">
+                    "{trx.loanReason || 'No descriptive loan purpose compiled.'}"
+                  </div>
+                </div>
+
+                {trx.transactionId && (
+                  <div className="bg-slate-950/40 p-3 rounded-xl border border-white/5 flex justify-between items-center">
+                    <span className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">External Transaction ID</span>
+                    <p className="text-slate-200 font-mono text-xs font-bold">{trx.transactionId}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Decision Desk Console */}
+            <div className="p-5 bg-gradient-to-b from-slate-900/90 to-slate-950/90 border border-white/5 rounded-2xl space-y-4 shadow-xl">
+              <h4 className="text-xs font-black uppercase tracking-wider text-rose-400 border-b border-white/5 pb-2">The Decision Desk</h4>
+              
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Administrative Evaluator Notes</label>
+                  <textarea
+                    value={adminDecisionNotes}
+                    onChange={(e) => setAdminDecisionNotes(e.target.value)}
+                    placeholder="Enter professional comments, security matching updates, or dynamic compliance parameters to justify your action..."
+                    className="w-full h-24 bg-slate-950 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/50 resize-none font-sans font-medium"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-2.5 pt-1">
+                  <button
+                    onClick={() => {
+                      setDecisionAction('approve');
+                      setShowDecisionConfirmation(true);
+                    }}
+                    className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-black uppercase text-[10px] tracking-widest rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/20"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Approve Disbursal
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      setDecisionAction('reject');
+                      setShowDecisionConfirmation(true);
+                    }}
+                    className="w-full py-3 px-4 bg-rose-600/10 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/20 text-[10px] tracking-widest font-black uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <X className="w-4 h-4" /> Decline & Cancel Request
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setDecisionAction('more_info');
+                      setShowDecisionConfirmation(true);
+                    }}
+                    className="w-full py-3 px-4 bg-amber-600/10 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/20 text-[10px] tracking-widest font-black uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <AlertCircle className="w-4 h-4" /> Request More Information
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Double Confirmation Modal Overlay */}
+        <AnimatePresence>
+          {showDecisionConfirmation && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="w-full max-w-md bg-[#0e1726] border border-white/10 rounded-2xl p-6 space-y-4 shadow-2xl text-left"
+              >
+                <div className="flex items-center gap-3 border-b border-white/5 pb-3">
+                  <div className={`p-2 rounded-xl ${
+                    decisionAction === 'approve' ? 'bg-emerald-500/10 text-emerald-400' :
+                    decisionAction === 'reject' ? 'bg-rose-500/10 text-rose-400' :
+                    'bg-amber-500/10 text-amber-400'
+                  }`}>
+                    {decisionAction === 'approve' && <ShieldCheck className="w-6 h-6" />}
+                    {decisionAction === 'reject' && <XCircle className="w-6 h-6" />}
+                    {decisionAction === 'more_info' && <AlertCircle className="w-6 h-6" />}
+                  </div>
+                  <div>
+                    <h3 className="font-black text-white text-base">Verify Board Action</h3>
+                    <p className="text-xs text-slate-400">T.U.T. Lending Authority Compliance Protocol</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3.5 text-xs text-slate-300">
+                  <p>
+                    Are you absolutely sure you want to {
+                      decisionAction === 'approve' ? 'APPROVE the disbursal of' :
+                      decisionAction === 'reject' ? 'DECLINE the requested' :
+                      'REQUEST MORE INFORMATION for'
+                    } <strong className="text-white font-mono">৳{trx.amount.toLocaleString()}</strong> for <strong className="text-white">{trx.userName}</strong>?
+                  </p>
+
+                  <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-1.5 font-mono text-[10px]">
+                    <p className="text-slate-400">DECISION METADATA:</p>
+                    <p>ACTOR: <span className="text-white">{auth.currentUser?.email || 'Administrator'}</span></p>
+                    <p>ACTION: <span className={`uppercase font-bold ${
+                      decisionAction === 'approve' ? 'text-emerald-400' :
+                      decisionAction === 'reject' ? 'text-rose-400' :
+                      'text-amber-400'
+                    }`}>{decisionAction}</span></p>
+                    <p>COMMENTS: <span className="text-white italic">"{adminDecisionNotes || 'No administrator evaluation note provided'}"</span></p>
+                  </div>
+
+                  <div className="p-2.5 bg-[#0a1220] border border-white/5 rounded-xl flex items-start gap-2.5">
+                    <input type="checkbox" id="compliance-chk" className="mt-0.5 rounded border-white/10 bg-slate-950 text-blue-500 focus:ring-0 cursor-pointer" defaultChecked />
+                    <label htmlFor="compliance-chk" className="text-[10px] text-slate-400 leading-normal select-none cursor-pointer">
+                      I declare that this decision adheres to regulatory lending compliance guidelines and has been logged inside the secure audit trails.
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => setShowDecisionConfirmation(false)}
+                    className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    Cancel Action
+                  </button>
+                  <button
+                    onClick={handleExecuteDecision}
+                    className={`flex-1 py-2 rounded-xl text-white font-bold text-xs transition-colors cursor-pointer ${
+                      decisionAction === 'approve' ? 'bg-emerald-600 hover:bg-emerald-500' :
+                      decisionAction === 'reject' ? 'bg-rose-600 hover:bg-rose-500' :
+                      'bg-amber-600 hover:bg-amber-500'
+                    }`}
+                  >
+                    Confirm Action
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  };
+
+  const renderCaseMemberPage = (applicant: UserProfile) => {
+    const handleExecuteMemberDecision = async () => {
+      if (!decisionAction) return;
+      if (decisionAction === 'approve') {
+        await approveMember(applicant.uid, adminDecisionNotes);
+        addToast('Membership Approved', `Approved applicant ${applicant.name} as a verified member.`, 'success');
+      } else if (decisionAction === 'reject') {
+        await rejectMember(applicant.uid, adminDecisionNotes);
+      } else if (decisionAction === 'more_info') {
+        await requestMoreInfoForMember(applicant.uid, adminDecisionNotes);
+      }
+      setSelectedCaseMember(null);
+      setAdminDecisionNotes('');
+      setShowDecisionConfirmation(false);
+      setDecisionAction(null);
+    };
+
+    return (
+      <div className="space-y-6 text-left">
+        {/* Case File Header */}
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-[#0a1220] border border-white/5 p-4 rounded-xl">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setSelectedCaseMember(null);
+                setAdminDecisionNotes('');
+                setDecisionAction(null);
+                setShowDecisionConfirmation(false);
+              }}
+              className="p-2 hover:bg-white/5 rounded-xl text-slate-400 hover:text-white transition-colors cursor-pointer"
+              title="Return to Queue"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black tracking-widest text-[#50e3c2] uppercase bg-[#50e3c2]/10 border border-[#50e3c2]/20 px-2 py-0.5 rounded">
+                  REGISTRATION FILE #{applicant.uid ? applicant.uid.substring(0, 8).toUpperCase() : 'NEW'}
+                </span>
+                <span className="text-xs text-slate-400">•</span>
+                <span className="text-xs font-mono text-slate-400 uppercase font-black">MEMBERSHIP APPRAISAL</span>
+              </div>
+              <h3 className="text-lg font-black text-white mt-1">Identity & Membership Case File</h3>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            <span className="text-[10px] font-mono text-amber-400 uppercase font-black tracking-wider">Awaiting Verification</span>
+          </div>
+        </div>
+
+        {/* Dynamic Dual-Pane Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left Column: Identity credentials dossier */}
+          <div className="lg:col-span-7 space-y-6">
+            <div className="p-5 bg-gradient-to-br from-[#0e1726]/80 to-[#070c14]/90 border border-white/5 rounded-xl space-y-4 shadow-xl">
+              <h4 className="text-xs font-black uppercase tracking-wider text-blue-400 border-b border-white/5 pb-2">National Identity & Profile Information</h4>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Full Legal Name</p>
+                  <p className="text-white font-bold mt-0.5">{applicant.name}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">National ID Number (NID)</p>
+                  <p className="text-white font-mono font-bold mt-0.5">{applicant.nid || 'PENDING SUBMISSION'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Mobile Connection</p>
+                  <p className="text-white font-mono mt-0.5">{applicant.phone || 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Email Address</p>
+                  <p className="text-white mt-0.5">{applicant.email || 'N/A'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Primary Profession/Occupation</p>
+                  <p className="text-white mt-0.5 font-bold">{applicant.occupation || 'Not Specified'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Requested Membership tier</p>
+                  <span className="inline-block px-2 py-0.5 rounded text-[9px] uppercase font-bold tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/20 mt-1">
+                    {applicant.subscriptionTier || 'BRONZE'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 bg-gradient-to-br from-[#0e1726]/80 to-[#070c14]/90 border border-white/5 rounded-xl space-y-4 shadow-xl">
+              <h4 className="text-xs font-black uppercase tracking-wider text-blue-400 border-b border-white/5 pb-2">Residential & Verification Contacts</h4>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                <div className="sm:col-span-2">
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Residential Address</p>
+                  <p className="text-slate-200 mt-0.5 text-[11px] leading-relaxed">{applicant.address || 'Not Provided'}</p>
+                </div>
+                <div className="sm:col-span-2">
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Permanent Address</p>
+                  <p className="text-slate-200 mt-0.5 text-[11px] leading-relaxed">{applicant.permanentAddress || 'Not Provided'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Reference Contact Info</p>
+                  <p className="text-white mt-0.5 font-mono">{applicant.referenceContact || 'Not Specified'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-[8px]">Nominee & Relationship</p>
+                  <p className="text-white mt-0.5">{applicant.nomineeName ? `${applicant.nomineeName} (${applicant.nomineeRelation || 'Nominee'})` : 'None Declared'}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Case details & decisions */}
+          <div className="lg:col-span-5 space-y-6">
+            <div className="p-5 bg-gradient-to-br from-[#121c2c] to-[#0a1220] border border-blue-500/15 rounded-xl space-y-4 shadow-xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl" />
+              <h4 className="text-xs font-black uppercase tracking-widest text-[#50e3c2] border-b border-white/5 pb-2">Risk Evaluation Index</h4>
+              
+              <div className="space-y-4">
+                <div className="p-4 bg-slate-950/40 border border-white/5 rounded-xl flex items-center gap-3">
+                  <div className="p-2 bg-blue-500/10 text-blue-400 rounded-lg">
+                    <UserCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">KYC Verification State</span>
+                    <p className="text-white font-bold text-xs mt-0.5">
+                      {applicant.nid ? 'NID Present' : 'Missing National Identity Document'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-950/40 border border-white/5 rounded-xl flex items-center gap-3">
+                  <div className="p-2 bg-[#50e3c2]/10 text-[#50e3c2] rounded-lg">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Assigned Credit Limit</span>
+                    <p className="text-white font-bold text-xs mt-0.5">
+                      ৳ {(applicant.borrowingLimit || 100000).toLocaleString()} Max Capacity
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Decision Desk Console */}
+            <div className="p-5 bg-gradient-to-br from-[#0e1726]/80 to-[#070c14]/90 border border-white/5 rounded-xl space-y-4 shadow-xl">
+              <h4 className="text-xs font-black uppercase tracking-wider text-rose-400 border-b border-white/5 pb-2">The Decision Desk</h4>
+              
+              <div className="space-y-3.5">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Administrative Evaluator Notes</label>
+                  <textarea
+                    value={adminDecisionNotes}
+                    onChange={(e) => setAdminDecisionNotes(e.target.value)}
+                    placeholder="Provide professional comments about verification checks, legal compliant status..."
+                    className="w-full h-24 bg-slate-950/50 border border-white/10 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500/50 resize-none font-sans"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-2">
+                  <button
+                    onClick={() => {
+                      setDecisionAction('approve');
+                      setShowDecisionConfirmation(true);
+                    }}
+                    className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-black uppercase text-[10px] tracking-widest rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/10"
+                  >
+                    <UserCheck className="w-4 h-4" /> Approve Applicant
+                  </button>
+                  
+                  <button
+                    onClick={() => {
+                      setDecisionAction('reject');
+                      setShowDecisionConfirmation(true);
+                    }}
+                    className="w-full py-2.5 px-4 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/25 text-[10px] tracking-widest font-black uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <X className="w-4 h-4" /> Decline Registration
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setDecisionAction('more_info');
+                      setShowDecisionConfirmation(true);
+                    }}
+                    className="w-full py-2.5 px-4 bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white border border-amber-500/25 text-[10px] tracking-widest font-black uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <AlertCircle className="w-4 h-4" /> Request More Details
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Double Confirmation Modal Overlay */}
+        <AnimatePresence>
+          {showDecisionConfirmation && (
+            <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="w-full max-w-md bg-[#0e1726] border border-white/10 rounded-2xl p-6 space-y-4 shadow-2xl text-left"
+              >
+                <div className="flex items-center gap-3 border-b border-white/5 pb-3">
+                  <div className={`p-2 rounded-xl ${
+                    decisionAction === 'approve' ? 'bg-emerald-500/10 text-emerald-400' :
+                    decisionAction === 'reject' ? 'bg-rose-500/10 text-rose-400' :
+                    'bg-amber-500/10 text-amber-400'
+                  }`}>
+                    {decisionAction === 'approve' && <ShieldCheck className="w-6 h-6" />}
+                    {decisionAction === 'reject' && <XCircle className="w-6 h-6" />}
+                    {decisionAction === 'more_info' && <AlertCircle className="w-6 h-6" />}
+                  </div>
+                  <div>
+                    <h3 className="font-black text-white text-base">Verify Board Action</h3>
+                    <p className="text-xs text-slate-400">T.U.T. Lending Authority Compliance Protocol</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3.5 text-xs text-slate-300">
+                  <p>
+                    Are you absolutely sure you want to {
+                      decisionAction === 'approve' ? 'APPROVE the registration of' :
+                      decisionAction === 'reject' ? 'DECLINE the registration of' :
+                      'REQUEST MORE INFORMATION for'
+                    } <strong className="text-white">{applicant.name}</strong> as a verified member?
+                  </p>
+
+                  <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-1.5 font-mono text-[10px]">
+                    <p className="text-slate-400">DECISION METADATA:</p>
+                    <p>ACTOR: <span className="text-white">{auth.currentUser?.email || 'Administrator'}</span></p>
+                    <p>ACTION: <span className={`uppercase font-bold ${
+                      decisionAction === 'approve' ? 'text-emerald-400' :
+                      decisionAction === 'reject' ? 'text-rose-400' :
+                      'text-amber-400'
+                    }`}>{decisionAction}</span></p>
+                    <p>COMMENTS: <span className="text-white italic">"{adminDecisionNotes || 'No administrator evaluation note provided'}"</span></p>
+                  </div>
+
+                  <div className="p-2.5 bg-[#0a1220] border border-white/5 rounded-xl flex items-start gap-2.5">
+                    <input type="checkbox" id="compliance-member-chk" className="mt-0.5 rounded border-white/10 bg-slate-950 text-blue-500 focus:ring-0 cursor-pointer" defaultChecked />
+                    <label htmlFor="compliance-member-chk" className="text-[10px] text-slate-400 leading-normal select-none cursor-pointer">
+                      I declare that this decision adheres to regulatory member registration audit standards and KYC verification procedures.
+                    </label>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={() => setShowDecisionConfirmation(false)}
+                    className="flex-1 py-2 bg-white/5 hover:bg-white/10 text-slate-300 rounded-xl font-bold text-xs transition-colors cursor-pointer"
+                  >
+                    Cancel Action
+                  </button>
+                  <button
+                    onClick={handleExecuteMemberDecision}
+                    className={`flex-1 py-2 rounded-xl text-white font-bold text-xs transition-colors cursor-pointer ${
+                      decisionAction === 'approve' ? 'bg-emerald-600 hover:bg-emerald-500' :
+                      decisionAction === 'reject' ? 'bg-rose-600 hover:bg-rose-500' :
+                      'bg-amber-600 hover:bg-amber-500'
+                    }`}
+                  >
+                    Confirm Action
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  };
+
   const renderAdminRequests = () => {
+    if (selectedCaseTransaction) {
+      return renderCaseTransactionPage(selectedCaseTransaction);
+    }
+    if (selectedCaseMember) {
+      return renderCaseMemberPage(selectedCaseMember);
+    }
+
     const pendingMembers = allUsers.filter(u => u.status === 'pending');
     const pendingTrxs = allTransactions.filter(t => t.status === 'pending');
 
@@ -3913,15 +7568,30 @@ export default function App() {
                 <p className="text-xs text-slate-500 italic text-center py-6">No pending registrations in queue.</p>
               ) : (
                 pendingMembers.map(user => (
-                  <div key={user.uid} className="p-3 bg-white/[0.01] border border-white/5 rounded-lg flex justify-between items-center">
+                  <div key={user.uid} className="p-3 bg-white/[0.01] border border-white/5 hover:border-blue-500/20 rounded-xl flex justify-between items-center transition-all">
                     <div>
                       <p className="text-xs font-black text-white">{user.name}</p>
-                      <p className="text-[10px] text-slate-400">{user.email || user.phone}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[9px] font-mono font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.2 rounded uppercase">
+                          {user.subscriptionTier || 'Bronze'}
+                        </span>
+                        {user.moreInfoRequested && (
+                          <span className="text-[9px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.2 rounded uppercase animate-pulse">
+                            INFO REQUESTED
+                          </span>
+                        )}
+                        <span className="text-[9px] text-slate-400">{user.email || user.phone}</span>
+                      </div>
                     </div>
-                    <div className="flex gap-2">
-                      <Button variant="primary" className="px-2.5 py-1 text-[9px] min-h-0 bg-emerald-600 animate-pulse" onClick={() => approveMember(user.uid)}>Approve</Button>
-                      <Button variant="danger" className="px-2.5 py-1 text-[9px] min-h-0 bg-rose-600" onClick={() => rejectMember(user.uid)}>Reject</Button>
-                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedCaseMember(user);
+                        setAdminDecisionNotes(user.adminNotes || '');
+                      }}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase text-[9px] tracking-wider rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shadow-lg shadow-blue-950/20"
+                    >
+                      <FileText className="w-3.5 h-3.5" /> Evaluate Profile
+                    </button>
                   </div>
                 ))
               )}
@@ -3936,26 +7606,34 @@ export default function App() {
                 <p className="text-xs text-slate-500 italic text-center py-6">No pending requests matching filter.</p>
               ) : (
                 filteredTrxs.map(trx => (
-                  <div key={trx.id} className="p-3 bg-white/[0.01] border border-white/5 rounded-lg flex justify-between items-center">
+                  <div key={trx.id} className="p-3 bg-white/[0.01] border border-white/5 hover:border-blue-500/20 rounded-xl flex justify-between items-center transition-all">
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="text-[9px] font-black uppercase tracking-wider bg-blue-500/10 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/20">{trx.type}</span>
+                        <span className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                          trx.type === 'loan' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                          trx.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                          'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                        }`}>{trx.type}</span>
                         <p className="text-xs font-black text-white">৳ {trx.amount.toLocaleString()}</p>
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        By: {trx.userName} • Method: {trx.method}
-                        {trx.method === 'Cash' ? (
-                          (trx.type === 'loan' || trx.type === 'refund') ? ' (In-Person Payout)' : ` (Payer: ${trx.transactionId || 'N/A'}, Phone: ${trx.accountNumber || 'N/A'})`
-                        ) : (
-                          ` (${trx.accountNumber || 'N/A'}${trx.transactionId ? `, TrxID: ${trx.transactionId}` : ''})`
+                        {trx.moreInfoRequested && (
+                          <span className="text-[9px] font-mono font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.2 rounded uppercase animate-pulse">
+                            INFO REQUESTED
+                          </span>
                         )}
-                        {trx.loanReason && ` • Reason: ${trx.loanReason}`}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1.5">
+                        By: {trx.userName} • Channel: {trx.method}
                       </p>
                     </div>
-                    <div className="flex gap-2">
-                      <Button variant="primary" className="px-2.5 py-1 text-[9px] min-h-0 bg-emerald-600 cursor-pointer" onClick={() => confirmTransaction(trx)}>Confirm</Button>
-                      <Button variant="danger" className="px-2.5 py-1 text-[9px] min-h-0 bg-rose-600 cursor-pointer" onClick={() => rejectTransaction(trx)}>Cancel</Button>
-                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedCaseTransaction(trx);
+                        setAdminDecisionNotes(trx.adminNotes || '');
+                      }}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase text-[9px] tracking-wider rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shadow-lg shadow-blue-950/20"
+                    >
+                      <Scale className="w-3.5 h-3.5" /> Decision Desk
+                    </button>
                   </div>
                 ))
               )}
@@ -4057,7 +7735,7 @@ export default function App() {
                         </td>
                         <td className="py-3 px-4 text-right">
                           <div className="flex gap-2 justify-end">
-                            <Button variant="secondary" className="px-2 py-1 text-[9px] min-h-0" onClick={() => { setEditingUser(user); setShowEditUserModal(true); }}>Edit Profile</Button>
+                            <Button variant="secondary" className="px-2 py-1 text-[9px] min-h-0" onClick={() => setSelectedAdminMemberDetail(user)}>Dossier File</Button>
                             <Button variant="danger" className="px-2 py-1 text-[9px] min-h-0 bg-rose-600/10 hover:bg-rose-600 text-rose-400 hover:text-white" onClick={() => { setUserToDelete(user); setShowDeleteModal(true); }}>Delete</Button>
                           </div>
                         </td>
@@ -4153,9 +7831,7 @@ export default function App() {
               <div className="space-y-2">
                 <Button variant="primary" className="w-full text-xs bg-indigo-600 hover:bg-indigo-700" onClick={async () => {
                   allUsers.filter(u => u.status === 'approved' && (u.remainingDebt || 0) > 0).forEach(async user => {
-                    if (user.email) {
-                      await sendNotification('Direct Debt Warning', `Dear ${user.name}, this is a high-priority financial compliance reminder. Please balance your outstanding lending debt of ৳${(user.remainingDebt || 0).toLocaleString()} immediately.`, user.email);
-                    }
+                    await sendWorkflowNotification('debt_warning', user.email, user.name, { amount: user.remainingDebt || 0 });
                   });
                   addToast('Alerts Sent', 'Dispatched consolidated due warning alert blocks to all active borrowers.', 'success');
                 }}>
@@ -4306,8 +7982,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-blue-50 font-sans selection:bg-blue-500/30">
       {/* Header */}
-      <header className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-b border-blue-400/10 px-3.5 py-2.5">
-        <div className="max-w-md mx-auto flex gap-3 justify-between items-center">
+      <header className="sticky top-0 z-40 bg-slate-950/85 backdrop-blur-xl border-b border-blue-400/10 px-3.5 py-2.5">
+        <div className="max-w-5xl mx-auto flex gap-3 justify-between items-center">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="logo-shield w-8.5 h-8.5 overflow-hidden rounded-xl border border-blue-400/30 flex items-center justify-center shadow-lg shadow-blue-500/20 flex-shrink-0 bg-slate-900">
               <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -4316,12 +7992,12 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <h1 className="text-sm font-black tracking-wider text-white leading-none truncate uppercase">T.U.T.</h1>
                 {isOffline && (
-                  <span className="inline-flex items-center gap-1 bg-red-500/20 text-red-400 text-[7.5px] font-black tracking-wide px-1 py-0.5 rounded uppercase border border-red-500/30 animate-pulse">
+                  <span className="inline-flex items-center gap-1 bg-red-500/20 text-red-400 text-[9px] font-black tracking-wide px-1.5 py-0.5 rounded uppercase border border-red-500/30 animate-pulse">
                     Offline
                   </span>
                 )}
               </div>
-              <p className="text-[7.5px] font-bold text-blue-400/80 uppercase tracking-[0.15em] truncate leading-none mt-1">Money Lending Authority</p>
+              <p className="text-[10px] font-bold text-blue-400/90 uppercase tracking-[0.12em] truncate leading-none mt-1.5">Money Lending Authority</p>
             </div>
           </div>
 
@@ -4332,27 +8008,32 @@ export default function App() {
                   href="https://wa.me/8801713710607" 
                   target="_blank" 
                   rel="noopener noreferrer"
-                  className="p-2.5 rounded-xl border border-emerald-500/30 text-emerald-400 bg-slate-900/60 hover:bg-emerald-500/10 transition-all flex-shrink-0 cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.12)]"
-                  title="Contact Support (WhatsApp)"
+                  className="p-2.5 rounded-xl border border-emerald-500/40 text-emerald-400 bg-emerald-950/40 hover:bg-emerald-500/20 transition-all flex-shrink-0 cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.2)] flex items-center justify-center group"
+                  title="Contact Support on WhatsApp (+8801713710607)"
                 >
-                  <MessageSquare className="w-4 h-4 animate-pulse" />
+                  <svg className="w-4 h-4 fill-emerald-400 group-hover:scale-110 transition-transform" viewBox="0 0 24 24">
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.572-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.99c-.002 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c-.001 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                  </svg>
                 </a>
                 <button 
                   onClick={() => {
                     setShowNotificationCenter(true);
-                    setNotificationSettingsMode(false);
                   }}
                   className={cn(
                     "p-2.5 rounded-xl border bg-slate-900/60 transition-all relative flex-shrink-0 cursor-pointer",
-                    notificationPermission === 'granted' 
-                      ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10 shadow-[0_0_15px_rgba(245,158,11,0.12)]" 
+                    memberUnreadCount > 0
+                      ? "border-blue-500/40 text-blue-400 hover:bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.2)]" 
+                      : notificationPermission === 'granted'
+                      ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10" 
                       : "border-slate-500/30 text-slate-400 hover:bg-slate-500/10"
                   )}
-                  title="Notification Center"
+                  title="Notifications & Alerts"
                 >
-                  {notificationPermission === 'granted' ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
-                  {notificationHistory.length > 0 && (
-                    <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-red-500 rounded-full animate-ping" />
+                  <Bell className="w-4 h-4" />
+                  {memberUnreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-rose-500 text-white font-mono text-[9px] font-black rounded-full flex items-center justify-center border-2 border-slate-950 animate-pulse shadow-sm">
+                      {memberUnreadCount > 9 ? '9+' : memberUnreadCount}
+                    </span>
                   )}
                 </button>
                 <button 
@@ -4377,7 +8058,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-md mx-auto px-2 py-3 pb-24">
+      <main className="max-w-5xl mx-auto px-2 sm:px-4 py-3 pb-24 transition-all duration-300">
         {globalError && (
           <div className="mb-8 p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-between gap-4 text-red-400">
             <div className="flex items-center gap-3">
@@ -4390,135 +8071,26 @@ export default function App() {
           </div>
         )}
         {!user ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="max-w-3xl"
-            >
-              <VisionBranding />
-
-              <div className="mt-12">
-                {externalAction === 'loan' && (
-                  <div className="mb-8 inline-flex items-center gap-2 px-4 py-2 bg-blue-500/20 border border-blue-500/30 rounded-full text-blue-400 text-sm font-bold animate-bounce">
-                    <Wallet className="w-4 h-4" />
-                    Direct Loan Request Portal Active
-                  </div>
-                )}
-                <h2 className="text-5xl font-black mb-6 leading-tight">
-                  Premium Financial <span className="text-blue-500">Security</span> & Private Lending
-                </h2>
-                <p className="text-blue-200/60 text-lg mb-10">
-                  Exclusive access to private lending, secure deposits, and verified financial memos. 
-                  Join the authority today.
-                </p>
-              </div>
-              <div className="flex flex-wrap justify-center gap-4">
-                <div className="w-full max-w-sm glass p-6 rounded-3xl border-white/5 mb-4">
-                  <h3 className="text-xl font-black text-white mb-4 uppercase italic">
-                    {authMode === 'login' ? 'Member Login' : 'Create Account'}
-                  </h3>
-                  <form onSubmit={handleEmailAuth} className="space-y-4">
-                    <Input 
-                      label="Email Address" 
-                      type="email" 
-                      required 
-                      value={email}
-                      onChange={e => setEmail(e.target.value)}
-                      placeholder="name@example.com"
-                    />
-                    <div className="relative">
-                      <Input 
-                        label="Password" 
-                        type={showPassword ? "text" : "password"} 
-                        required 
-                        value={password}
-                        onChange={e => setPassword(e.target.value)}
-                        placeholder="••••••••"
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-9 text-white/40 hover:text-white/60"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-
-                    {authMode === 'signup' && (
-                      <motion.div 
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        className="space-y-4"
-                      >
-                        <Input 
-                          label="Confirm Password" 
-                          type={showPassword ? "text" : "password"} 
-                          required 
-                          value={confirmPassword}
-                          onChange={e => setConfirmPassword(e.target.value)}
-                          placeholder="••••••••"
-                        />
-                        
-                        <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-                          <div className="flex gap-3">
-                            <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
-                            <div className="space-y-2">
-                              <p className="text-[11px] text-amber-200/80 font-bold leading-tight uppercase tracking-wider">
-                                Security Notice
-                              </p>
-                              <p className="text-xs text-amber-200/60 leading-relaxed">
-                                আপনার পাসওয়ার্ডটি কোথাও লিখে রাখুন বা কপি করে রাখুন। পাসওয়ার্ড ভুলে গেলে একাউন্ট রিকভার করা কঠিন হতে পারে।
-                              </p>
-                              <button 
-                                type="button"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(password);
-                                  alert("পাসওয়ার্ড কপি করা হয়েছে!");
-                                }}
-                                className="flex items-center gap-2 text-[10px] text-amber-500 font-black uppercase tracking-widest hover:text-amber-400"
-                              >
-                                <Copy className="w-3 h-3" /> Copy Password
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-
-                    <Button type="submit" className="w-full py-3" disabled={isLoggingIn}>
-                      {isLoggingIn ? (
-                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      ) : null}
-                      {authMode === 'login' ? 'Sign In' : 'Sign Up'}
-                    </Button>
-                  </form>
-                  <div className="mt-6 flex flex-col gap-4 items-center">
-                    <button 
-                      onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-                      className={cn(
-                        "text-[10px] font-black uppercase tracking-[0.2em] px-6 py-2.5 rounded-full transition-all duration-500",
-                        authMode === 'login' 
-                          ? "bg-blue-600 text-white shadow-xl shadow-blue-900/40 hover:bg-blue-500 hover:scale-105 active:scale-95 animate-pulse border border-blue-400/30" 
-                          : "bg-white/5 text-blue-400 hover:bg-white/10 border border-white/5"
-                      )}
-                    >
-                      {authMode === 'login' ? '🚀 Need an account? Create One' : '← Already have one? Sign In'}
-                    </button>
-                    
-                    {authMode === 'login' && (
-                      <button 
-                        onClick={handleForgotPassword}
-                        className="text-[10px] text-white/20 hover:text-white/40 font-bold uppercase tracking-widest transition-colors"
-                      >
-                        Forgot Password?
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </div>
+          <LoginPage
+            tutLogo={tutLogo}
+            email={email}
+            setEmail={setEmail}
+            password={password}
+            setPassword={setPassword}
+            confirmPassword={confirmPassword}
+            setConfirmPassword={setConfirmPassword}
+            showPassword={showPassword}
+            setShowPassword={setShowPassword}
+            authMode={authMode}
+            setAuthMode={setAuthMode}
+            handleEmailAuth={handleEmailAuth}
+            handleLogin={handleLogin}
+            handleForgotPassword={handleForgotPassword}
+            isLoggingIn={isLoggingIn}
+            setIsLoggingIn={setIsLoggingIn}
+            setGlobalError={setGlobalError}
+            externalAction={externalAction}
+          />
         ) : !profile ? (
           <div className="max-w-xl mx-auto">
             {externalAction === 'loan' && (
@@ -4600,6 +8172,428 @@ export default function App() {
               Check Admin Status
             </Button>
           </div>
+        ) : showProfileModal ? (
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -15 }}
+            transition={{ duration: 0.25 }}
+            className="space-y-4 text-left select-none pb-24"
+          >
+            {/* Header with Back Button */}
+            <div className="flex items-center justify-between border-b border-white/5 pb-3">
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowProfileModal(false)}
+                  className="w-8 h-8 rounded-lg text-slate-400 hover:text-white transition-colors flex items-center justify-center border border-white/10 bg-slate-900/60 hover:bg-slate-800 cursor-pointer"
+                  title="Close Profile"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <div>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-white leading-none">Edit Profile Details</h2>
+                  <span className="text-[10px] text-slate-400 mt-0.5 block leading-tight">T.U.T. Digital Authority System</span>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-semibold">
+                {profile?.memberId || 'TUT-MEMBER'}
+              </span>
+            </div>
+
+            {(() => {
+              const fieldsList = [
+                profileData.name, profileData.email, profileData.phone, profileData.occupation, profileData.address,
+                profileData.fatherName, profileData.motherName, profileData.dob, profileData.bloodGroup, profileData.permanentAddress,
+                profileData.nomineeName, profileData.nomineeRelation, profileData.emergencyContact, profileData.referenceContact,
+                profileData.photoUrl, profileData.facebook, profileData.whatsapp, profileData.telegram
+              ];
+              const filledCount = fieldsList.filter(f => f && String(f).trim() !== '').length;
+              const strength = Math.round((filledCount / 18) * 100);
+              const remainingCount = 18 - filledCount;
+
+              return (
+                <form onSubmit={handleUpdateProfile} className="space-y-4">
+                  {/* Compact Profile Strength Strip */}
+                  <div className="px-3.5 py-2.5 rounded-xl bg-slate-900/70 border border-white/5 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", strength >= 85 ? "bg-emerald-400 animate-pulse" : "bg-amber-400")} />
+                      <span className="text-[11px] font-medium text-slate-300 shrink-0">Integrity Level</span>
+                      <div className="w-20 sm:w-28 h-1.5 bg-white/10 rounded-full overflow-hidden shrink-0">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${strength}%` }}
+                          transition={{ duration: 0.5, ease: "easeOut" }}
+                          className={cn(
+                            "h-full rounded-full",
+                            strength >= 85 ? "bg-emerald-400" : "bg-blue-400"
+                          )}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">
+                        {remainingCount === 0 ? 'Complete' : `${remainingCount} left`}
+                      </span>
+                      <span className={cn(
+                        "text-[10px] font-mono font-bold px-1.5 py-0.5 rounded",
+                        strength >= 85 
+                          ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25" 
+                          : "bg-amber-500/15 text-amber-300 border border-amber-500/25"
+                      )}>
+                        {strength}%
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Compact Segmented Controls */}
+                  <div className="flex gap-1 p-1 bg-slate-950/90 rounded-xl border border-white/5 overflow-x-auto scrollbar-none sticky top-0 z-20 backdrop-blur-md">
+                    {[
+                      { id: 'basic', label: 'General', icon: User },
+                      { id: 'personal', label: 'KYC / Bio', icon: FileText },
+                      { id: 'nominee', label: 'Nominee', icon: Users },
+                      { id: 'emergency', label: 'Emergency', icon: ShieldCheck },
+                      { id: 'social', label: 'Socials', icon: Facebook }
+                    ].map(tab => {
+                      const Icon = tab.icon;
+                      const isActive = activeProfileTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setActiveProfileTab(tab.id as any)}
+                          className={cn(
+                            "flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors flex-1 whitespace-nowrap cursor-pointer",
+                            isActive 
+                              ? "bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold" 
+                              : "text-slate-400 border border-transparent hover:text-slate-200 hover:bg-white/5"
+                          )}
+                        >
+                          <Icon className={cn("w-3.5 h-3.5 shrink-0", isActive ? "text-blue-400" : "text-slate-500")} />
+                          <span>{tab.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Animated Form Panels */}
+                  <AnimatePresence mode="wait">
+                    <motion.div
+                      key={activeProfileTab}
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -8 }}
+                      transition={{ duration: 0.15 }}
+                      className="space-y-4"
+                    >
+                      {activeProfileTab === 'basic' && (
+                        <div className="space-y-3.5">
+                          {/* Compact Avatar Card */}
+                          <div className="p-3 bg-slate-900/60 border border-white/5 rounded-xl flex items-center gap-3.5">
+                            <div className="shrink-0">
+                              <FileUploader 
+                                label=""
+                                currentUrl={profileData.photoUrl}
+                                onUpload={(url) => setProfileData({...profileData, photoUrl: url})}
+                                maxDimension={300}
+                                shape="circle"
+                              />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <span className="text-xs font-bold text-white block truncate">{profileData.name || 'Member Account'}</span>
+                              <span className="text-[10px] text-slate-400 block truncate">{profileData.email || 'No email specified'}</span>
+                              <span className="text-[9px] text-blue-400/80 mt-0.5 block">Tap avatar to upload photo (JPG/PNG)</span>
+                            </div>
+                          </div>
+
+                          {/* 2-Column Responsive Input Grid */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Input 
+                              label="Full Legal Name" 
+                              required 
+                              value={profileData.name}
+                              onChange={e => setProfileData({...profileData, name: e.target.value})}
+                              placeholder="Official ID Name"
+                            />
+                            <Input 
+                              label="Current Occupation" 
+                              required 
+                              value={profileData.occupation}
+                              onChange={e => setProfileData({...profileData, occupation: e.target.value})}
+                              placeholder="e.g. Software Engineer"
+                            />
+                            <Input 
+                              label="Primary Phone Number" 
+                              required 
+                              value={profileData.phone}
+                              onChange={e => setProfileData({...profileData, phone: e.target.value})}
+                              placeholder="017XXXXXXXX"
+                            />
+                            <Input 
+                              label="Verified Email Address" 
+                              type="email"
+                              required 
+                              value={profileData.email}
+                              onChange={e => setProfileData({...profileData, email: e.target.value})}
+                              placeholder="secure@example.com"
+                            />
+                          </div>
+
+                          <Input 
+                            label="Residential Present Address" 
+                            required 
+                            value={profileData.address}
+                            onChange={e => setProfileData({...profileData, address: e.target.value})}
+                            placeholder="Apartment, Street, City, Bangladesh"
+                          />
+
+                          {/* Compact Notification Preference */}
+                          <div className="p-2.5 bg-slate-900/60 border border-white/5 rounded-xl flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-7 h-7 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center shrink-0">
+                                <Mail className="w-3.5 h-3.5 text-blue-400" />
+                              </div>
+                              <div className="min-w-0">
+                                <span className="text-[11px] font-semibold text-slate-200 block leading-tight">Email Notifications</span>
+                                <span className="text-[10px] text-slate-400 block leading-tight truncate">Ledger receipts & security alerts</span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setProfileData({
+                                ...profileData,
+                                emailNotificationsEnabled: !profileData.emailNotificationsEnabled
+                              })}
+                              className={cn(
+                                "px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider border transition-colors shrink-0 cursor-pointer",
+                                profileData.emailNotificationsEnabled 
+                                  ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20" 
+                                  : "bg-slate-800 text-slate-400 border-white/10 hover:bg-slate-700"
+                              )}
+                            >
+                              {profileData.emailNotificationsEnabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeProfileTab === 'personal' && (
+                        <div className="space-y-3.5">
+                          <div className="flex items-center gap-1.5 pb-1 border-b border-white/5 text-slate-400">
+                            <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">National ID & Bio Vitals</span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Input 
+                              label="Father's Full Name" 
+                              value={profileData.fatherName}
+                              onChange={e => setProfileData({...profileData, fatherName: e.target.value})}
+                              placeholder="Father's Legal Name"
+                            />
+                            <Input 
+                              label="Mother's Full Name" 
+                              value={profileData.motherName}
+                              onChange={e => setProfileData({...profileData, motherName: e.target.value})}
+                              placeholder="Mother's Legal Name"
+                            />
+                            <Input 
+                              label="Date of Birth" 
+                              type="date"
+                              value={profileData.dob}
+                              onChange={e => setProfileData({...profileData, dob: e.target.value})}
+                            />
+                            <Input 
+                              label="Blood Group" 
+                              value={profileData.bloodGroup}
+                              onChange={e => setProfileData({...profileData, bloodGroup: e.target.value})}
+                              placeholder="e.g. A+, B+, O+, AB+"
+                            />
+                          </div>
+
+                          <Input 
+                            label="Permanent Legal Address" 
+                            value={profileData.permanentAddress}
+                            onChange={e => setProfileData({...profileData, permanentAddress: e.target.value})}
+                            placeholder="Permanent address as registered on National ID"
+                          />
+                        </div>
+                      )}
+
+                      {activeProfileTab === 'nominee' && (
+                        <div className="space-y-3.5">
+                          <div className="flex items-center gap-1.5 pb-1 border-b border-white/5 text-slate-400">
+                            <Users className="w-3.5 h-3.5 text-blue-400" />
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Designated Nominee & Beneficiary</span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Input 
+                              label="Nominee Legal Name" 
+                              value={profileData.nomineeName}
+                              onChange={e => setProfileData({...profileData, nomineeName: e.target.value})}
+                              placeholder="Nominee's official full name"
+                            />
+                            <Input 
+                              label="Relationship with Nominee" 
+                              value={profileData.nomineeRelation}
+                              onChange={e => setProfileData({...profileData, nomineeRelation: e.target.value})}
+                              placeholder="e.g. Spouse, Sibling, Child, Parent"
+                            />
+                          </div>
+
+                          <div className="p-2.5 bg-blue-500/5 border border-blue-500/10 rounded-xl text-[10px] text-slate-400 leading-relaxed">
+                            <span className="font-semibold text-blue-300">Authority Trust Protocol:</span> Nominee holds emergency verification clearance and beneficiary rights under private ledger rules.
+                          </div>
+                        </div>
+                      )}
+
+                      {activeProfileTab === 'emergency' && (
+                        <div className="space-y-3.5">
+                          <div className="flex items-center gap-1.5 pb-1 border-b border-white/5 text-slate-400">
+                            <ShieldCheck className="w-3.5 h-3.5 text-rose-400" />
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Emergency & Reference Contacts</span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <Input 
+                              label="Emergency Contact" 
+                              value={profileData.emergencyContact}
+                              onChange={e => setProfileData({...profileData, emergencyContact: e.target.value})}
+                              placeholder="Contact Name & Mobile"
+                            />
+                            <Input 
+                              label="Reference Contact" 
+                              value={profileData.referenceContact}
+                              onChange={e => setProfileData({...profileData, referenceContact: e.target.value})}
+                              placeholder="Reference Name & Mobile"
+                            />
+                          </div>
+
+                          {/* Admin Notes Private */}
+                          <div className="space-y-1.5 pt-2 border-t border-white/5">
+                            <div className="flex items-center gap-1.5 text-slate-400">
+                              <Lock className="w-3.5 h-3.5 text-amber-400/80" />
+                              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Authority Memo Notes (Private)</label>
+                            </div>
+                            <textarea 
+                              className="w-full bg-slate-900/60 border border-white/5 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-blue-500/40 transition-all min-h-[64px] text-slate-300 placeholder:text-slate-600 font-mono leading-relaxed resize-none"
+                              value={profileData.adminNotes}
+                              onChange={e => setProfileData({...profileData, adminNotes: e.target.value})}
+                              placeholder="Private memo notes logged under digital security signatures..."
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {activeProfileTab === 'social' && (
+                        <div className="space-y-3.5">
+                          <div className="flex items-center gap-1.5 pb-1 border-b border-white/5 text-slate-400">
+                            <Facebook className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">Communication & Messaging Handles</span>
+                          </div>
+
+                          <div className="space-y-2.5">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-semibold text-slate-300 ml-0.5 flex items-center gap-1.5">
+                                <Facebook className="w-3.5 h-3.5 text-blue-400" /> Facebook Profile Link
+                              </label>
+                              <input 
+                                className="w-full bg-slate-900/50 border border-white/5 rounded-xl px-3 py-2.5 text-xs text-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all placeholder:text-slate-600"
+                                value={profileData.facebook}
+                                onChange={e => setProfileData({...profileData, facebook: e.target.value})}
+                                placeholder="https://facebook.com/username"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-semibold text-slate-300 ml-0.5 flex items-center gap-1.5">
+                                <MessageSquare className="w-3.5 h-3.5 text-emerald-400" /> WhatsApp Line
+                              </label>
+                              <input 
+                                className="w-full bg-slate-900/50 border border-white/5 rounded-xl px-3 py-2.5 text-xs text-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all placeholder:text-slate-600"
+                                value={profileData.whatsapp}
+                                onChange={e => setProfileData({...profileData, whatsapp: e.target.value})}
+                                placeholder="+88017XXXXXXXX"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-semibold text-slate-300 ml-0.5 flex items-center gap-1.5">
+                                <Send className="w-3.5 h-3.5 text-sky-400" /> Telegram Account Tag
+                              </label>
+                              <input 
+                                className="w-full bg-slate-900/50 border border-white/5 rounded-xl px-3 py-2.5 text-xs text-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all placeholder:text-slate-600"
+                                value={profileData.telegram}
+                                onChange={e => setProfileData({...profileData, telegram: e.target.value})}
+                                placeholder="@username"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </motion.div>
+                  </AnimatePresence>
+
+                  {/* Compact Dynamic Action Footer */}
+                  <div className="pt-3 pb-2 flex items-center justify-between gap-2 sticky bottom-0 bg-[#080f1c]/95 backdrop-blur-md border-t border-white/5 z-20">
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      className="text-xs px-3 py-2 h-9 font-semibold border-white/10 hover:bg-white/5 text-slate-300"
+                      onClick={() => setShowProfileModal(false)}
+                    >
+                      Cancel
+                    </Button>
+                    
+                    <div className="flex items-center gap-2">
+                      {activeProfileTab !== 'basic' && (
+                        <Button 
+                          type="button" 
+                          variant="glass" 
+                          className="px-3 py-2 h-9 text-xs font-semibold text-slate-300 border-white/10"
+                          onClick={() => {
+                            const tabOrder: ('basic' | 'personal' | 'nominee' | 'emergency' | 'social')[] = ['basic', 'personal', 'nominee', 'emergency', 'social'];
+                            const currentIdx = tabOrder.indexOf(activeProfileTab);
+                            if (currentIdx > 0) setActiveProfileTab(tabOrder[currentIdx - 1]);
+                          }}
+                        >
+                          Back
+                        </Button>
+                      )}
+
+                      {/* Instant Save Option Always Available */}
+                      <Button 
+                        type="submit" 
+                        className={cn(
+                          "h-9 px-4 text-xs font-bold transition-all shadow-md",
+                          activeProfileTab === 'social'
+                            ? "bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 border border-emerald-400/20"
+                            : "bg-emerald-600/90 hover:bg-emerald-500 text-white border border-emerald-500/30"
+                        )}
+                      >
+                        Save
+                      </Button>
+
+                      {activeProfileTab !== 'social' && (
+                        <Button 
+                          type="button" 
+                          className="h-9 px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-md text-xs font-semibold border border-blue-400/20"
+                          onClick={() => {
+                            const tabOrder: ('basic' | 'personal' | 'nominee' | 'emergency' | 'social')[] = ['basic', 'personal', 'nominee', 'emergency', 'social'];
+                            const currentIdx = tabOrder.indexOf(activeProfileTab);
+                            if (currentIdx < tabOrder.length - 1) setActiveProfileTab(tabOrder[currentIdx + 1]);
+                          }}
+                        >
+                          Next
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </form>
+              );
+            })()}
+          </motion.div>
         ) : (
           <MemberDashboard
             profile={profile}
@@ -4622,6 +8616,10 @@ export default function App() {
             setShowProfileModal={setShowProfileModal}
             setShowAdminLogin={setShowAdminLogin}
             handleAdClick={handleAdClick}
+            addToast={addToast}
+            sendWorkflowNotification={sendWorkflowNotification}
+            onOpenNotifications={() => setShowNotificationCenter(true)}
+            unreadNotificationsCount={memberUnreadCount}
           />
         )}
       </main>
@@ -4651,247 +8649,26 @@ export default function App() {
       {/* Admin Panel Overlay */}
       <AnimatePresence>
         {isAdminLoggedIn && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-[#070d19] text-slate-100 font-sans flex flex-col lg:flex-row h-screen overflow-hidden select-none"
-          >
-            {/* 1. Left Sidebar */}
-            <div className={cn(
-              "w-full lg:w-72 bg-[#0a1220] border-r border-white/5 flex flex-col h-full shrink-0 z-40 transition-transform duration-300",
-              "fixed lg:static inset-y-0 left-0",
-              mobileSidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
-            )}>
-              {/* Sidebar Header */}
-              <div className="h-20 border-b border-white/5 px-6 flex items-center gap-3 shrink-0">
-                <div className="w-9 h-9 overflow-hidden rounded-xl border border-blue-500/30 flex items-center justify-center bg-slate-900 shadow-lg shadow-blue-500/20">
-                  <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                </div>
-                <div>
-                  <h1 className="text-sm font-black tracking-wider text-white leading-none uppercase">T.U.T. Authority</h1>
-                  <span className="text-[8px] font-bold text-blue-400 uppercase tracking-widest block mt-0.5">Financial Suite</span>
-                </div>
-                {/* Close sidebar button on mobile */}
-                <button onClick={() => setMobileSidebarOpen(false)} className="lg:hidden ml-auto p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Sidebar Navigation */}
-              <div className="flex-1 overflow-y-auto py-6 px-4 space-y-7 custom-scrollbar text-left">
-                {/* Group 1: General */}
-                <div className="space-y-2">
-                  <p className="text-[9px] font-black uppercase text-slate-500 tracking-widest pl-3">Executive Control</p>
-                  <div className="space-y-1">
-                    <button
-                      id="admin-tab-btn-overview"
-                      onClick={() => { setAdminTab('overview'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-3 transition-all cursor-pointer",
-                        adminTab === 'overview' ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20 border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <Activity className="w-4 h-4 shrink-0" />
-                      <span>Overview HUD</span>
-                    </button>
-                    
-                    <button
-                      onClick={() => { setAdminTab('members'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-3 transition-all cursor-pointer",
-                        adminTab === 'members' ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20 border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <Users className="w-4 h-4 shrink-0" />
-                      <span>Users & Members</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Group 2: Operational Queues */}
-                <div className="space-y-2">
-                  <p className="text-[9px] font-black uppercase text-slate-500 tracking-widest pl-3">Operational Queues</p>
-                  <div className="space-y-1">
-                    <button
-                      onClick={() => { setAdminTab('requests'); setRequestFilter('loan'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-between transition-all cursor-pointer",
-                        adminTab === 'requests' && requestFilter === 'loan' ? "bg-blue-600 text-white shadow-lg border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <span className="flex items-center gap-3">
-                        <Landmark className="w-4 h-4 shrink-0" />
-                        <span>Loans Queue</span>
-                      </span>
-                      {allTransactions.filter(t => t.status === 'pending' && t.type === 'loan').length > 0 && (
-                        <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => { setAdminTab('requests'); setRequestFilter('deposit'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-between transition-all cursor-pointer",
-                        adminTab === 'requests' && requestFilter === 'deposit' ? "bg-blue-600 text-white shadow-lg border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <span className="flex items-center gap-3">
-                        <Wallet className="w-4 h-4 shrink-0" />
-                        <span>Deposits Queue</span>
-                      </span>
-                      {allTransactions.filter(t => t.status === 'pending' && t.type === 'deposit').length > 0 && (
-                        <span className="w-2 h-2 bg-emerald-500 rounded-full" />
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => { setAdminTab('requests'); setRequestFilter('repayment'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-3 transition-all cursor-pointer",
-                        adminTab === 'requests' && requestFilter === 'repayment' ? "bg-blue-600 text-white shadow-lg border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <RotateCcw className="w-4 h-4 shrink-0" />
-                      <span>Repayments Queue</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Group 3: Strategy & Analytics */}
-                <div className="space-y-2">
-                  <p className="text-[9px] font-black uppercase text-slate-500 tracking-widest pl-3">Liquidity & Growth</p>
-                  <div className="space-y-1">
-                    <button
-                      onClick={() => { setAdminTab('partners'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-3 transition-all cursor-pointer",
-                        adminTab === 'partners' ? "bg-blue-600 text-white shadow-lg border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <Briefcase className="w-4 h-4 shrink-0" />
-                      <span>Sponsor Campaigns</span>
-                    </button>
-
-                    <button
-                      onClick={() => { setAdminTab('reminders'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-3 transition-all cursor-pointer",
-                        adminTab === 'reminders' ? "bg-blue-600 text-white shadow-lg border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <Crown className="w-4 h-4 shrink-0" />
-                      <span>Due Reminders</span>
-                    </button>
-
-                    <button
-                      onClick={() => { setAdminTab('liquidity'); setMobileSidebarOpen(false); }}
-                      className={cn(
-                        "w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-3 transition-all cursor-pointer",
-                        adminTab === 'liquidity' ? "bg-blue-600 text-white shadow-lg border border-blue-500/20" : "text-slate-400 hover:bg-white/[0.02] hover:text-white"
-                      )}
-                    >
-                      <Shield className="w-4 h-4 shrink-0" />
-                      <span>Basel Risk Board</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Help & Support banner box */}
-              <div className="p-4 mx-4 mb-4 bg-slate-950/40 border border-white/5 rounded-2xl space-y-2.5 text-left">
-                <HelpCircle className="w-5 h-5 text-blue-400" />
-                <div>
-                  <h6 className="text-[10px] font-black uppercase text-white leading-none">Supervisor Desk</h6>
-                  <p className="text-[9px] text-slate-400 mt-1 leading-normal">Need assistance? Dispatched supervisor desks are active 24/7.</p>
-                </div>
-                <button className="w-full py-1.5 text-[9px] font-black uppercase tracking-wider bg-white/5 hover:bg-white/10 rounded-lg text-white border border-white/5 transition-colors">
-                  Contact Support
-                </button>
-              </div>
-
-              {/* Exit/Log out button */}
-              <div className="p-4 border-t border-white/5">
-                <button 
-                  onClick={() => setIsAdminLoggedIn(false)}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider bg-rose-600/10 hover:bg-rose-600 hover:text-white text-rose-400 border border-rose-500/10 flex items-center justify-center gap-2 transition-all cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4 shrink-0" />
-                  <span>Exit Admin Panel</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Sidebar mobile overlay background */}
-            {mobileSidebarOpen && (
-              <div onClick={() => setMobileSidebarOpen(false)} className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 lg:hidden" />
-            )}
-
-            {/* 2. Right Main Panel */}
-            <div className="flex-1 flex flex-col h-full overflow-hidden">
-              {/* Fixed Top Header */}
-              <div className="h-20 border-b border-white/5 bg-[#080f1c] px-6 lg:px-8 flex items-center justify-between shrink-0 z-30">
-                <div className="flex items-center gap-3">
-                  <button onClick={() => setMobileSidebarOpen(true)} className="lg:hidden p-1.5 hover:bg-white/5 rounded-lg text-slate-400 hover:text-white mr-1">
-                    <Menu className="w-5 h-5" />
-                  </button>
-                  <div className="text-left">
-                    <h2 className="text-sm font-black tracking-widest text-slate-400 uppercase leading-none">
-                      {adminTab === 'overview' ? 'Financial Center' :
-                       adminTab === 'members' ? 'Members Directory' :
-                       adminTab === 'requests' ? 'Pending Transactions' :
-                       adminTab === 'partners' ? 'Sponsor Campaigns' :
-                       adminTab === 'reminders' ? 'Due Reminders Hub' : 'Basel Risk & Compliance'}
-                    </h2>
-                    <span className="text-[10px] text-slate-500 mt-1 block">T.U.T. Private Authority System</span>
-                  </div>
-                </div>
-
-                {/* Right side widgets */}
-                <div className="flex items-center gap-4">
-                  {/* Real-time Clock display */}
-                  <div className="hidden md:flex flex-col items-end pr-3 border-r border-white/5">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">System Live</span>
-                    <span className="text-xs font-mono font-bold text-white mt-0.5">{new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()}</span>
-                  </div>
-
-                  {/* Seed fund display */}
-                  <div className="hidden sm:flex items-center gap-2 bg-[#0a1220] border border-white/5 px-3 py-1.5 rounded-xl">
-                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-[9px] font-mono text-slate-400">FUND: <strong className="text-white">৳{authorityPersonalFund.toLocaleString()}</strong></span>
-                    <button 
-                      id="trigger-fund-edit"
-                      onClick={() => { setTempFundValue(authorityPersonalFund.toString()); setShowEditFundModal(true); }}
-                      className="text-[9px] text-[#50e3c2] uppercase font-bold hover:underline ml-1 cursor-pointer"
-                    >
-                      Add
-                    </button>
-                  </div>
-
-                  {/* Notification indicator */}
-                  <button onClick={() => addToast('Notifications', 'No unread high-priority regulatory alerts.', 'info')} className="p-2 hover:bg-white/5 rounded-xl text-slate-400 hover:text-white relative transition-colors">
-                    <Bell className="w-4 h-4" />
-                    <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full" />
-                  </button>
-
-                  {/* Quick logout */}
-                  <button onClick={() => setIsAdminLoggedIn(false)} className="p-2 hover:bg-rose-500/10 rounded-xl text-slate-400 hover:text-rose-400 transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* Scrollable Panel Area */}
-              <div className="flex-1 overflow-y-auto p-6 lg:p-8 custom-scrollbar bg-[#060b14]">
-                {adminTab === 'overview' && renderAdminOverview()}
-                {adminTab === 'requests' && renderAdminRequests()}
-                {adminTab === 'members' && renderAdminMembers()}
-                {adminTab === 'partners' && renderAdminPartners()}
-                {adminTab === 'reminders' && renderAdminReminders()}
-                {adminTab === 'liquidity' && renderAdminLiquidity()}
-              </div>
-            </div>
-          </motion.div>
+          <div className="fixed inset-0 z-50 bg-slate-950 text-slate-100 font-sans flex flex-col overflow-hidden">
+            <AdminPortalV4 
+              db={db}
+              user={user}
+              profile={profile}
+              allUsers={allUsers}
+              allTransactions={allTransactions}
+              auditLogs={auditLogs}
+              emailLogs={emailLogs}
+              reserveFund={authorityPersonalFund}
+              onUpdateReserveFund={async (newAmount: number) => {
+                await handleUpdateAuthorityFund(newAmount.toString());
+              }}
+              notificationService={notificationService}
+              sendEmail={sendEmail}
+              logAuditEvent={logAuditEvent}
+              addToast={addToast}
+              onCloseAdmin={() => setIsAdminLoggedIn(false)}
+            />
+          </div>
         )}
       </AnimatePresence>
 
@@ -5029,166 +8806,7 @@ export default function App() {
         </form>
       </Modal>
 
-      <Modal 
-        isOpen={showProfileModal} 
-        onClose={() => setShowProfileModal(false)} 
-        title="Edit Profile Details"
-      >
-        <form onSubmit={handleUpdateProfile} className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
-          {/* Basic Information */}
-          <div className="space-y-4">
-            <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] border-b border-white/5 pb-2">Basic Information</h4>
-            <Input 
-              label="Full Name" 
-              required 
-              value={profileData.name}
-              onChange={e => setProfileData({...profileData, name: e.target.value})}
-            />
-            <Input 
-              label="Contact Email" 
-              type="email"
-              required 
-              value={profileData.email}
-              onChange={e => setProfileData({...profileData, email: e.target.value})}
-            />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input 
-                label="Phone Number" 
-                required 
-                value={profileData.phone}
-                onChange={e => setProfileData({...profileData, phone: e.target.value})}
-              />
-              <Input 
-                label="Occupation" 
-                required 
-                value={profileData.occupation}
-                onChange={e => setProfileData({...profileData, occupation: e.target.value})}
-              />
-            </div>
-            <Input 
-              label="Full Address" 
-              required 
-              value={profileData.address}
-              onChange={e => setProfileData({...profileData, address: e.target.value})}
-            />
-          </div>
 
-          {/* Personal Details */}
-          <div className="space-y-4">
-            <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] border-b border-white/5 pb-2">Personal Details</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input 
-                label="Father's Name" 
-                value={profileData.fatherName}
-                onChange={e => setProfileData({...profileData, fatherName: e.target.value})}
-              />
-              <Input 
-                label="Mother's Name" 
-                value={profileData.motherName}
-                onChange={e => setProfileData({...profileData, motherName: e.target.value})}
-              />
-              <Input 
-                label="Date of Birth" 
-                type="date"
-                value={profileData.dob}
-                onChange={e => setProfileData({...profileData, dob: e.target.value})}
-              />
-              <Input 
-                label="Blood Group" 
-                value={profileData.bloodGroup}
-                onChange={e => setProfileData({...profileData, bloodGroup: e.target.value})}
-                placeholder="e.g. A+"
-              />
-            </div>
-            <Input 
-              label="Emergency Contact" 
-              value={profileData.emergencyContact}
-              onChange={e => setProfileData({...profileData, emergencyContact: e.target.value})}
-              placeholder="Name & Phone"
-            />
-          </div>
-
-          {/* Nominee Information */}
-          <div className="space-y-4">
-            <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] border-b border-white/5 pb-2">Nominee Information</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input 
-                label="Nominee Name" 
-                value={profileData.nomineeName}
-                onChange={e => setProfileData({...profileData, nomineeName: e.target.value})}
-              />
-              <Input 
-                label="Relation with Nominee" 
-                value={profileData.nomineeRelation}
-                onChange={e => setProfileData({...profileData, nomineeRelation: e.target.value})}
-              />
-            </div>
-          </div>
-
-          {/* Identity & Reference */}
-          <div className="space-y-4">
-            <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] border-b border-white/5 pb-2">Identity & Reference</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <FileUploader 
-                label="Profile Photo"
-                currentUrl={profileData.photoUrl}
-                onUpload={(url) => setProfileData({...profileData, photoUrl: url})}
-              />
-              <Input 
-                label="Permanent Address" 
-                value={profileData.permanentAddress}
-                onChange={e => setProfileData({...profileData, permanentAddress: e.target.value})}
-              />
-              <Input 
-                label="Reference Contact (Emergency)" 
-                value={profileData.referenceContact}
-                onChange={e => setProfileData({...profileData, referenceContact: e.target.value})}
-                placeholder="Name & Phone"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-blue-200/70 ml-1">Admin Notes (Private)</label>
-              <textarea 
-                className="w-full bg-slate-950 border border-blue-400/20 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-all min-h-[100px] text-blue-100"
-                value={profileData.adminNotes}
-                onChange={e => setProfileData({...profileData, adminNotes: e.target.value})}
-                placeholder="Internal notes about this member..."
-              />
-            </div>
-          </div>
-
-          {/* Social Media */}
-          <div className="space-y-4">
-            <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-[0.3em] border-b border-white/5 pb-2">Social Media</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Input 
-                label="Facebook Profile Link" 
-                value={profileData.facebook}
-                onChange={e => setProfileData({...profileData, facebook: e.target.value})}
-              />
-              <Input 
-                label="WhatsApp Number" 
-                value={profileData.whatsapp}
-                onChange={e => setProfileData({...profileData, whatsapp: e.target.value})}
-              />
-              <Input 
-                label="Telegram Username" 
-                value={profileData.telegram}
-                onChange={e => setProfileData({...profileData, telegram: e.target.value})}
-              />
-            </div>
-          </div>
-
-          <div className="pt-4 flex gap-3 sticky bottom-0 bg-slate-950/80 backdrop-blur-md py-4 border-t border-white/5">
-            <Button type="button" variant="outline" className="flex-1" onClick={() => setShowProfileModal(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" className="flex-1">
-              Update Profile
-            </Button>
-          </div>
-        </form>
-      </Modal>
 
       <Modal 
         isOpen={showDeleteModal} 
@@ -5604,7 +9222,7 @@ export default function App() {
                   )}>
                     {requestMethod === 'Bkash' ? 'b' : 'n'}
                   </div>
-                  <span className="text-xs font-bold text-white">{requestMethod} Personal</span>
+                  <span className="text-xs font-bold text-white">{requestMethod} Authority</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-mono font-black text-amber-400 tracking-wider">
@@ -5614,7 +9232,7 @@ export default function App() {
                 </div>
               </div>
               <p className="text-[9px] text-amber-500/60 font-medium leading-tight">
-                Please complete the "Send Money" transaction to this personal account first, then provide the Transaction ID (TrxID) below for verification.
+                Please complete the "Send Money" transaction to this Authority account first, then provide the Transaction ID (TrxID) below for verification.
               </p>
             </div>
           )}
@@ -5745,272 +9363,58 @@ export default function App() {
         </div>
       </Modal>
 
-      {/* Notification Center Modal */}
-      <Modal 
-        isOpen={showNotificationCenter} 
-        onClose={() => setShowNotificationCenter(false)}
-        title={notificationSettingsMode ? "Notification Settings" : "Notification Center"}
-      >
-        <div className="space-y-6">
-          <div className="flex items-center justify-between border-b border-blue-400/10 pb-4">
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setNotificationSettingsMode(false)}
-                className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-bold transition-all",
-                  !notificationSettingsMode ? "bg-blue-600 text-white" : "text-blue-400 hover:bg-blue-400/10"
-                )}
-              >
-                History
-              </button>
-              <button 
-                onClick={() => setNotificationSettingsMode(true)}
-                className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2",
-                  notificationSettingsMode ? "bg-blue-600 text-white" : "text-blue-400 hover:bg-blue-400/10"
-                )}
-              >
-                <Settings className="w-4 h-4" />
-                Settings
-              </button>
-            </div>
-            {!notificationSettingsMode && notificationHistory.length > 0 && (
-              <button 
-                onClick={clearNotificationHistory}
-                className="text-xs text-red-400 hover:text-red-300 font-bold"
-              >
-                Clear All
-              </button>
-            )}
-          </div>
-
-          {notificationSettingsMode ? (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
-              <div className="p-4 bg-slate-900/50 border border-blue-400/10 rounded-xl space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-bold text-white">System Notifications</p>
-                    <p className="text-xs text-blue-200/60">Receive alerts on your device</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={cn(
-                      "text-[10px] font-black uppercase px-2 py-0.5 rounded",
-                      notificationPermission === 'granted' ? "bg-emerald-500/20 text-emerald-400" : "bg-amber-500/20 text-amber-400"
-                    )}>
-                      {notificationPermission}
-                    </span>
-                    <Button 
-                      onClick={requestNotificationPermission}
-                      className={cn(
-                        "text-xs py-1 h-auto",
-                        notificationPermission === 'granted' ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "bg-blue-600"
-                      )}
-                    >
-                      {notificationPermission === 'granted' ? 'Reset' : 'Turn On'}
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between pt-4 border-t border-blue-400/5">
-                  <div>
-                    <p className="font-bold text-white">Outgoing Email Alerts</p>
-                    <p className="text-xs text-blue-200/60">Send Gmail updates to members</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className={cn(
-                      "text-[10px] font-black uppercase px-2 py-0.5 rounded",
-                      gmailNotificationsEnabled ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-500/20 text-slate-400"
-                    )}>
-                      {gmailNotificationsEnabled ? 'Active' : 'Off'}
-                    </span>
-                    <Button 
-                      onClick={() => setGmailNotificationsEnabled(!gmailNotificationsEnabled)}
-                      className={cn(
-                        "text-xs py-1 h-auto",
-                        gmailNotificationsEnabled ? "bg-red-500/20 text-red-400 hover:bg-red-500/30" : "bg-blue-600"
-                      )}
-                    >
-                      {gmailNotificationsEnabled ? 'Turn Off' : 'Turn On'}
-                    </Button>
-                  </div>
-                </div>
-
-                {gmailNotificationsEnabled && (
-                  <div className="p-4 bg-blue-500/5 border border-blue-400/10 rounded-xl space-y-3 animate-in zoom-in-95">
-                    <p className="text-xs font-bold text-blue-400 uppercase flex items-center gap-2">
-                      <Shield className="w-3 h-3" />
-                      Gmail Setup Guide
-                    </p>
-                    <div className="space-y-2">
-                      <div className="flex gap-3">
-                        <span className="w-5 h-5 bg-blue-500/20 rounded-full flex items-center justify-center text-[10px] font-bold text-blue-400 flex-shrink-0">1</span>
-                        <p className="text-[11px] text-blue-200/70">Go to <b>Google Account &gt; Security</b></p>
-                      </div>
-                      <div className="flex gap-3">
-                        <span className="w-5 h-5 bg-blue-500/20 rounded-full flex items-center justify-center text-[10px] font-bold text-blue-400 flex-shrink-0">2</span>
-                        <p className="text-[11px] text-blue-200/70">Enable <b>2-Step Verification</b></p>
-                      </div>
-                      <div className="flex gap-3">
-                        <span className="w-5 h-5 bg-blue-500/20 rounded-full flex items-center justify-center text-[10px] font-bold text-blue-400 flex-shrink-0">3</span>
-                        <p className="text-[11px] text-blue-200/70">Search for <b>"App Passwords"</b></p>
-                      </div>
-                      <div className="flex gap-3">
-                        <span className="w-5 h-5 bg-blue-500/20 rounded-full flex items-center justify-center text-[10px] font-bold text-blue-400 flex-shrink-0">4</span>
-                        <p className="text-[11px] text-blue-200/70">Create one and copy the <b>16-character code</b></p>
-                      </div>
-                      <div className="flex gap-3">
-                        <span className="w-5 h-5 bg-blue-500/20 rounded-full flex items-center justify-center text-[10px] font-bold text-blue-400 flex-shrink-0">5</span>
-                        <p className="text-[11px] text-blue-200/70">Add it to <b>AI Studio Secrets</b> as <code>GMAIL_APP_PASSWORD</code></p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-4 border-t border-blue-400/5 space-y-4">
-                  <div>
-                    <p className="text-xs font-bold text-blue-400 uppercase mb-3">System Status</p>
-                    {systemConfig ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="p-2 bg-slate-900/50 border border-blue-400/5 rounded-lg">
-                          <p className="text-[10px] text-blue-400/60 uppercase font-bold">GMAIL_USER</p>
-                          <p className={cn("text-xs font-mono", systemConfig.gmailUserSet ? "text-emerald-400" : "text-red-400")}>
-                            {systemConfig.gmailUserSet ? "CONFIGURED" : "MISSING"}
-                          </p>
-                        </div>
-                        <div className="p-2 bg-slate-900/50 border border-blue-400/5 rounded-lg">
-                          <p className="text-[10px] text-blue-400/60 uppercase font-bold">APP_PASSWORD</p>
-                          <p className={cn("text-xs font-mono", systemConfig.gmailAppPasswordSet ? "text-emerald-400" : "text-red-400")}>
-                            {systemConfig.gmailAppPasswordSet ? `${systemConfig.gmailAppPasswordLength} chars` : "MISSING"}
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="h-10 bg-slate-900/50 animate-pulse rounded-lg" />
-                    )}
-                  </div>
-
-                  <p className="text-xs font-bold text-blue-400 uppercase mb-3">Diagnostic Tools</p>
-                  <div className="grid grid-cols-1 gap-2">
-                    <button 
-                      onClick={testNotification}
-                      className="w-full flex items-center justify-between p-3 bg-blue-500/5 hover:bg-blue-500/10 border border-blue-400/10 rounded-lg transition-all group"
-                    >
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="w-4 h-4 text-blue-400" />
-                        <span className="text-sm font-medium text-blue-100">Check Eligibility (Test)</span>
-                      </div>
-                      <ArrowUpRight className="w-4 h-4 text-blue-400/40 group-hover:text-blue-400 transition-colors" />
-                    </button>
-                    
-                    {isIframe && (
-                      <button 
-                        onClick={() => window.open(window.location.href, '_blank')}
-                        className="w-full flex items-center justify-between p-3 bg-amber-500/5 hover:bg-amber-500/10 border border-amber-500/10 rounded-lg transition-all group"
-                      >
-                        <div className="flex items-center gap-3">
-                          <ExternalLink className="w-4 h-4 text-amber-400" />
-                          <span className="text-sm font-medium text-amber-100">Open in New Tab (Fix Problems)</span>
-                        </div>
-                        <ArrowUpRight className="w-4 h-4 text-amber-400/40 group-hover:text-amber-400 transition-colors" />
-                      </button>
-                    )}
-
-                    <button 
-                      onClick={async () => {
-                        if (!user?.email) return;
-                        try {
-                          await sendEmail(user.email, 'T.U.T. Gmail Test', 'This is a test email from your T.U.T. Private Lending Authority system. If you received this, your Gmail notification system is working perfectly!');
-                          addToast('Email Sent', 'Check your Gmail inbox for the test message.', 'success');
-                        } catch (e: any) {
-                          // Error is already handled in sendEmail, but we can show the help modal here
-                          setShowGmailHelp(true);
-                        }
-                      }}
-                      className="w-full flex items-center justify-between p-3 bg-emerald-500/5 hover:bg-emerald-400/10 border border-emerald-400/10 rounded-lg transition-all group"
-                    >
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        <span className="text-sm font-medium text-emerald-100">Test Gmail Connection</span>
-                      </div>
-                      <ArrowUpRight className="w-4 h-4 text-emerald-400/40 group-hover:text-emerald-400 transition-colors" />
-                    </button>
-
-                    {lastGmailError && (
-                      <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg space-y-2">
-                        <p className="text-[11px] font-bold text-red-400 uppercase flex items-center gap-2">
-                          <AlertTriangle className="w-3 h-3" />
-                          Connection Error
-                        </p>
-                        <p className="text-[10px] text-red-200/70 leading-relaxed">
-                          {lastGmailError}
-                        </p>
-                        <button 
-                          onClick={() => setShowGmailHelp(true)}
-                          className="text-[10px] font-bold text-blue-400 hover:underline"
-                        >
-                          View Troubleshooting Guide &rarr;
-                        </button>
-                      </div>
-                    )}
-
-                    <button 
-                      onClick={async () => {
-                        try {
-                          const res = await fetch('/api/health');
-                          const data = await res.json();
-                          if (data.status === 'ok') {
-                            addToast('Server Online', 'Backend system is responding correctly.', 'success');
-                          } else {
-                            throw new Error('Invalid response');
-                          }
-                        } catch (e) {
-                          addToast('Server Error', 'Backend system is not responding. Try reloading.', 'warning');
-                        }
-                      }}
-                      className="w-full flex items-center justify-between p-3 bg-slate-500/5 hover:bg-slate-500/10 border border-slate-400/10 rounded-lg transition-all group"
-                    >
-                      <div className="flex items-center gap-3">
-                        <HistoryIcon className="w-4 h-4 text-slate-400" />
-                        <span className="text-sm font-medium text-slate-100">Check Server Health</span>
-                      </div>
-                      <ArrowUpRight className="w-4 h-4 text-slate-400/40 group-hover:text-slate-400 transition-colors" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="p-4 bg-blue-500/5 border border-blue-400/10 rounded-xl">
-                <p className="text-xs text-blue-200/60 leading-relaxed">
-                  <span className="font-bold text-blue-400">Note:</span> Browser security often blocks notifications inside iframes. If you are not receiving alerts, use the "Open in New Tab" option above to establish a secure connection.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar animate-in fade-in slide-in-from-bottom-2">
-              {notificationHistory.length === 0 ? (
-                <div className="py-12 text-center">
-                  <div className="w-16 h-16 bg-blue-500/5 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <BellOff className="w-8 h-8 text-blue-400/20" />
-                  </div>
-                  <p className="text-blue-200/40 font-medium">No notification history</p>
-                </div>
-              ) : (
-                notificationHistory.map(notif => (
-                  <div key={notif.id} className="p-4 bg-slate-900/50 border border-blue-400/10 rounded-xl hover:border-blue-400/30 transition-all group">
-                    <div className="flex justify-between items-start mb-1">
-                      <h4 className="font-bold text-white text-sm">{notif.title}</h4>
-                      <span className="text-[10px] font-mono text-blue-400/40">
-                        {format(notif.timestamp, 'HH:mm')}
-                      </span>
-                    </div>
-                    <p className="text-xs text-blue-200/60 leading-relaxed">{notif.body}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      </Modal>
+      {/* Smart Professional User Notifications Modal */}
+      <UserNotificationsModal
+        isOpen={showNotificationCenter}
+        onClose={() => {
+          setShowNotificationCenter(false);
+          refreshMemberUnreadCount();
+        }}
+        profile={profile}
+        transactions={transactions}
+        onNavigateTab={(tab) => {
+          setShowNotificationCenter(false);
+          refreshMemberUnreadCount();
+        }}
+        onRequestAction={(type) => {
+          setShowNotificationCenter(false);
+          refreshMemberUnreadCount();
+          setActiveTransactionView(type);
+        }}
+        notificationPermission={notificationPermission}
+        onRequestPermission={requestNotificationPermission}
+        addToast={addToast}
+        onUpdateEmailNotifications={async (enabled) => {
+          if (!profile?.uid) return;
+          try {
+            await updateDoc(doc(db, 'users', profile.uid), {
+              emailNotificationsEnabled: enabled,
+              updatedAt: serverTimestamp()
+            });
+            setProfile(prev => prev ? ({ ...prev, emailNotificationsEnabled: enabled }) : null);
+            addToast('Preferences Saved', `Email statements and loan notifications set to: ${enabled ? 'ACTIVE' : 'MUTED'}`, 'success');
+          } catch (err: any) {
+            console.error("Failed to update email notification preferences in Firestore:", err);
+            addToast('Save Failed', 'Unable to sync preferences with server.', 'warning');
+          }
+        }}
+        onSendTestEmail={async (targetEmail) => {
+          try {
+            await sendEmail(
+              targetEmail,
+              'T.U.T. Notification Service — Priority Test Dispatch',
+              `Dear ${profile?.name || 'Member'},\n\nThis is an automated test dispatch from your T.U.T. Private Lending Authority notification gateway.\n\nYour verified email is configured to receive official loan vouchers, repayment due notices, and monthly charter statements.\n\nIf you found this message in your Spam or Junk folder, please click "Not Spam" or add noreply@tut.org to your trusted address book.`,
+              undefined,
+              profile?.name || 'Member',
+              'Verification'
+            );
+            return true;
+          } catch (e: any) {
+            console.error("Failed to send test email dispatch:", e);
+            return false;
+          }
+        }}
+      />
 
       {/* Toasts Container */}
       <div className="fixed top-24 right-6 z-[100] flex flex-col gap-3 pointer-events-none">
@@ -6144,48 +9548,28 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* WhatsApp Floating Button */}
-      {showSupportWidget && !isAdminLoggedIn && (
-        <a 
-          href="https://wa.me/8801713710607" 
-          target="_blank" 
-          rel="noopener noreferrer"
-          className="fixed bottom-24 sm:bottom-28 md:bottom-6 right-4 md:right-6 z-50 flex items-center gap-3 bg-slate-950/95 hover:bg-slate-900 border border-white/10 backdrop-blur-xl pl-3 pr-5 py-3 rounded-2xl shadow-[0_20px_50px_rgba(16,185,129,0.15)] hover:shadow-[0_20px_50px_rgba(16,185,129,0.25)] transition-all duration-300 hover:scale-[1.03] active:scale-95 group"
-        >
-          {/* Dismiss button */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setShowSupportWidget(false);
-            }}
-            className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-slate-900 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shadow-md z-10"
-            title="Dismiss support info"
-          >
-            <X className="w-3 h-3" />
-          </button>
-
-          <div className="relative">
-            <div className="w-10 h-10 bg-emerald-500 text-white rounded-xl flex items-center justify-center transition-transform group-hover:rotate-12 duration-300">
-              <MessageSquare className="w-5 h-5 text-white" />
-            </div>
-            {/* Small Rose Badge */}
-            <span className="absolute -top-1 -right-1 flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500 border-2 border-slate-950"></span>
-            </span>
-          </div>
-          <div className="flex flex-col text-left">
-            <span className="text-[9px] font-black uppercase text-emerald-400 tracking-[0.15em] flex items-center gap-1.5 leading-none">
-              Live Support
-              <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-            </span>
-            <span className="text-[11px] font-black text-white tracking-tight mt-1 leading-none uppercase">
-              Need Help? Contact Admin
-            </span>
-          </div>
-        </a>
+      {/* T.U.T Digital Workforce Support Desk */}
+      {user && !isAdminLoggedIn && !activeTransactionView && (
+        <WorkforceSupportWidget 
+          currentUser={{
+            uid: user.uid,
+            email: user.email || '',
+            name: profile?.name || user.displayName || 'T.U.T Member',
+            nid: profile?.nid || '',
+            phone: profile?.phone || '',
+            memberId: profile?.memberId || '',
+            status: profile?.status || 'pending',
+            totalLoan: profile?.totalLoan || 0,
+            totalDeposit: profile?.totalDeposit || 0,
+            remainingDebt: profile?.remainingDebt || 0,
+            totalRepaid: profile?.totalRepaid,
+            borrowingLimit: profile?.borrowingLimit || 100000,
+            subscriptionTier: profile?.subscriptionTier || null,
+            subscriptionStatus: profile?.subscriptionStatus || null,
+            continuousSubscriptionMonths: profile?.continuousSubscriptionMonths || 0,
+            loansTakenThisMonth: profile?.loansTakenThisMonth || 0,
+          }}
+        />
       )}
     </div>
   );

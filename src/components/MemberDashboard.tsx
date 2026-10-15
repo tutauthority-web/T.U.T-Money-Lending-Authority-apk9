@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Wallet, 
@@ -24,6 +24,8 @@ import {
   Home,
   TrendingUp,
   Award,
+  Crown,
+  Zap,
   HelpCircle,
   MessageSquare,
   Send,
@@ -35,7 +37,25 @@ import {
   Check,
   Database,
   Cpu,
-  Fingerprint
+  Fingerprint,
+  Plus,
+  Trash2,
+  Smartphone,
+  Sparkles,
+  Calendar,
+  RotateCw,
+  ChevronRight,
+  PieChart,
+  PiggyBank,
+  FileCheck,
+  Banknote,
+  PlusCircle,
+  ChevronDown,
+  ArrowLeft,
+  ShieldCheck,
+  LogOut,
+  Bell,
+  ChevronLeft
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -51,13 +71,21 @@ import {
   SponsorshipCampaign,
   Modal
 } from '../App';
+import { calculateMemberLoanAllocations } from '../utils/loanAllocationEngine';
+import { calculateComprehensiveCreditScore } from '../utils/creditScoreEngine';
+import { CreditScoreModal } from './CreditScoreModal';
+import { MemberLoanHistoryCard } from './MemberLoanHistoryCard';
+import { BankingTierCard } from './BankingTierCard';
+import { SubscriptionHubView } from './SubscriptionHubView';
+import { TierEmblem } from './TierEmblems';
 import { db, auth } from '../firebase';
 import tutLogo from '../assets/images/tut_logo_1783437312744.jpg';
 import { 
   EmailAuthProvider, 
   reauthenticateWithCredential, 
   GoogleAuthProvider, 
-  reauthenticateWithPopup 
+  reauthenticateWithPopup,
+  signOut
 } from 'firebase/auth';
 import { 
   collection, 
@@ -68,7 +96,10 @@ import {
   updateDoc, 
   addDoc, 
   serverTimestamp, 
-  increment 
+  increment,
+  onSnapshot,
+  deleteDoc,
+  setDoc
 } from 'firebase/firestore';
 
 // CopyButton component
@@ -421,10 +452,10 @@ const VirtualBankCard = ({ profile, mode, setMode }: { profile: UserProfile, mod
           {/* Card Top Block */}
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-[9px] font-mono tracking-widest text-blue-200/70 uppercase font-black">
+              <p className="text-[10px] font-mono tracking-widest text-blue-200/70 uppercase font-black">
                 T.U.T. PRIVATE RESERVE
               </p>
-              <p className="text-[7px] font-mono tracking-[0.2em] text-amber-400 uppercase font-black mt-0.5">
+              <p className="text-[9px] font-mono tracking-[0.2em] text-amber-400 uppercase font-black mt-1">
                 {mode === 'debit' ? "SAVINGS PLATINUM" : "SECURED CAPITAL"}
               </p>
             </div>
@@ -452,7 +483,7 @@ const VirtualBankCard = ({ profile, mode, setMode }: { profile: UserProfile, mod
 
           {/* Core Balance Info */}
           <div className="text-left">
-            <span className="text-[7.5px] font-black uppercase tracking-widest text-blue-200/50">
+            <span className="text-[9px] font-black uppercase tracking-widest text-blue-200/50">
               {mode === 'debit' ? "Deposit & Savings" : "Outstanding Payable Debt"}
             </span>
             <div className="flex items-baseline gap-1 mt-0.5">
@@ -462,7 +493,7 @@ const VirtualBankCard = ({ profile, mode, setMode }: { profile: UserProfile, mod
               </h2>
             </div>
             {mode === 'credit' && (
-              <p className="text-[8px] font-black text-amber-400 uppercase tracking-wider mt-1">
+              <p className="text-[10px] font-black text-amber-400 uppercase tracking-wider mt-1">
                 Limit: <span className="text-white">৳ {(profile.borrowingLimit ?? 100000).toLocaleString()}</span>
               </p>
             )}
@@ -471,7 +502,7 @@ const VirtualBankCard = ({ profile, mode, setMode }: { profile: UserProfile, mod
           {/* Card Footer Block */}
           <div className="flex justify-between items-end mt-3 border-t border-white/5 pt-2.5">
             <div>
-              <p className="text-[6.5px] font-black text-blue-200/40 uppercase tracking-widest leading-none mb-0.5">
+              <p className="text-[9px] font-black text-blue-200/40 uppercase tracking-[0.12em] leading-none mb-1">
                 MEMBER ID
               </p>
               <p className="text-[10px] font-mono font-bold tracking-[0.1em] text-blue-100">
@@ -479,7 +510,7 @@ const VirtualBankCard = ({ profile, mode, setMode }: { profile: UserProfile, mod
               </p>
             </div>
             <div className="text-right">
-              <p className="text-[6.5px] font-black text-blue-200/40 uppercase tracking-widest leading-none mb-0.5">
+              <p className="text-[9px] font-black text-blue-200/40 uppercase tracking-[0.12em] leading-none mb-1">
                 CARDHOLDER
               </p>
               <p className="text-[9px] font-bold uppercase tracking-tight text-white truncate max-w-[120px]">
@@ -516,6 +547,10 @@ interface MemberDashboardProps {
   setShowProfileModal: (show: boolean) => void;
   setShowAdminLogin: (show: boolean) => void;
   handleAdClick: (id: string) => void;
+  addToast?: (title: string, msg: string, type: 'success' | 'warning' | 'danger' | 'info') => void;
+  sendWorkflowNotification?: (type: string, email?: string, name?: string, meta?: any) => Promise<void>;
+  onOpenNotifications?: () => void;
+  unreadNotificationsCount?: number;
 }
 
 export function MemberDashboard({
@@ -536,24 +571,112 @@ export function MemberDashboard({
   onRequestAction,
   setShowProfileModal,
   setShowAdminLogin,
-  handleAdClick
+  handleAdClick,
+  addToast,
+  sendWorkflowNotification,
+  onOpenNotifications,
+  unreadNotificationsCount
 }: MemberDashboardProps) {
-  const [memberTab, setMemberTab] = useState<'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile'>('dashboard');
+  const [memberTab, _setMemberTab] = useState<'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets'>('dashboard');
+
+  // Smart smooth navigation with instant scroll reset & zero lag
+  const navigateTab = useCallback((newTab: 'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets') => {
+    if (memberTab === newTab) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    _setMemberTab(newTab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [memberTab]);
+
+  const setMemberTab = navigateTab;
+  
+  // Memoized transaction splits for high-performance zero-lag rendering
+  const pendingTransactions = useMemo(() => transactions.filter(t => t.status === 'pending'), [transactions]);
+  const confirmedTransactions = useMemo(() => transactions.filter(t => t.status === 'confirmed'), [transactions]);
+
+  // Wallet & Card Management States
+  const [wallets, setWallets] = useState<any[]>([]);
+  const [cards, setCards] = useState<any[]>([]);
+  const [walletLoading, setWalletLoading] = useState(true);
+
+  useEffect(() => {
+    if (!profile?.uid) return;
+
+    // Real-time listener for wallets subcollection
+    const walletsRef = collection(db, 'users', profile.uid, 'wallets');
+    const unsubscribeWallets = onSnapshot(walletsRef, (snapshot) => {
+      const walletsList = snapshot.docs.map(docSnapshot => {
+        const data = docSnapshot.data();
+        let dateLinkedObj = new Date();
+        if (data.dateLinked) {
+          if (typeof data.dateLinked.toDate === 'function') {
+            dateLinkedObj = data.dateLinked.toDate();
+          } else {
+            dateLinkedObj = new Date(data.dateLinked);
+          }
+        }
+        return {
+          id: docSnapshot.id,
+          ...data,
+          dateLinked: dateLinkedObj
+        };
+      });
+      setWallets(walletsList);
+      setWalletLoading(false);
+    }, (error) => {
+      console.error("Error listening to wallets:", error);
+      setWalletLoading(false);
+    });
+
+    // Real-time listener for cards subcollection
+    const cardsRef = collection(db, 'users', profile.uid, 'cards');
+    const unsubscribeCards = onSnapshot(cardsRef, (snapshot) => {
+      const cardsList = snapshot.docs.map(docSnapshot => {
+        const data = docSnapshot.data();
+        let dateAddedObj = new Date();
+        if (data.dateAdded) {
+          if (typeof data.dateAdded.toDate === 'function') {
+            dateAddedObj = data.dateAdded.toDate();
+          } else {
+            dateAddedObj = new Date(data.dateAdded);
+          }
+        }
+        return {
+          id: docSnapshot.id,
+          ...data,
+          dateAdded: dateAddedObj
+        };
+      });
+      setCards(cardsList);
+    }, (error) => {
+      console.error("Error listening to cards:", error);
+    });
+
+    return () => {
+      unsubscribeWallets();
+      unsubscribeCards();
+    };
+  }, [profile?.uid]);
+
   const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [cardMode, setCardMode] = useState<'debit' | 'credit'>('debit');
 
   // Vaultspecific states
   const [docSearch, setDocSearch] = useState('');
-  const [docFilter, setDocFilter] = useState<'all' | 'receipts' | 'loans' | 'deposits' | 'certificates' | 'subscriptions'>('all');
+  const [docFilter, setDocFilter] = useState<'all' | 'vouchers' | 'receipts' | 'loans' | 'deposits' | 'certificates' | 'subscriptions'>('all');
   const [selectedDoc, setSelectedDoc] = useState<any | null>(null);
   const [showCert, setShowCert] = useState(false);
+  const [showCreditModal, setShowCreditModal] = useState(false);
+  const [vaultModalType, setVaultModalType] = useState<'credit_score' | 'total_loan' | 'total_deposits' | 'upcoming_repayment' | 'available_limit' | 'total_repaid' | 'reserve_fund' | 'total_documents' | null>(null);
 
   // Transfer States
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferIdentifier, setTransferIdentifier] = useState('');
   const [transferAmount, setTransferAmount] = useState('');
   const [transferPassword, setTransferPassword] = useState('');
+  const [transferReference, setTransferReference] = useState('');
   const [showTransferPassword, setShowTransferPassword] = useState(false);
   const [transferLoading, setTransferLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
@@ -563,6 +686,573 @@ export function MemberDashboard({
 
   // New smart subscription checkout states
   const [subCheckoutMethod, setSubCheckoutMethod] = useState<'bkash' | 'nagad' | 'cash'>('bkash');
+  const [subBillingMonths, setSubBillingMonths] = useState<number>(1);
+  const [subPaymentMethod, setSubPaymentMethod] = useState<'balance' | 'gateway'>('balance');
+  const [isProcessingInstantBuy, setIsProcessingInstantBuy] = useState(false);
+  const [instantBuySuccess, setInstantBuySuccess] = useState(false);
+  const [instantBuyError, setInstantBuyError] = useState<string | null>(null);
+  const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
+  const [cardTextureMode, setCardTextureMode] = useState<'auto' | 'standard' | 'bronze' | 'silver' | 'gold'>('auto');
+  const [lockedSheenTier, setLockedSheenTier] = useState<'bronze' | 'silver' | 'gold' | null>(null);
+  const [targetSubscriptionTier, setTargetSubscriptionTier] = useState<'bronze' | 'silver' | 'gold' | undefined>(undefined);
+
+  // Deals & Partner Network state
+  const [dealCategory, setDealCategory] = useState<string>('All');
+  const [dealCountdown, setDealCountdown] = useState<{ h: number; m: number; s: number }>({ h: 14, m: 32, s: 58 });
+  const [activeStoryModal, setActiveStoryModal] = useState<any | null>(null);
+  const [activePromoVideoModal, setActivePromoVideoModal] = useState<{ title: string; brand: string; url?: string } | null>(null);
+  const [selectedDealMemo, setSelectedDealMemo] = useState<any | null>(null);
+  const featuredDropsScrollRef = useRef<HTMLDivElement>(null);
+
+  // Pause countdown timer when not on the Deals tab to eliminate background re-renders
+  useEffect(() => {
+    if (memberTab !== 'partners') return;
+    const timer = setInterval(() => {
+      setDealCountdown((prev) => {
+        let { h, m, s } = prev;
+        s--;
+        if (s < 0) {
+          s = 59;
+          m--;
+        }
+        if (m < 0) {
+          m = 59;
+          h--;
+        }
+        if (h < 0) {
+          h = 0;
+          m = 0;
+          s = 0;
+        }
+        return { h, m, s };
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [memberTab]);
+
+  // Instant 100% working subscription purchase with account deposit balance
+  const handleInstantBalancePurchase = async (tier: 'bronze' | 'silver' | 'gold', monthsCount: number) => {
+    if (!profile?.uid) return;
+    const pricing = getSubscriptionPricing(tier, profile, monthsCount);
+    
+    if ((profile.totalDeposit || 0) < pricing.price) {
+      setInstantBuyError(`Insufficient account balance. Required: ৳${pricing.price.toLocaleString()} BDT, Available: ৳${(profile.totalDeposit || 0).toLocaleString()} BDT. Please deposit balance or use mobile banking.`);
+      return;
+    }
+    
+    setIsProcessingInstantBuy(true);
+    setInstantBuyError(null);
+    try {
+      const today = new Date();
+      let expiresAt = new Date();
+      
+      // If user has active subscription, extend from existing expiry date
+      if (profile.subscriptionStatus === 'active' && profile.subscriptionExpiresAt) {
+        const currentExp = new Date(profile.subscriptionExpiresAt);
+        if (currentExp > today) {
+          expiresAt = new Date(currentExp);
+        }
+      }
+      
+      // Add months
+      expiresAt.setMonth(expiresAt.getMonth() + monthsCount);
+      
+      // Calculate borrowing limit
+      let baseLimit = 500;
+      if (tier === 'silver') baseLimit = 1500;
+      if (tier === 'gold') baseLimit = 2500;
+      
+      const wasOnTime = today.getDate() <= 5;
+      const currentStreak = profile.continuousSubscriptionMonths || 0;
+      const newStreak = currentStreak + (wasOnTime ? monthsCount : 1);
+      if (newStreak >= 3) {
+        baseLimit += 500;
+      }
+      if (monthsCount === 12) {
+        baseLimit += 500; // Annual VIP loyalty bonus
+      }
+      
+      const newDeposit = Math.max(0, (profile.totalDeposit || 0) - pricing.price);
+      
+      // 1. Update user profile in Firestore
+      await updateDoc(doc(db, 'users', profile.uid), {
+        totalDeposit: newDeposit,
+        subscriptionStatus: 'active',
+        subscriptionTier: tier,
+        subscriptionExpiresAt: expiresAt.toISOString(),
+        continuousSubscriptionMonths: newStreak,
+        borrowingLimit: baseLimit,
+        autoRenewSubscription: true,
+        lastSubscriptionPaidAt: serverTimestamp()
+      });
+      
+      // 2. Add approved transaction
+      await addDoc(collection(db, 'transactions'), {
+        userId: profile.uid,
+        userName: profile.name,
+        type: 'subscription',
+        amount: pricing.price,
+        method: 'Account Balance',
+        accountNumber: profile.memberId || 'INTERNAL-WALLET',
+        transactionId: `SUB-AUTO-${Date.now().toString(36).toUpperCase()}`,
+        memoId: `TUT-SUB-${Date.now().toString().slice(-6)}`,
+        status: 'confirmed',
+        subscriptionTier: tier,
+        subscriptionMonths: monthsCount,
+        approvedAt: serverTimestamp(),
+        timestamp: serverTimestamp()
+      });
+      
+      // 3. Update system reserve
+      try {
+        const fundsDocRef = doc(db, 'system_controls', 'funds');
+        await setDoc(fundsDocRef, {
+          personalFund: increment(pricing.price),
+          subscriptionFund: increment(pricing.price),
+          totalReserve: increment(pricing.price),
+          lastUpdated: serverTimestamp()
+        }, { merge: true });
+
+        const reservesDocRef = doc(db, 'system_controls', 'reserves');
+        await setDoc(reservesDocRef, {
+          primaryTarget: increment(pricing.price),
+          subscriptionReserveContribution: increment(pricing.price),
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (e) {
+        console.warn("Reserve funds sync note:", e);
+      }
+      
+      // 4. Record detailed subscription fee fund entry (which user paid)
+      try {
+        await addDoc(collection(db, 'subscription_funds'), {
+          userId: profile.uid,
+          userName: profile.name || 'Member',
+          userEmail: profile.email || '',
+          userPhone: profile.phone || '',
+          memberId: profile.memberId || 'N/A',
+          tier: tier,
+          tierName: tier === 'gold' ? 'Gold Sovereign' : tier === 'silver' ? 'Silver Executive' : 'Bronze',
+          amount: pricing.price,
+          durationMonths: monthsCount,
+          paymentMethod: 'Account Balance',
+          accountNumber: profile.memberId || 'INTERNAL-WALLET',
+          transactionId: `SUB-AUTO-${Date.now().toString(36).toUpperCase()}`,
+          memoId: `TUT-SUB-${Date.now().toString().slice(-6)}`,
+          allocatedToReserve: true,
+          reserveDestination: 'Main Zero-Usury Lending Liquidity Reserve',
+          status: 'confirmed',
+          timestamp: serverTimestamp(),
+          createdAt: new Date().toISOString()
+        });
+      } catch (e) {
+        console.warn("Subscription funds record note:", e);
+      }
+
+      // 5. Audit log
+      try {
+        await addDoc(collection(db, 'audit_logs'), {
+          action: 'instant_subscription_activated',
+          performedBy: profile.uid,
+          actorEmail: profile.email || 'member@tut.org',
+          userName: profile.name,
+          amount: pricing.price,
+          tier: tier,
+          timestamp: serverTimestamp()
+        });
+      } catch (e) {
+        console.warn("Audit log note:", e);
+      }
+      
+      setInstantBuySuccess(true);
+      setShowSubPaymentMode(false);
+      if (addToast) {
+        addToast('Charter Activated', `Congratulations! Your ${tier.toUpperCase()} tier is active! ৳${baseLimit.toLocaleString()} BDT limit unlocked.`, 'success');
+      }
+    } catch (err: any) {
+      console.error("Instant subscription purchase failed:", err);
+      setInstantBuyError(err?.message || "Failed to process instant subscription activation. Please try again.");
+    } finally {
+      setIsProcessingInstantBuy(false);
+    }
+  };
+
+  const handleCancelSubscription = async () => {
+    if (!profile?.uid) return;
+    try {
+      await updateDoc(doc(db, 'users', profile.uid), {
+        autoRenewSubscription: false
+      });
+      setShowCancelConfirmModal(false);
+    } catch (err) {
+      console.error("Cancel subscription error:", err);
+    }
+  };
+
+  const handleToggleAutoRenew = async () => {
+    if (!profile?.uid) return;
+    const current = profile.autoRenewSubscription ?? true;
+    try {
+      await updateDoc(doc(db, 'users', profile.uid), {
+        autoRenewSubscription: !current
+      });
+    } catch (err) {
+      console.error("Toggle auto-renew error:", err);
+    }
+  };
+
+  // Redesigned profile interactive states
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [showSecuritySettingsModal, setShowSecuritySettingsModal] = useState(false);
+  const [showLinkedAccountsModal, setShowLinkedAccountsModal] = useState(false);
+
+  // New Wallet & Card Management Form States
+  const [showAddWalletModal, setShowAddWalletModal] = useState(false);
+  const [addWalletProvider, setAddWalletProvider] = useState<'bKash' | 'Nagad'>('bKash');
+  const [addWalletHolder, setAddWalletHolder] = useState('');
+  const [addWalletMobile, setAddWalletMobile] = useState('');
+  const [addWalletDefault, setAddWalletDefault] = useState(false);
+
+  const [showEditWalletModal, setShowEditWalletModal] = useState(false);
+  const [editWalletId, setEditWalletId] = useState('');
+  const [editWalletProvider, setEditWalletProvider] = useState<'bKash' | 'Nagad'>('bKash');
+  const [editWalletHolder, setEditWalletHolder] = useState('');
+  const [editWalletMobile, setEditWalletMobile] = useState('');
+
+  const [showAddCardModal, setShowAddCardModal] = useState(false);
+  const [addCardType, setAddCardType] = useState<'Visa' | 'Mastercard'>('Visa');
+  const [addCardHolder, setAddCardHolder] = useState('');
+  const [addCardNumber, setAddCardNumber] = useState('');
+  const [addCardExpiry, setAddCardExpiry] = useState('');
+
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpWallet, setOtpWallet] = useState<any | null>(null);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpError, setOtpError] = useState('');
+  const [otpTimer, setOtpTimer] = useState(120);
+  const [otpResendDisabled, setOtpResendDisabled] = useState(true);
+
+  const [localToast, setLocalToast] = useState<{ message: string, type: 'success' | 'danger' | 'info' } | null>(null);
+  
+  const showLocalToast = (message: string, type: 'success' | 'danger' | 'info' = 'success') => {
+    setLocalToast({ message, type });
+    setTimeout(() => setLocalToast(null), 4000);
+  };
+
+  // Global Escape key listener for smart instant modal dismissal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedDealMemo) setSelectedDealMemo(null);
+        else if (activeStoryModal) setActiveStoryModal(null);
+        else if (activePromoVideoModal) setActivePromoVideoModal(null);
+        else if (selectedDoc) setSelectedDoc(null);
+        else if (vaultModalType) setVaultModalType(null);
+        else if (showTransferModal) setShowTransferModal(false);
+        else if (showQrModal) setShowQrModal(false);
+        else if (showPinModal) setShowPinModal(false);
+        else if (showAddWalletModal) setShowAddWalletModal(false);
+        else if (showEditWalletModal) setShowEditWalletModal(false);
+        else if (showAddCardModal) setShowAddCardModal(false);
+        else if (showOtpModal) setShowOtpModal(false);
+        else if (showCancelConfirmModal) setShowCancelConfirmModal(false);
+        else if (lockedSheenTier) setLockedSheenTier(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    selectedDealMemo, activeStoryModal, activePromoVideoModal, selectedDoc,
+    vaultModalType, showTransferModal, showQrModal, showPinModal,
+    showAddWalletModal, showEditWalletModal, showAddCardModal, showOtpModal,
+    showCancelConfirmModal, lockedSheenTier
+  ]);
+
+  // Member Loan Summary using individual loan payment allocation engine
+  const memberLoanSummary = useMemo(() => {
+    return calculateMemberLoanAllocations(profile?.uid || '', transactions || [], profile);
+  }, [profile?.uid, transactions, profile]);
+
+  // Top-Level Vault Financial Calculations (Source of truth: loan allocation engine + profile)
+  const remainingDebtVal = profile?.remainingDebt !== undefined 
+    ? profile.remainingDebt 
+    : memberLoanSummary.totalOutstanding;
+  const totalLoanVal = memberLoanSummary.totalBorrowed > 0 
+    ? memberLoanSummary.totalBorrowed 
+    : (profile?.totalLoan || 0);
+  const totalRepaidVal = profile?.totalRepaid !== undefined 
+    ? profile.totalRepaid 
+    : memberLoanSummary.totalRepaid;
+  const outstandingPctVal = totalLoanVal > 0 ? Math.min(100, Math.max(0, Math.round((remainingDebtVal / totalLoanVal) * 100))) : 0;
+  const totalDepositsVal = profile?.totalDeposit || 0;
+  const reserveContribVal = profile?.reserveContribution || 0;
+  const borrowLimitVal = profile?.borrowingLimit || 45000;
+  const availableLimitVal = Math.max(0, borrowLimitVal - remainingDebtVal);
+  const utilizationPctVal = borrowLimitVal > 0 ? Math.min(100, Math.round((remainingDebtVal / borrowLimitVal) * 100)) : 0;
+
+  // Active confirmed loan that repayment will be allocated to next
+  const activeAllocatedLoan = memberLoanSummary.loans.find(l => l.remainingAmount > 0);
+  const activeLoan = activeAllocatedLoan 
+    ? activeAllocatedLoan.rawTransaction 
+    : transactions?.find(t => t.type === 'loan' && t.status === 'confirmed');
+
+  // Dynamic Comprehensive Credit Score Calculation (Unified 300 to 850 Engine)
+  const creditReport = useMemo(() => {
+    return calculateComprehensiveCreditScore(profile, transactions);
+  }, [profile, transactions]);
+
+  const dynamicScore = creditReport.score;
+  const scoreLabel = creditReport.label;
+  const scoreBadgeStyle = creditReport.badgeStyle;
+  const activeScoreSegments = Math.min(5, Math.max(1, Math.round((dynamicScore - 300) / 110)));
+
+  // Real confirmed transactions & document counts (sorted newest-first: new-to-old wise)
+  const userConfirmedTxs = useMemo(() => {
+    if (!transactions) return [];
+    return [...transactions]
+      .filter((t) => t.status === 'confirmed')
+      .sort((a, b) => {
+        const getTs = (item: any) => {
+          const t = item.timestamp || item.createdAt || item.date;
+          if (!t) return 0;
+          if (typeof t.toMillis === 'function') return t.toMillis();
+          if (typeof t.toDate === 'function') return t.toDate().getTime();
+          if (t.seconds) return t.seconds * 1000;
+          const d = new Date(t);
+          return isNaN(d.getTime()) ? 0 : d.getTime();
+        };
+        return getTs(b) - getTs(a);
+      });
+  }, [transactions]);
+  const totalDocsCount = userConfirmedTxs.length + (profile?.status === 'approved' ? 1 : 0);
+
+  useEffect(() => {
+    if (!showOtpModal || otpTimer <= 0) return;
+    const interval = setInterval(() => {
+      setOtpTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setOtpResendDisabled(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [showOtpModal, otpTimer]);
+
+  const handleResendOtp = () => {
+    setOtpTimer(120);
+    setOtpResendDisabled(true);
+    setOtpCode('');
+    setOtpError('');
+    showLocalToast("A new verification code has been dispatched via SMS!", "info");
+  };
+
+  // 1. Add Wallet
+  const handleAddWallet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile?.uid) return;
+    if (addWalletMobile.length !== 11 || !addWalletMobile.startsWith('01')) {
+      showLocalToast("Mobile number must be a valid 11-digit Bangladeshi number.", "danger");
+      return;
+    }
+    if (!addWalletHolder.trim()) {
+      showLocalToast("Account holder name is required.", "danger");
+      return;
+    }
+
+    try {
+      const isFirst = wallets.length === 0;
+      const shouldBeDefault = addWalletDefault || isFirst;
+
+      const walletPayload = {
+        provider: addWalletProvider,
+        holderName: addWalletHolder.trim(),
+        mobileNumber: addWalletMobile.trim(),
+        isVerified: false,
+        isDefault: shouldBeDefault,
+        dateLinked: serverTimestamp()
+      };
+
+      if (shouldBeDefault) {
+        // Clear defaults on existing wallets
+        for (const w of wallets) {
+          if (w.isDefault) {
+            await updateDoc(doc(db, 'users', profile.uid, 'wallets', w.id), { isDefault: false });
+          }
+        }
+      }
+
+      const docRef = await addDoc(collection(db, 'users', profile.uid, 'wallets'), walletPayload);
+      
+      // Auto-launch OTP Modal for the newly added wallet
+      setOtpWallet({ id: docRef.id, ...walletPayload, dateLinked: new Date() });
+      setOtpTimer(120);
+      setOtpCode('');
+      setOtpError('');
+      setShowAddWalletModal(false);
+      setShowOtpModal(true);
+      
+      // Clear fields
+      setAddWalletHolder('');
+      setAddWalletMobile('');
+      setAddWalletDefault(false);
+      
+      showLocalToast(`${addWalletProvider} wallet added. Please verify ownership.`, "success");
+    } catch (err) {
+      console.error("Error adding wallet:", err);
+      showLocalToast("Could not save wallet. Check permissions.", "danger");
+    }
+  };
+
+  // 2. Edit Wallet
+  const handleEditWallet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile?.uid || !editWalletId) return;
+    if (editWalletMobile.length !== 11 || !editWalletMobile.startsWith('01')) {
+      showLocalToast("Mobile number must be a valid 11-digit Bangladeshi number.", "danger");
+      return;
+    }
+    if (!editWalletHolder.trim()) {
+      showLocalToast("Account holder name is required.", "danger");
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'users', profile.uid, 'wallets', editWalletId), {
+        holderName: editWalletHolder.trim(),
+        mobileNumber: editWalletMobile.trim()
+      });
+      setShowEditWalletModal(false);
+      showLocalToast("Wallet information updated successfully.", "success");
+    } catch (err) {
+      console.error("Error updating wallet:", err);
+      showLocalToast("Failed to update wallet.", "danger");
+    }
+  };
+
+  // 3. Delete Wallet
+  const handleRemoveWallet = async (walletId: string) => {
+    if (!profile?.uid) return;
+    if (!confirm("Are you sure you want to unlink this payment wallet?")) return;
+    try {
+      await deleteDoc(doc(db, 'users', profile.uid, 'wallets', walletId));
+      showLocalToast("Wallet unlinked successfully.", "success");
+    } catch (err) {
+      console.error("Error removing wallet:", err);
+      showLocalToast("Failed to remove wallet.", "danger");
+    }
+  };
+
+  // 4. Set Wallet as Default
+  const handleSetDefaultWallet = async (walletId: string) => {
+    if (!profile?.uid) return;
+    try {
+      // Step 1: Set target wallet as default
+      await updateDoc(doc(db, 'users', profile.uid, 'wallets', walletId), { isDefault: true });
+      // Step 2: Remove default from others
+      for (const w of wallets) {
+        if (w.id !== walletId && w.isDefault) {
+          await updateDoc(doc(db, 'users', profile.uid, 'wallets', w.id), { isDefault: false });
+        }
+      }
+      showLocalToast("Designated as primary receiving wallet.", "success");
+    } catch (err) {
+      console.error("Error setting default:", err);
+      showLocalToast("Failed to update default receiving wallet.", "danger");
+    }
+  };
+
+  // 5. Submit OTP Verification (UI-only backend)
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile?.uid || !otpWallet) return;
+    if (otpCode.trim().length !== 6) {
+      setOtpError("Please enter a valid 6-digit authentication token.");
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'users', profile.uid, 'wallets', otpWallet.id), { isVerified: true });
+      setShowOtpModal(false);
+      setOtpWallet(null);
+      showLocalToast(`${otpWallet.provider} wallet has been fully verified and bonded!`, "success");
+    } catch (err) {
+      console.error("Error verifying OTP in Firestore:", err);
+      setOtpError("Authentication failed. Ensure database connections are active.");
+    }
+  };
+
+  // 6. Add Bank Card (Beta Waitlist)
+  const handleAddCard = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile?.uid) return;
+    
+    // Simple validation
+    const digitsOnly = addCardNumber.replace(/\s/g, '');
+    if (digitsOnly.length < 12 || digitsOnly.length > 19) {
+      showLocalToast("Invalid credit card number.", "danger");
+      return;
+    }
+    if (!addCardHolder.trim()) {
+      showLocalToast("Cardholder name is required.", "danger");
+      return;
+    }
+    if (!/^\d{2}\/\d{2}$/.test(addCardExpiry)) {
+      showLocalToast("Expiry date must be in MM/YY format.", "danger");
+      return;
+    }
+
+    try {
+      const last4 = digitsOnly.slice(-4);
+      // Mask card with standard banking bullet circles as requested
+      const maskedCard = `${addCardType === 'Visa' ? '4' : '5'}••• •••• •••• ${last4}`;
+
+      const cardPayload = {
+        cardType: addCardType,
+        holderName: addCardHolder.toUpperCase().trim(),
+        cardNumber: maskedCard,
+        expiryDate: addCardExpiry.trim(),
+        dateAdded: serverTimestamp()
+      };
+
+      await addDoc(collection(db, 'users', profile.uid, 'cards'), cardPayload);
+      setShowAddCardModal(false);
+      
+      // Clear inputs
+      setAddCardHolder('');
+      setAddCardNumber('');
+      setAddCardExpiry('');
+
+      showLocalToast("Your account has been added to the Visa/Mastercard Beta waitlist!", "success");
+    } catch (err) {
+      console.error("Error adding card:", err);
+      showLocalToast("Could not submit card. Check security protocols.", "danger");
+    }
+  };
+
+  // 7. Remove Card waitlist
+  const handleRemoveCard = async (cardId: string) => {
+    if (!profile?.uid) return;
+    if (!confirm("Remove this card from the Beta waitlist?")) return;
+    try {
+      await deleteDoc(doc(db, 'users', profile.uid, 'cards', cardId));
+      showLocalToast("Card waitlist entry cancelled.", "success");
+    } catch (err) {
+      console.error("Error removing card:", err);
+    }
+  };
+  
+  // Custom states for security toggles
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(true);
+  const [biometricsEnabled, setBiometricsEnabled] = useState(false);
+  const [alertLogsEnabled, setAlertLogsEnabled] = useState(true);
+  
+  // Custom state for security pin simulation
+  const [newPin, setNewPin] = useState('');
+  const [confirmNewPin, setConfirmNewPin] = useState('');
+  const [pinChangeSuccess, setPinChangeSuccess] = useState(false);
 
   const handleVerifyRecipient = async () => {
     if (!transferIdentifier.trim()) {
@@ -584,25 +1274,108 @@ export function MemberDashboard({
         return;
       }
 
+      // Generate smart candidate variations for Member ID, Phone, and Email
+      const candidates = new Set<string>();
+      candidates.add(identifierClean);
+      candidates.add(identifierClean.toLowerCase());
+      candidates.add(identifierClean.toUpperCase());
+
+      // Phone number variations
+      const digits = identifierClean.replace(/\D/g, '');
+      if (digits) {
+        candidates.add(digits);
+        
+        let base11 = '';
+        if (digits.length === 11 && digits.startsWith('0')) {
+          base11 = digits;
+        } else if (digits.length === 13 && digits.startsWith('880')) {
+          base11 = '0' + digits.substring(3);
+        } else if (digits.length === 14 && digits.startsWith('880')) {
+          base11 = '0' + digits.substring(4);
+        } else if (digits.length === 10 && !digits.startsWith('0')) {
+          base11 = '0' + digits;
+        }
+
+        if (base11 && base11.length === 11) {
+          candidates.add(base11);
+          // Standard Bangladeshi splits
+          candidates.add(`${base11.substring(0, 5)}-${base11.substring(5)}`);
+          candidates.add(`${base11.substring(0, 4)}-${base11.substring(4)}`);
+          candidates.add(`+88${base11.substring(0, 5)}-${base11.substring(5)}`);
+          candidates.add(`+88${base11}`);
+          candidates.add(`88${base11}`);
+        }
+      }
+
+      // Member ID suffix matching
+      const numSuffixMatch = identifierClean.match(/\d+$/);
+      if (numSuffixMatch) {
+        const suffix = numSuffixMatch[0];
+        candidates.add(`TUT-MBR-2026-${suffix}`);
+        candidates.add(`TUT-MBR-2026-${suffix.padStart(4, '0')}`);
+        candidates.add(`MBR-${suffix}`);
+        candidates.add(`TUT-${suffix}`);
+        candidates.add(`TUT-MBR-${suffix}`);
+      }
+
+      const uniqueCandidates = Array.from(candidates);
       let foundUser: UserProfile | null = null;
 
-      // 1. Check by Member ID (exact match)
-      const qId = query(collection(db, 'users'), where('memberId', '==', identifierClean));
-      const snapId = await getDocs(qId);
-      if (!snapId.empty) {
-        foundUser = { uid: snapId.docs[0].id, ...snapId.docs[0].data() } as UserProfile;
-      } else {
-        // 2. Check by Phone
-        const qPhone = query(collection(db, 'users'), where('phone', '==', identifierClean));
-        const snapPhone = await getDocs(qPhone);
-        if (!snapPhone.empty) {
-          foundUser = { uid: snapPhone.docs[0].id, ...snapPhone.docs[0].data() } as UserProfile;
-        } else {
-          // 3. Check by Email
-          const qEmail = query(collection(db, 'users'), where('email', '==', identifierClean.toLowerCase()));
-          const snapEmail = await getDocs(qEmail);
-          if (!snapEmail.empty) {
-            foundUser = { uid: snapEmail.docs[0].id, ...snapEmail.docs[0].data() } as UserProfile;
+      // 1. Query by unique identifier candidates (Member ID, Phone, Email)
+      const queriesToRun: any[] = [];
+      uniqueCandidates.forEach(cand => {
+        queriesToRun.push(query(collection(db, 'users'), where('memberId', '==', cand)));
+        queriesToRun.push(query(collection(db, 'users'), where('phone', '==', cand)));
+        if (cand.includes('@')) {
+          queriesToRun.push(query(collection(db, 'users'), where('email', '==', cand.toLowerCase())));
+        }
+      });
+
+      if (queriesToRun.length > 0) {
+        // Query up to 30 queries in parallel chunks of 10
+        const chunkSize = 10;
+        for (let i = 0; i < queriesToRun.length; i += chunkSize) {
+          const chunk = queriesToRun.slice(i, i + chunkSize);
+          const snaps = await Promise.all(chunk.map(q => getDocs(q)));
+          for (const snap of snaps) {
+            if (!snap.empty) {
+              foundUser = { uid: snap.docs[0].id, ...(snap.docs[0].data() as any) } as UserProfile;
+              break;
+            }
+          }
+          if (foundUser) break;
+        }
+      }
+
+      // 2. Query by Name (Case-insensitive matching / Prefix check) if still not found and input looks like a name
+      if (!foundUser && /^[a-zA-Z\s.-]+$/.test(identifierClean) && identifierClean.length >= 3) {
+        const titleCase = identifierClean.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+        const upper = identifierClean.toUpperCase();
+        const lower = identifierClean.toLowerCase();
+
+        const nameCandidates = Array.from(new Set([identifierClean, titleCase, upper, lower]));
+        const nameQueries = nameCandidates.map(nc => 
+          query(collection(db, 'users'), where('name', '==', nc))
+        );
+        
+        const nameSnaps = await Promise.all(nameQueries.map(q => getDocs(q)));
+        for (const snap of nameSnaps) {
+          if (!snap.empty) {
+            foundUser = { uid: snap.docs[0].id, ...(snap.docs[0].data() as any) } as UserProfile;
+            break;
+          }
+        }
+
+        // If still not found, do a prefix query on "name"
+        if (!foundUser) {
+          const prefixQuery = query(
+            collection(db, 'users'),
+            where('name', '>=', titleCase),
+            where('name', '<=', titleCase + '\uf8ff')
+          );
+          const prefixSnap = await getDocs(prefixQuery);
+          if (!prefixSnap.empty) {
+            foundUser = { uid: prefixSnap.docs[0].id, ...(prefixSnap.docs[0].data() as any) } as UserProfile;
           }
         }
       }
@@ -659,7 +1432,8 @@ export function MemberDashboard({
       status: 'confirmed',
       timestamp: serverTimestamp(),
       memoId: senderTxMemoId,
-      accountNumber: verifiedRecipient.memberId || 'N/A'
+      accountNumber: verifiedRecipient.memberId || 'N/A',
+      reference: transferReference.trim()
     });
 
     // Create inbound transfer transaction
@@ -676,7 +1450,8 @@ export function MemberDashboard({
       status: 'confirmed',
       timestamp: serverTimestamp(),
       memoId: recipientTxMemoId,
-      accountNumber: profile.memberId || 'N/A'
+      accountNumber: profile.memberId || 'N/A',
+      reference: transferReference.trim()
     });
 
     // Record successful state
@@ -685,7 +1460,8 @@ export function MemberDashboard({
       recipientName: verifiedRecipient.name,
       recipientId: verifiedRecipient.memberId || 'Approved Member',
       memoId: senderTxMemoId,
-      date: new Date()
+      date: new Date(),
+      reference: transferReference.trim()
     });
   };
 
@@ -786,46 +1562,86 @@ export function MemberDashboard({
     setVerifiedRecipient(null);
     setTransferError('');
     setTransferSuccess(null);
+    setTransferReference('');
   };
 
   return (
-    <div className="space-y-4 pb-20 text-left max-w-md mx-auto px-2 sm:px-3 relative">
+    <div className={cn(
+      "space-y-4 pb-28 text-left mx-auto px-2 sm:px-4 relative transition-all duration-300 ease-out",
+      memberTab === 'partners'
+        ? "max-w-4xl"
+        : (memberTab === 'memos' || memberTab === 'subscription')
+          ? "max-w-4xl"
+          : memberTab === 'wallets'
+            ? "max-w-3xl"
+            : "max-w-lg"
+    )}>
       
-      {/* Top Welcome Card - Inspired by Image #1 (replaces the redundant sticky second header) */}
-      <div className="p-4 bg-slate-900/30 border border-white/5 rounded-[22px] flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-3 min-w-0">
+      {/* Top Welcome Card - Visible only on Home (dashboard) tab */}
+      {memberTab === 'dashboard' && (
+        <div className="p-4 bg-slate-900/40 border border-white/5 rounded-[22px] flex items-center justify-between shadow-sm backdrop-blur-md">
+          <div className="flex items-center gap-3 min-w-0">
+            <button
+              onClick={() => setMemberTab('profile')}
+              className="w-11 h-11 rounded-full border border-blue-500/20 overflow-hidden bg-blue-600/10 cursor-pointer hover:border-blue-500/40 transition-all active:scale-95 flex items-center justify-center relative flex-shrink-0"
+            >
+              {profile.photoUrl ? (
+                <img src={profile.photoUrl} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <User className="w-5.5 h-5.5 text-blue-400" />
+              )}
+              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-slate-950 animate-pulse" />
+            </button>
+            
+            <div className="min-w-0">
+              <p className="text-[7.5px] font-black text-blue-400/60 uppercase tracking-[0.18em] leading-none mb-1">WELCOME BACK</p>
+              <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight truncate max-w-[130px]">{profile.name}</h3>
+              <span className="inline-block mt-0.5 text-[7px] font-bold tracking-[0.15em] text-blue-400/80 bg-blue-500/10 px-1.5 py-0.5 rounded uppercase border border-blue-500/20 leading-none">
+                MEMBER SESSION
+              </span>
+            </div>
+          </div>
+
+          <div className="h-9 w-[1px] bg-white/5 mx-2" />
+
+          {/* Real-time Credit Score display on Welcome Card */}
           <button
-            onClick={() => setMemberTab('profile')}
-            className="w-11 h-11 rounded-full border border-blue-500/20 overflow-hidden bg-blue-600/10 cursor-pointer hover:border-blue-500/40 transition-all active:scale-95 flex items-center justify-center relative flex-shrink-0"
+            type="button"
+            onClick={() => setShowCreditModal(true)}
+            className="text-right flex-shrink-0 cursor-pointer group focus:outline-none transition-transform active:scale-95"
+            title="Click to view full institutional credit scorecard"
           >
-            {profile.photoUrl ? (
-              <img src={profile.photoUrl} alt="" className="w-full h-full object-cover" />
-            ) : (
-              <User className="w-5.5 h-5.5 text-blue-400" />
-            )}
-            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-slate-950 animate-pulse" />
-          </button>
-          
-          <div className="min-w-0">
-            <p className="text-[7.5px] font-black text-blue-400/60 uppercase tracking-[0.18em] leading-none mb-1">WELCOME BACK</p>
-            <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight truncate max-w-[130px]">{profile.name}</h3>
-            <span className="inline-block mt-0.5 text-[7px] font-bold tracking-[0.15em] text-blue-400/80 bg-blue-500/10 px-1.5 py-0.5 rounded uppercase border border-blue-500/20 leading-none">
-              MEMBER SESSION
+            <p className="text-[7.5px] font-black text-blue-400/60 uppercase tracking-[0.18em] leading-none mb-1 group-hover:text-blue-400 transition-colors">
+              CREDIT SCORE
+            </p>
+            <div className="flex items-center justify-end gap-1 font-mono">
+              <span className={cn(
+                "text-sm sm:text-base font-black transition-colors drop-shadow-sm",
+                dynamicScore >= 640 ? "text-emerald-400" :
+                dynamicScore >= 580 ? "text-amber-400" :
+                "text-rose-500"
+              )}>
+                {dynamicScore}
+              </span>
+              {dynamicScore < 580 && (
+                <span className="text-xs sm:text-sm animate-pulse select-none text-rose-500 font-bold leading-none" title="Credit score is too low — needs attention">
+                  ❗
+                </span>
+              )}
+            </div>
+            <span className={cn(
+              "inline-block mt-0.5 text-[6.5px] sm:text-[7px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded leading-none border transition-colors",
+              dynamicScore >= 640 
+                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" 
+                : dynamicScore >= 580 
+                ? "text-amber-400 bg-amber-500/10 border-amber-500/20" 
+                : "text-rose-400 bg-rose-500/10 border-rose-500/20"
+            )}>
+              {dynamicScore < 580 ? 'NEEDS ATTENTION' : scoreLabel}
             </span>
-          </div>
+          </button>
         </div>
-
-        <div className="h-9 w-[1px] bg-white/5 mx-2" />
-
-        {/* Real-time deposit display on Card matching Image #1 */}
-        <div className="text-right flex-shrink-0">
-          <p className="text-[7.5px] font-black text-blue-400/60 uppercase tracking-[0.18em] leading-none mb-1">PORTAL DEPOSIT</p>
-          <div className="flex items-baseline gap-0.5 justify-end mt-0.5 font-mono">
-            <span className="text-xs font-bold text-[#50e3c2]">৳</span>
-            <span className="text-sm sm:text-base font-black text-white">{(profile.totalDeposit).toLocaleString()}</span>
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* Dynamic Tab Panel Views */}
       <div className="mt-1 min-h-[40vh]">
@@ -833,155 +1649,193 @@ export function MemberDashboard({
         {/* TAB 1: HOME (Dashboard, virtual card, toggles, recent activity) */}
         {memberTab === 'dashboard' && (
           <div className="space-y-4 animate-fade-in">
-            {/* Premium Luxury Credit Card / MasterCard styled Balance Card */}
-            <div className="relative overflow-hidden rounded-[20px] p-5 sm:p-5.5 bg-gradient-to-br from-slate-900 via-blue-950 to-slate-950 text-white border border-white/10 shadow-[0_15px_35px_rgba(0,0,0,0.5)] group aspect-[1.586/1] w-full mx-auto flex flex-col justify-between">
-              {/* Card glossy reflection overlay */}
-              <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/5 to-white/0 transform -skew-x-12 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
-              {/* Background abstract elements */}
-              <div className="absolute top-0 right-0 -mr-16 -mt-16 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
-              <div className="absolute bottom-0 left-0 -ml-16 -mb-16 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
-              
-              {/* CARD TOP ROW: Bank Name and Contactless/Logo */}
-              <div className="relative z-10 flex justify-between items-center mb-1">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5.5 h-5.5 rounded-md overflow-hidden bg-slate-900 border border-blue-500/20 flex-shrink-0">
-                    <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                  </div>
-                  <div>
-                    <p className="text-[9px] font-black tracking-[0.15em] text-white leading-none uppercase">T.U.T.</p>
-                    <p className="text-[6.5px] font-bold tracking-widest text-blue-400/80 uppercase leading-none mt-0.5">MONEY LENDING AUTHORITY</p>
-                  </div>
-                </div>
-                
-                {/* Contactless waves and Wallet icon */}
-                <div className="flex items-center gap-2">
-                  <svg className="w-3.5 h-3.5 text-white/30 rotate-90" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                    <path d="M12 2a10 10 0 0 1 10 10" />
-                    <path d="M12 6a6 6 0 0 1 6 6" />
-                    <path d="M12 10a2 2 0 0 1 2 2" />
-                  </svg>
-                  <div className="p-1.5 bg-white/5 rounded-lg border border-white/10 flex items-center justify-center">
-                    <Wallet className="w-3.5 h-3.5 text-white/80" />
-                  </div>
-                </div>
-              </div>
+            {/* Texture Mode Selector & VIP Pass Quick Access */}
+            <div className="flex items-center justify-between px-1 mb-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">Card Sheen:</span>
+                <div className="flex items-center gap-1 bg-slate-900/90 p-0.5 rounded-lg border border-white/5 text-[9px] font-bold">
+                  {(['auto', 'bronze', 'silver', 'gold'] as const).map((mode) => {
+                    const tierRankMap: Record<string, number> = { standard: 0, bronze: 1, silver: 2, gold: 3 };
+                    const userCurrentTier = (profile.subscriptionTier || (profile.subscriptionStatus === 'active' ? 'bronze' : 'standard'));
+                    const isMaxTierUser = userCurrentTier === 'gold';
+                    const isLocked = mode !== 'auto' && !isMaxTierUser && (tierRankMap[mode] > tierRankMap[userCurrentTier]);
 
-              {/* CARD MIDDLE ROW: EMV Chip & Balances */}
-              <div className="relative z-10 grid grid-cols-12 gap-2 items-center my-1">
-                {/* EMV Gold Chip */}
-                <div className="col-span-3">
-                  <div className="w-8.5 h-6.5 rounded bg-gradient-to-br from-amber-200 via-yellow-400 to-amber-600 border border-amber-500/30 p-0.5 relative overflow-hidden shadow-md flex-shrink-0">
-                    <div className="absolute inset-x-0 top-1/2 h-[1px] bg-amber-900/30" />
-                    <div className="absolute inset-y-0 left-1/2 w-[1px] bg-amber-900/30" />
-                    <div className="absolute inset-1 rounded border border-amber-900/20" />
-                  </div>
-                </div>
-                
-                {/* Balances */}
-                <div className="col-span-9 flex justify-around border-l border-white/10 pl-3">
-                  <div>
-                    <p className="text-white/40 text-[6px] font-black uppercase tracking-widest mb-0.5">CURRENT BALANCE</p>
-                    <p className="text-base sm:text-xl font-black tracking-tight text-white flex items-center leading-none">
-                      <span className="text-xs font-medium mr-0.5">৳</span>{profile.totalDeposit.toLocaleString()}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-white/40 text-[6px] font-black uppercase tracking-widest mb-0.5">REMAINING DEBT</p>
-                    <p className="text-base sm:text-xl font-black tracking-tight text-rose-400 flex items-center leading-none">
-                      <span className="text-xs font-medium mr-0.5">৳</span>{profile.remainingDebt.toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-              </div>
+                    const handleSheenClick = () => {
+                      if (mode === 'auto') {
+                        setCardTextureMode('auto');
+                        return;
+                      }
+                      if (isMaxTierUser) {
+                        // Max tier (Gold Elite) members can preview any tier
+                        setCardTextureMode(mode);
+                        return;
+                      }
+                      if (tierRankMap[mode] <= tierRankMap[userCurrentTier]) {
+                        // User owns or has unlocked this tier
+                        setCardTextureMode(mode);
+                      } else {
+                        // Locked tier: Prompt to upgrade subscription
+                        setLockedSheenTier(mode);
+                      }
+                    };
 
-              {/* CARD NUMBER ROW: Embossed Member ID */}
-              <div className="relative z-10 my-1">
-                <p className="text-white/30 text-[5.5px] font-black uppercase tracking-widest mb-0.5">MEMBER ACCOUNT NO.</p>
-                <p className="text-[11px] sm:text-xs font-mono font-bold tracking-[0.2em] text-white drop-shadow-[0_1.5px_2px_rgba(0,0,0,0.8)] leading-none uppercase">
-                  {profile.memberId ? profile.memberId.replace(/-/g, '  ') : 'TUT  MBR  2026  XXXX'}
-                </p>
-              </div>
-
-              {/* CARD FOOTER ROW: Holder and Validity */}
-              <div className="relative z-10 flex justify-between items-end border-t border-white/5 pt-1.5 mt-0.5">
-                <div>
-                  <p className="text-white/30 text-[5.5px] font-black uppercase tracking-widest leading-none mb-1">CARD HOLDER</p>
-                  <p className="text-[9px] sm:text-[10px] font-black uppercase tracking-tight text-white leading-none truncate max-w-[130px]">{profile.name}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-white/30 text-[5.5px] font-black uppercase tracking-widest leading-none mb-1">VALID THRU</p>
-                  <p className="text-[9px] sm:text-[10px] font-mono text-blue-200 leading-none">
-                    {profile.subscriptionExpiresAt ? format(new Date(profile.subscriptionExpiresAt), 'MM / yy') : '12 / 26'}
-                  </p>
-                </div>
-                {/* Mastercard styled overlapping circles */}
-                <div className="flex -space-x-1.5 items-center opacity-85 self-end pb-0.5">
-                  <div className="w-4.5 h-4.5 rounded-full bg-blue-500/75 mix-blend-screen" />
-                  <div className="w-4.5 h-4.5 rounded-full bg-indigo-500/75 mix-blend-screen" />
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={handleSheenClick}
+                        className={cn(
+                          "px-2 py-0.5 rounded uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1",
+                          cardTextureMode === mode
+                            ? "bg-blue-600 text-white shadow-sm"
+                            : isLocked
+                            ? "text-slate-500 hover:text-amber-300"
+                            : "text-slate-400 hover:text-white"
+                        )}
+                        title={isLocked ? `Upgrade to ${mode} to unlock sheen` : undefined}
+                      >
+                        <span>{mode === 'auto' ? 'Auto' : mode === 'bronze' ? 'Bronze' : mode === 'silver' ? 'Silver' : 'Gold'}</span>
+                        {isLocked && <Lock className="w-2 h-2 text-amber-400/80" />}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+              {profile.subscriptionStatus !== 'active' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTargetSubscriptionTier(undefined);
+                    setMemberTab('subscription');
+                  }}
+                  className="text-[9px] font-black text-blue-400 hover:text-white flex items-center gap-1 uppercase tracking-wider bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-lg transition-colors cursor-pointer"
+                >
+                  <Crown className="w-2.5 h-2.5 text-amber-400" /> Unlock Tiers
+                </button>
+              )}
             </div>
 
-            {/* Membership & Limits Card matching Image #1 */}
-            <div 
-              onClick={() => setMemberTab('subscription')}
-              className="p-4 rounded-[22px] border border-blue-500/10 bg-slate-900/40 backdrop-blur-md hover:bg-slate-900/60 transition-all cursor-pointer group flex items-center justify-between"
-            >
-              <div className="flex items-center gap-3.5 w-full">
-                <div className="w-10 h-10 rounded-full bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400 flex-shrink-0">
-                  <Award className="w-5.5 h-5.5 transition-transform group-hover:scale-110" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[8px] font-black text-blue-400 uppercase tracking-[0.15em] mb-1">Membership & Limits</p>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs sm:text-sm font-black text-white">
-                      {profile.subscriptionStatus === 'active' ? (
-                        profile.subscriptionTier === 'bronze' ? '🥉 BRONZE MEMBERSHIP' :
-                        profile.subscriptionTier === 'silver' ? '🥈 SILVER EXECUTIVE' :
-                        profile.subscriptionTier === 'gold' ? '👑 GOLD ELITE MEMBER' : 'STANDARD MEMBER'
-                      ) : profile.subscriptionStatus === 'pending_approval' ? (
-                        '⏳ VERIFICATION PENDING'
-                      ) : (
-                        '⚠️ NO ACTIVE SUBSCRIPTION'
-                      )}
-                    </span>
-                    {profile.subscriptionStatus === 'active' && (
-                      <span className="text-[7px] font-black uppercase text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20 leading-none">
-                        ACTIVE
+            {/* Premium Banking Virtual Card with Tier Textures */}
+            <BankingTierCard
+              tier={cardTextureMode === 'auto' ? (profile.subscriptionTier || 'standard') : cardTextureMode}
+              status={profile.subscriptionStatus}
+              name={profile.name}
+              memberId={profile.memberId}
+              totalDeposit={profile.totalDeposit}
+              remainingDebt={profile.remainingDebt}
+              subscriptionExpiresAt={profile.subscriptionExpiresAt}
+              showDetailsToggle={true}
+              onCardClick={() => setMemberTab('subscription')}
+            />
+
+            {/* Membership & Limits Box - Styled per user reference design */}
+            {(() => {
+              const activeTier = profile.subscriptionTier || 'standard';
+              const maxBorrowCap = (profile.subscriptionStatus === 'active' || profile.subscriptionStatus === 'pending_approval')
+                ? (profile.borrowingLimit || (activeTier === 'gold' ? 2500 : activeTier === 'silver' ? 1500 : activeTier === 'bronze' ? 500 : 0))
+                : (activeTier === 'gold' ? 2500 : activeTier === 'silver' ? 1500 : activeTier === 'bronze' ? 500 : 0);
+
+              const usedDebt = profile.remainingDebt || 0;
+              const usedPercent = maxBorrowCap > 0 ? Math.min(100, Math.round((usedDebt / maxBorrowCap) * 100)) : 0;
+
+              const planDisplayName = activeTier === 'gold' ? 'Gold Sovereign' : activeTier === 'silver' ? 'Silver Executive' : activeTier === 'bronze' ? 'Bronze Premier' : 'Standard Member';
+
+              const planColor = activeTier === 'gold' ? '#F59E0B' : activeTier === 'silver' ? '#94A3B8' : activeTier === 'bronze' ? '#D97706' : '#64748B';
+
+              const renewalDateDisplay = profile.subscriptionExpiresAt
+                ? format(new Date(profile.subscriptionExpiresAt), 'dd MMM yyyy')
+                : profile.subscriptionStatus === 'active'
+                ? 'Active'
+                : 'N/A';
+
+              return (
+                <div 
+                  onClick={() => setMemberTab('subscription')}
+                  className="relative overflow-hidden rounded-2xl bg-slate-900/50 border border-slate-700/40 hover:border-slate-600/70 backdrop-blur-md transition-all cursor-pointer p-3 sm:p-3.5 shadow-md shadow-black/30 group active:scale-[0.99]"
+                >
+                  {/* Left-edge vertical tier stripe */}
+                  <div 
+                    className="absolute left-0 top-2.5 bottom-2.5 w-1 rounded-r-full transition-colors"
+                    style={{ 
+                      backgroundColor: planColor,
+                      boxShadow: `0 0 8px ${planColor}50`
+                    }}
+                  />
+
+                  <div className="pl-2 sm:pl-2.5 space-y-2">
+                    {/* Top Row: Current Plan & Status */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0">
+                        <span className={cn(
+                          "w-2 h-2 rounded-full shrink-0",
+                          profile.subscriptionStatus === 'active'
+                            ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]"
+                            : profile.subscriptionStatus === 'pending_approval'
+                            ? "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.8)]"
+                            : "bg-slate-500"
+                        )} />
+                        <span className="text-[11px] sm:text-xs font-semibold text-slate-300 tracking-tight shrink-0">
+                          Current Plan
+                        </span>
+                        <span 
+                          className="text-[11px] sm:text-xs font-bold tracking-tight truncate"
+                          style={{ color: planColor }}
+                        >
+                          {planDisplayName}
+                        </span>
+                      </div>
+
+                      <span className={cn(
+                        "text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md font-mono shrink-0 border",
+                        profile.subscriptionStatus === 'active'
+                          ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                          : profile.subscriptionStatus === 'pending_approval'
+                          ? "text-amber-400 bg-amber-500/10 border-amber-500/25"
+                          : "text-slate-400 bg-slate-800/60 border-slate-700/60"
+                      )}>
+                        {profile.subscriptionStatus === 'active' ? 'ACTIVE' : profile.subscriptionStatus === 'pending_approval' ? 'PENDING' : 'INACTIVE'}
                       </span>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-3 mt-2.5 pt-2.5 border-t border-white/5 text-left">
-                    <div>
-                      <p className="text-[7.5px] text-slate-500 uppercase tracking-wider font-bold leading-none">Borrow Limit</p>
-                      <p className="text-[11px] font-black text-blue-300 mt-0.5 font-mono">
-                        {profile.subscriptionStatus === 'active' ? (
-                          profile.subscriptionTier === 'bronze' ? '৳500 / month' :
-                          profile.subscriptionTier === 'silver' ? '৳1,500 / month' :
-                          profile.subscriptionTier === 'gold' ? '৳2,500 / month' : '৳0 / month'
-                        ) : '৳0 / month'}
-                      </p>
                     </div>
-                    <div>
-                      <p className="text-[7.5px] text-slate-500 uppercase tracking-wider font-bold leading-none">Next Renewal</p>
-                      <p className="text-[11px] font-black text-blue-300 mt-0.5 font-mono">
-                        {profile.subscriptionStatus === 'active' && profile.subscriptionExpiresAt ? (
-                          format(new Date(profile.subscriptionExpiresAt), 'dd MMM')
-                        ) : 'N/A'}
-                      </p>
+
+                    {/* Middle Row: Max Borrow Cap & Value */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] sm:text-[11px] text-slate-400 font-medium tracking-wide">
+                        Max Borrow Cap
+                      </span>
+                      <span className="text-base sm:text-lg font-black font-mono text-white tracking-tight">
+                        ৳{maxBorrowCap.toLocaleString()}
+                      </span>
+                    </div>
+
+                    {/* Dark Progress Bar Track & Fill */}
+                    <div className="w-full h-1 bg-slate-950/80 rounded-full overflow-hidden border border-white/5">
+                      <div 
+                        className="h-full bg-emerald-500 transition-all duration-500 rounded-full shadow-[0_0_4px_rgba(16,185,129,0.7)]"
+                        style={{ width: `${usedPercent}%` }}
+                      />
+                    </div>
+
+                    {/* Bottom Row: % used & Next Renewal Date */}
+                    <div className="flex items-center justify-between text-[10px] sm:text-[11px]">
+                      <span className="font-semibold text-emerald-400 font-mono">
+                        {usedPercent}% used
+                      </span>
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        <span className="text-slate-400 font-medium">Next Renewal</span>
+                        <span className="font-bold text-slate-200 font-mono">
+                          {renewalDateDisplay}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-              <svg className="w-4 h-4 text-slate-500 group-hover:text-white transition-colors ml-2 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
-            </div>
+              );
+            })()}
 
             {/* Quick Actions Bento Grid - Replaced with requested setup */}
             <div className="space-y-2">
-              <h4 className="text-[8.5px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">QUICK ACTIONS</h4>
-              <div className="p-3 rounded-[22px] border border-white/5 bg-slate-900/20 backdrop-blur-md grid grid-cols-5 gap-1.5">
+              <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">QUICK ACTIONS</h4>
+              <div className="p-3.5 rounded-[22px] border border-white/5 bg-slate-900/20 backdrop-blur-md grid grid-cols-5 gap-2">
                 
                 {/* BORROW LOAN */}
                 <button 
@@ -991,7 +1845,7 @@ export function MemberDashboard({
                   <div className="w-8.5 h-8.5 rounded-full bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(37,99,235,0.08)]">
                     <ArrowUpRight className="w-4 h-4" />
                   </div>
-                  <span className="text-[7.5px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight">Borrow Loan</span>
+                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Borrow Loan</span>
                 </button>
 
                 {/* PAY DUE */}
@@ -1002,7 +1856,7 @@ export function MemberDashboard({
                   <div className="w-8.5 h-8.5 rounded-full bg-rose-600/10 border border-rose-500/20 flex items-center justify-center text-rose-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(244,63,94,0.08)]">
                     <CreditCard className="w-4 h-4" />
                   </div>
-                  <span className="text-[7.5px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight">Pay Due</span>
+                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Pay Due</span>
                 </button>
 
                 {/* DEPOSIT */}
@@ -1013,7 +1867,7 @@ export function MemberDashboard({
                   <div className="w-8.5 h-8.5 rounded-full bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(16,185,129,0.08)]">
                     <Wallet className="w-4 h-4" />
                   </div>
-                  <span className="text-[7.5px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight">Deposit</span>
+                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Deposit</span>
                 </button>
 
                 {/* REFUND DEPOSIT */}
@@ -1024,7 +1878,7 @@ export function MemberDashboard({
                   <div className="w-8.5 h-8.5 rounded-full bg-amber-600/10 border border-amber-500/20 flex items-center justify-center text-amber-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(245,158,11,0.08)]">
                     <ArrowDownLeft className="w-4 h-4" />
                   </div>
-                  <span className="text-[7.5px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight">Refund Deposit</span>
+                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Refund Deposit</span>
                 </button>
 
                 {/* TRANSFER */}
@@ -1035,7 +1889,7 @@ export function MemberDashboard({
                   <div className="w-8.5 h-8.5 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(168,85,247,0.08)]">
                     <Send className="w-4 h-4" />
                   </div>
-                  <span className="text-[7.5px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight">Transfer</span>
+                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Transfer</span>
                 </button>
 
               </div>
@@ -1053,7 +1907,7 @@ export function MemberDashboard({
                   <MessageSquare className="w-4.5 h-4.5 group-hover:scale-110 transition-transform" />
                 </div>
                 <div>
-                  <p className="text-[8px] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1">LIVE SUPPORT</p>
+                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1">LIVE SUPPORT</p>
                   <h5 className="text-[11px] font-bold text-white tracking-tight">Need help? Contact Admin</h5>
                 </div>
               </div>
@@ -1063,41 +1917,90 @@ export function MemberDashboard({
             </a>
 
             {/* Awaiting Pending Verification Queue */}
-            {transactions.filter(t => t.status === 'pending').length > 0 && (
+            {pendingTransactions.length > 0 && (
               <div className="space-y-2">
-                <h4 className="text-[8.5px] font-black text-amber-500/80 uppercase tracking-[0.2em] ml-1 flex items-center gap-1.5">
+                <h4 className="text-[11px] font-black text-amber-500/80 uppercase tracking-[0.2em] ml-1 flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 animate-spin" />
                   Awaiting Verification
                 </h4>
                 <div className="space-y-2">
-                  {transactions.filter(t => t.status === 'pending').map(tx => (
-                    <div key={tx.id} className="bg-slate-900/30 border border-amber-500/15 rounded-xl p-3 flex justify-between items-center group hover:border-amber-500/30 transition-all">
-                      <div className="flex items-center gap-3">
-                        <div className={cn("p-2 rounded-lg transition-transform group-hover:scale-110", 
-                          tx.type === 'loan' ? "bg-rose-500/10 text-rose-400" : 
-                          tx.type === 'refund' ? "bg-amber-500/10 text-amber-400" : 
-                          tx.type === 'subscription' ? "bg-yellow-500/10 text-yellow-400" :
-                          "bg-emerald-500/10 text-emerald-400"
-                        )}>
-                          {tx.type === 'loan' ? <ArrowUpRight className="w-4 h-4" /> : 
-                           tx.type === 'refund' ? <ArrowUpRight className="w-4 h-4" /> :
-                           tx.type === 'subscription' ? <span className="text-xs">👑</span> :
-                           <ArrowDownLeft className="w-4 h-4" />}
+                  {pendingTransactions.map(tx => (
+                    <div key={tx.id} className="bg-slate-900/40 border border-amber-500/25 rounded-2xl p-3.5 space-y-2.5 group hover:border-amber-500/40 transition-all shadow-sm">
+                      {/* Top Row: Type, Timestamp, Amount & Status */}
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className={cn("p-2 rounded-xl transition-transform group-hover:scale-105 shrink-0", 
+                            tx.type === 'loan' ? "bg-rose-500/10 text-rose-400 border border-rose-500/20" : 
+                            tx.type === 'refund' ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : 
+                            tx.type === 'subscription' ? "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20" :
+                            "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                          )}>
+                            {tx.type === 'loan' ? <ArrowUpRight className="w-4 h-4" /> : 
+                             tx.type === 'refund' ? <ArrowUpRight className="w-4 h-4" /> :
+                             tx.type === 'subscription' ? <Award className="w-4 h-4 text-amber-400" /> :
+                             <ArrowDownLeft className="w-4 h-4" />}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-black capitalize tracking-tight text-white truncate">
+                              {tx.type === 'loan' ? 'Loan Request' : tx.type === 'deposit' ? 'Security Deposit' : tx.type === 'refund' ? 'Refund Request' : tx.type === 'pay_due' ? 'Due Repayment' : tx.type}
+                            </p>
+                            <p className="text-[9.5px] font-bold text-slate-400 tracking-wider mt-0.5">
+                              {tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Just now'}
+                            </p>
+                          </div>
                         </div>
+
+                        <div className="text-right shrink-0">
+                          <p className="text-sm font-black text-amber-400 tracking-tight font-mono">৳ {tx.amount.toLocaleString()}</p>
+                          <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-[8.5px] font-black uppercase tracking-wider text-amber-400 bg-amber-500/15 border border-amber-500/30">
+                            Awaiting Review
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Specifications Grid: Payment Method, Transaction ID, Reference */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-950/70 p-2.5 rounded-xl border border-white/5 text-[10px]">
                         <div>
-                          <p className="text-xs font-black capitalize tracking-tight">
-                            {tx.type === 'loan' ? 'Loan Request' : tx.type === 'refund' ? 'Refund Request' : tx.type}
-                            {tx.method === 'Recharge' && tx.mobileOperator && ` (${tx.mobileOperator})`}
-                          </p>
-                          <p className="text-[8px] font-bold text-slate-500 uppercase tracking-wider">
-                            {tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Just now'} • {tx.method === 'Recharge' ? 'Mobile Recharge' : tx.method}
-                          </p>
+                          <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-400 block">Payment Method</span>
+                          <span className="font-bold text-slate-200 block truncate">
+                            {tx.method} {tx.mobileOperator ? `(${tx.mobileOperator})` : ''}
+                          </span>
+                          {tx.accountNumber && (
+                            <span className="font-mono text-emerald-400 text-[9px] block truncate">
+                              {tx.accountNumber}
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-400 block">Transaction ID</span>
+                          <span className="font-mono font-bold text-amber-300 block truncate" title={tx.transactionId || tx.id}>
+                            {tx.transactionId || tx.id || 'N/A'}
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-400 block">Reference</span>
+                          <span className="font-mono text-purple-300 block truncate" title={tx.reference || tx.memoId}>
+                            {tx.reference || tx.memoId || tx.transactionId || 'TUT-REF'}
+                          </span>
+                          {tx.estimatedRepaymentDate && (
+                            <span className="text-[9px] text-amber-400/90 block">
+                              Due: {tx.estimatedRepaymentDate}
+                            </span>
+                          )}
                         </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-sm font-black text-amber-400 tracking-tight font-mono">৳ {tx.amount.toLocaleString()}</p>
-                        <span className="text-[7.5px] font-black text-amber-400/80 uppercase tracking-widest mt-0.5 block">Pending</span>
-                      </div>
+
+                      {/* Reason for Loan / Stated Purpose */}
+                      {(tx.loanReason || (tx as any).purpose) && (
+                        <div className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-slate-200">
+                          <span className="font-black uppercase tracking-wider text-amber-400 text-[8.5px] block">Reason for Loan:</span>
+                          <span className="italic block mt-0.5 font-medium text-slate-100">
+                            "{tx.loanReason || (tx as any).purpose}"
+                          </span>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1112,7 +2015,7 @@ export function MemberDashboard({
               </div>
               
               <div className="bg-slate-950/40 rounded-3xl border border-white/5 p-4.5 space-y-4">
-                {transactions.filter(t => t.status === 'confirmed').slice(0, 5).map((tx, idx, arr) => {
+                {confirmedTransactions.slice(0, 5).map((tx, idx, arr) => {
                   let sign = '+';
                   let colorClass = 'text-emerald-400';
                   let title = '';
@@ -1207,6 +2110,16 @@ export function MemberDashboard({
                             <p className="text-[10px] text-slate-400 font-bold truncate mt-0.5">
                               {subtitle} <span className="mx-1 text-slate-600">•</span> {txTime}
                             </p>
+                            {tx.reference && (
+                              <p className="text-[9.5px] text-blue-400 font-bold mt-1 italic truncate">
+                                Reference: "{tx.reference}"
+                              </p>
+                            )}
+                            {tx.adminNotes && (
+                              <p className="text-[9.5px] text-slate-400 font-semibold mt-1 italic truncate">
+                                Memo: "{tx.adminNotes}"
+                              </p>
+                            )}
                           </div>
                         </div>
 
@@ -1225,9 +2138,15 @@ export function MemberDashboard({
                   );
                 })}
 
-                {transactions.filter(t => t.status === 'confirmed').length === 0 && (
-                  <div className="py-8 text-center bg-slate-900/15 border border-dashed border-white/5 rounded-3xl">
-                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">No verified transaction history yet</p>
+                {confirmedTransactions.length === 0 && (
+                  <div className="py-12 px-4 text-center bg-slate-900/20 border border-dashed border-blue-500/10 rounded-3xl flex flex-col items-center justify-center space-y-3.5">
+                    <div className="w-12 h-12 rounded-full bg-blue-500/5 flex items-center justify-center text-blue-400/50 border border-blue-500/10">
+                      <CreditCard className="w-5 h-5 animate-pulse" />
+                    </div>
+                    <div className="space-y-1 max-w-[280px]">
+                      <p className="text-[11px] text-slate-300 font-bold uppercase tracking-wider">No Confirmed Transactions</p>
+                      <p className="text-[10px] text-slate-500 font-semibold leading-relaxed">Your secure ledger is ready. Once your deposit or loan requests are verified, they will appear here instantly.</p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1235,245 +2154,658 @@ export function MemberDashboard({
           </div>
         )}
 
-        {/* TAB 2: VAULT (Real Banking Transaction Statement & Compact Ledger) */}
+        {/* TAB 2: VAULT (Premium Banking-Style Financial Overview) */}
         {memberTab === 'memos' && (
-          <div className="space-y-3 animate-fade-in flex flex-col h-[calc(100vh-170px)] select-none">
-            
-            {/* Real Banking Transaction Ledger Header */}
-            <div className="flex items-center justify-between pb-1 border-b border-white/5 shrink-0">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 border border-blue-500/10">
-                  <FileText className="w-4.5 h-4.5" />
-                </div>
-                <div>
-                  <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Transaction Ledger</h3>
-                  <p className="text-[7px] text-slate-500 font-bold uppercase tracking-wider">T.U.T. Official Account Statement</p>
-                </div>
-              </div>
-              <span className="text-[7px] font-black uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
-                Synchronized
-              </span>
-            </div>
-
-            {/* Compact 3-Column Stats Ribbon */}
-            <div className="grid grid-cols-3 gap-2 p-2 bg-slate-900/30 border border-white/5 rounded-xl text-center shrink-0">
-              <div>
-                <p className="text-[6.5px] text-slate-500 uppercase tracking-widest font-black">Savings</p>
-                <p className="text-[10px] font-black text-emerald-400 font-mono mt-0.5">৳ {profile.totalDeposit.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-[6.5px] text-slate-500 uppercase tracking-widest font-black">Active Debt</p>
-                <p className="text-[10px] font-black text-rose-400 font-mono mt-0.5">৳ {profile.remainingDebt.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-[6.5px] text-slate-500 uppercase tracking-widest font-black">Borrow Limit</p>
-                <p className="text-[10px] font-black text-blue-300 font-mono mt-0.5">
-                  ৳ {(profile.subscriptionStatus === 'active' ? (
-                    profile.subscriptionTier === 'bronze' ? 500 :
-                    profile.subscriptionTier === 'silver' ? 1500 :
-                    profile.subscriptionTier === 'gold' ? 2500 : 0
-                  ) : 0).toLocaleString()}
-                </p>
-              </div>
-            </div>
-
-            {/* Compact Search and Category Filters */}
-            <div className="space-y-1.5 shrink-0">
-              <div className="relative">
-                <span className="absolute inset-y-0 left-2.5 flex items-center pointer-events-none text-slate-500">
-                  <Search className="w-3.5 h-3.5" />
-                </span>
-                <input
-                  type="text"
-                  placeholder="Search statements by ID, type, method..."
-                  value={docSearch}
-                  onChange={(e) => setDocSearch(e.target.value)}
-                  className="w-full bg-slate-950/40 border border-white/5 rounded-xl py-1.5 pl-8 pr-3 text-[10px] font-semibold text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/30 transition-all font-mono"
-                />
-              </div>
-
-              {/* Category chips */}
-              <div className="flex gap-1 overflow-x-auto pb-0.5 no-scrollbar shrink-0">
-                {(['all', 'receipts', 'loans', 'deposits', 'certificates', 'subscriptions'] as const).map((tab) => {
-                  const label = tab === 'receipts' ? 'Vouchers' : tab.charAt(0).toUpperCase() + tab.slice(1);
-                  const isActive = docFilter === tab;
-                  return (
-                    <button
-                      key={tab}
-                      onClick={() => setDocFilter(tab)}
-                      className={cn(
-                        "px-2.5 py-1 rounded-lg text-[8px] font-black uppercase tracking-wider transition-all duration-300 cursor-pointer shrink-0 border",
-                        isActive ? "bg-blue-600 border-blue-500 text-white shadow-sm" : "bg-slate-900/60 text-slate-400 border-white/5"
-                      )}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Sleek Transactions Ledger List */}
-            <div className="flex-1 flex flex-col min-h-0 space-y-1">
-              <div className="flex justify-between items-center px-0.5 shrink-0">
-                <span className="text-[7.5px] font-black text-slate-500 uppercase tracking-wider">Ledger Entries</span>
-                <span className="text-[7.5px] font-mono text-slate-500 font-bold">Showing {
-                  transactions.filter(t => t.status === 'confirmed').length
-                } verified</span>
-              </div>
-
-              {/* Viewport-fitted scroll container */}
-              <div className="bg-slate-950/40 rounded-2xl border border-white/5 p-1.5 overflow-y-auto flex-1 min-h-0 space-y-1.5 scrollbar-thin">
-                
-                {/* Membership Certificate Block */}
-                {(docFilter === 'all' || docFilter === 'certificates') && 
-                 profile.status === 'approved' && 
-                 profile.name.toLowerCase().includes(docSearch.toLowerCase()) && (
-                  <div
-                    onClick={() => {
-                      setSelectedDoc({
-                        id: 'CERT-MEMB-2026',
-                        type: 'certificate',
-                        amount: 0,
-                        method: 'Cash',
-                        status: 'confirmed',
-                        memoId: `CERT-${profile.memberId}`
-                      });
-                    }}
-                    className="group bg-slate-900/40 border border-amber-500/15 hover:border-amber-500/30 rounded-xl p-2 flex justify-between items-center cursor-pointer transition-all active:scale-[0.98]"
+          <div className="space-y-3 animate-fade-in pb-12 select-none font-sans text-left max-w-5xl mx-auto">
+              
+              {/* Title & Time Header with Back Button */}
+              <div className="flex items-center justify-between pt-0.5 pb-1 border-b border-white/5">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setMemberTab('dashboard')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-900 border border-white/10 text-[10px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shadow-sm"
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-amber-600 to-yellow-500 flex items-center justify-center text-xs text-white shrink-0 shadow-sm font-black">
-                        👑
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-black text-white tracking-tight truncate leading-none">Membership Certificate</p>
-                        <p className="text-[7.5px] text-slate-500 font-bold uppercase tracking-wider mt-1 leading-none">CERT-{profile.memberId || 'N/A'} • T.U.T Official</p>
-                      </div>
+                    <ArrowLeft className="w-3 h-3" /> Back
+                  </button>
+                  <div>
+                    <h1 className="text-sm sm:text-base font-black text-white tracking-tight">My Vault</h1>
+                    <p className="text-[9px] text-slate-400 font-medium leading-none">Complete financial overview</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => {
+                    setDocFilter('all');
+                  }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-900/80 border border-white/10 text-[9.5px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shadow-sm"
+                >
+                  <RotateCw className="w-2.5 h-2.5 text-blue-400" />
+                  <span className="hidden sm:inline text-[9.5px]">Real-time Ledger</span>
+                </button>
+              </div>
+
+              {/* 1. UPCOMING REPAYMENT - FEATURED AT TOP OF VAULT */}
+              <div 
+                onClick={() => setVaultModalType('upcoming_repayment')}
+                className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-r from-purple-950/70 via-slate-900/90 to-slate-900/80 border border-purple-500/35 hover:border-purple-500/60 backdrop-blur-xl transition-all shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 cursor-pointer group"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-purple-500/20 border border-purple-500/30 flex items-center justify-center text-purple-300 shrink-0 shadow-inner group-hover:scale-105 transition-transform">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-black uppercase text-purple-300 tracking-wider">UPCOMING REPAYMENT</span>
+                      <span className="inline-flex items-center gap-0.5 text-[8.5px] font-bold text-purple-300 bg-purple-500/20 border border-purple-500/30 px-1.5 py-0.5 rounded-full">
+                        <Clock className="w-2 h-2" /> {remainingDebtVal > 0 ? 'Active Due' : 'Zero Debt'}
+                      </span>
                     </div>
-                    <div className="text-right shrink-0">
-                      <span className="text-[7.5px] font-black uppercase bg-amber-500/10 border border-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded leading-none">SECURED</span>
+                    <div className="flex items-baseline gap-2 mt-0.5">
+                      <h3 className="text-xs sm:text-sm font-black text-white tracking-tight group-hover:text-purple-300 transition-colors">
+                        {remainingDebtVal > 0 ? (activeLoan?.estimatedRepaymentDate || 'Pending Schedule') : 'No Outstanding Debt'}
+                      </h3>
+                      <span className="text-[10px] font-semibold text-slate-300">
+                        Amount: <strong className={cn("font-black font-mono text-xs ml-0.5", remainingDebtVal > 0 ? "text-rose-400" : "text-emerald-400")}>৳ {remainingDebtVal.toLocaleString()}</strong>
+                      </span>
                     </div>
                   </div>
-                )}
+                </div>
 
-                {/* Ledger Item listings */}
-                {transactions
-                  .filter(t => t.status === 'confirmed')
-                  .filter(t => {
-                    const queryClean = docSearch.toLowerCase();
-                    const matchId = t.id.toLowerCase().includes(queryClean);
-                    const matchMemo = t.memoId?.toLowerCase().includes(queryClean) || false;
-                    const matchMethod = t.method.toLowerCase().includes(queryClean);
-                    const matchType = t.type.toLowerCase().includes(queryClean);
-                    
-                    const matchesSearch = docSearch === '' || matchId || matchMemo || matchMethod || matchType;
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  {remainingDebtVal > 0 ? (
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); onRequestAction('pay_due'); }}
+                      className="w-full sm:w-auto py-1.5 px-3 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1 transition-all cursor-pointer shadow-md"
+                    >
+                      <span>Pay Repayment Now</span>
+                      <ChevronRight className="w-3 h-3" />
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); onRequestAction('loan'); }}
+                      className="w-full sm:w-auto py-1.5 px-3 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1 transition-all cursor-pointer shadow-md"
+                    >
+                      <span>Apply For Loan</span>
+                      <ChevronRight className="w-3 h-3" />
+                    </button>
+                  )}
+                  <span className="text-[9px] font-bold text-purple-300 underline uppercase tracking-wider hidden sm:inline ml-1">Details →</span>
+                </div>
+              </div>
 
-                    if (!matchesSearch) return false;
-                    if (docFilter === 'all') return true;
-                    if (docFilter === 'loans' && t.type === 'loan') return true;
-                    if (docFilter === 'deposits' && t.type === 'deposit') return true;
-                    if (docFilter === 'subscriptions' && t.type === 'subscription') return true;
-                    if (docFilter === 'receipts' && (t.type === 'refund' || t.type === 'pay_due')) return true;
-                    return false;
-                  })
-                  .map((tx) => {
-                    let iconBg = 'from-emerald-600 to-teal-500';
-                    let initial = 'D';
-                    let title = 'Portal Deposit';
+              {/* Grid 1: 3-COLUMN STATS OVERVIEW (TOTAL LOAN, TOTAL DEPOSITS, CREDIT SCORE) */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                
+                {/* Card 1: TOTAL LOAN */}
+                <div 
+                  onClick={() => setVaultModalType('total_loan')}
+                  className="p-2.5 sm:p-3 rounded-xl bg-slate-900/70 border border-blue-500/20 hover:border-blue-500/50 hover:bg-slate-900/90 backdrop-blur-xl transition-all shadow-md relative overflow-hidden group flex flex-col justify-between cursor-pointer"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-5.5 h-5.5 rounded-md bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shadow-inner group-hover:scale-105 transition-transform">
+                          <Wallet className="w-3 h-3" />
+                        </div>
+                        <span className="text-[9px] font-black uppercase text-slate-300 tracking-wider group-hover:text-blue-400 transition-colors">TOTAL LOAN</span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-400 group-hover:translate-x-0.5 transition-all" />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="space-y-1 min-w-0">
+                        <h3 className="text-base sm:text-lg font-black text-white font-mono tracking-tight truncate">
+                          ৳ {totalLoanVal.toLocaleString()}
+                        </h3>
+                        <div className="space-y-0.5 text-[9.5px] font-semibold">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[8.5px] text-slate-400 font-medium">Due:</span>
+                            <span className="text-[10px] font-black text-amber-400 font-mono">
+                              ৳{remainingDebtVal.toLocaleString()}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[8.5px] text-slate-400 font-medium">Repaid:</span>
+                            <span className="text-[10px] font-black text-emerald-400 font-mono">
+                              ৳{totalRepaidVal.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Circular Progress Gauge */}
+                      <div className="relative w-13 h-13 sm:w-14 sm:h-14 flex items-center justify-center shrink-0">
+                        <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                          <path
+                            className="text-slate-800"
+                            strokeWidth="3.8"
+                            stroke="currentColor"
+                            fill="none"
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                          <path
+                            className="text-amber-500 transition-all duration-1000 ease-out"
+                            strokeDasharray={`${outstandingPctVal}, 100`}
+                            strokeWidth="3.8"
+                            strokeLinecap="round"
+                            stroke="currentColor"
+                            fill="none"
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                        </svg>
+                        <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                          <span className="text-xs font-black text-white font-mono leading-none">{outstandingPctVal}%</span>
+                          <span className="text-[6.5px] font-bold text-slate-400 uppercase tracking-tight mt-0.5">Due</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Card 2: TOTAL DEPOSITS */}
+                <div 
+                  onClick={() => setVaultModalType('total_deposits')}
+                  className="p-2.5 sm:p-3 rounded-xl bg-slate-900/70 border border-emerald-500/20 hover:border-emerald-500/50 hover:bg-slate-900/90 backdrop-blur-xl transition-all shadow-md flex flex-col justify-between group cursor-pointer"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-5.5 h-5.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shadow-inner group-hover:scale-105 transition-transform">
+                          <ArrowDownLeft className="w-3 h-3" />
+                        </div>
+                        <span className="text-[9px] font-black uppercase text-slate-300 tracking-wider group-hover:text-emerald-400 transition-colors">TOTAL DEPOSITS</span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-400 group-hover:translate-x-0.5 transition-all" />
+                    </div>
+
+                    <div className="space-y-0.5">
+                      <h3 className="text-base sm:text-lg font-black text-white font-mono tracking-tight truncate">
+                        ৳ {totalDepositsVal.toLocaleString()}
+                      </h3>
+                      <p className="text-[9px] text-slate-400 font-medium">All time verified deposits</p>
+                    </div>
+                  </div>
+
+                  <div className="pt-1.5 mt-1.5 border-t border-white/5 flex items-center justify-between text-[9px]">
+                    <span className="text-slate-400 font-semibold">Status Account</span>
+                    <span className="text-emerald-400 font-black font-mono bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">Verified</span>
+                  </div>
+                </div>
+
+                {/* Card 3: CREDIT SCORE */}
+                <div 
+                  onClick={() => setShowCreditModal(true)}
+                  className="p-2.5 sm:p-3 rounded-xl bg-slate-900/70 border border-amber-500/20 hover:border-amber-500/50 hover:bg-slate-900/90 backdrop-blur-xl transition-all shadow-md flex flex-col justify-between space-y-1.5 group cursor-pointer"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-5.5 h-5.5 rounded-md bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shadow-inner group-hover:scale-105 transition-transform">
+                          <Award className="w-3 h-3" />
+                        </div>
+                        <span className="text-[9px] font-black uppercase text-slate-300 tracking-wider group-hover:text-amber-400 transition-colors">CREDIT SCORE</span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-amber-400 group-hover:translate-x-0.5 transition-all" />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xl sm:text-2xl font-black text-white font-mono tracking-tight">{dynamicScore}</span>
+                        <span className={cn("text-[8.5px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full border", scoreBadgeStyle)}>
+                          {scoreLabel}
+                        </span>
+                      </div>
+
+                      {/* Segmented Bar */}
+                      <div className="flex gap-1 h-1.5 w-full rounded-full overflow-hidden bg-slate-800/80 p-0.5">
+                        {[
+                          { seg: 1, color: 'bg-rose-500' },
+                          { seg: 2, color: 'bg-amber-500' },
+                          { seg: 3, color: 'bg-blue-500' },
+                          { seg: 4, color: 'bg-teal-400' },
+                          { seg: 5, color: 'bg-emerald-400' }
+                        ].map(({ seg, color }) => (
+                          <div 
+                            key={seg} 
+                            className={cn(
+                              "flex-1 rounded-full transition-all",
+                              seg <= activeScoreSegments 
+                                ? `${color} shadow-[0_0_6px_rgba(255,255,255,0.2)]` 
+                                : "bg-slate-800 opacity-40"
+                            )} 
+                          />
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between pt-0.5">
+                        <span className="text-[8px] font-mono text-slate-400">Scale: 300–850</span>
+                        <span className="text-[8px] text-amber-400/90 font-bold hover:underline flex items-center gap-0.5">
+                          Audit & Rules →
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Quick Actions Bar */}
+              <div className="space-y-1 pt-0.5">
+                <h4 className="text-[9px] font-black uppercase tracking-wider text-slate-400">Quick Actions</h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {/* Repayment */}
+                  <button 
+                    onClick={() => onRequestAction('pay_due')}
+                    className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-white/10 hover:border-rose-500/30 transition-all flex items-center gap-2 text-left cursor-pointer group shadow-sm"
+                  >
+                    <div className="w-6.5 h-6.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <Banknote className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black text-white uppercase tracking-tight truncate">Repayment</p>
+                      <p className="text-[8.5px] text-slate-400 truncate">Pay loan dues</p>
+                    </div>
+                  </button>
+
+                  {/* Deposit */}
+                  <button 
+                    onClick={() => onRequestAction('deposit')}
+                    className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-white/10 hover:border-emerald-500/30 transition-all flex items-center gap-2 text-left cursor-pointer group shadow-sm"
+                  >
+                    <div className="w-6.5 h-6.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <PlusCircle className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black text-white uppercase tracking-tight truncate">Deposit</p>
+                      <p className="text-[8.5px] text-slate-400 truncate">Add vault funds</p>
+                    </div>
+                  </button>
+
+                  {/* Statement */}
+                  <button 
+                    onClick={() => {
+                      if (userConfirmedTxs.length > 0) {
+                        setSelectedDoc(userConfirmedTxs[0]);
+                      } else {
+                        setSelectedDoc({
+                          id: 'STMT-OFFICIAL-2026',
+                          type: 'certificate',
+                          amount: profile.totalDeposit || 0,
+                          method: 'Bank Sync',
+                          status: 'confirmed',
+                          memoId: `STMT-${profile.memberId || '2026'}`
+                        });
+                      }
+                    }}
+                    className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-white/10 hover:border-blue-500/30 transition-all flex items-center gap-2 text-left cursor-pointer group shadow-sm"
+                  >
+                    <div className="w-6.5 h-6.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <FileText className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black text-white uppercase tracking-tight truncate">Statement</p>
+                      <p className="text-[8.5px] text-slate-400 truncate">Download PDF</p>
+                    </div>
+                  </button>
+
+                  {/* History */}
+                  <button 
+                    onClick={() => {
+                      setDocFilter('all');
+                      const el = document.getElementById('recent-activity-section');
+                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800 border border-white/10 hover:border-purple-500/30 transition-all flex items-center gap-2 text-left cursor-pointer group shadow-sm"
+                  >
+                    <div className="w-6.5 h-6.5 rounded-md bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                      <HistoryIcon className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black text-white uppercase tracking-tight truncate">History</p>
+                      <p className="text-[8.5px] text-slate-400 truncate">Activity logs</p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Four Metric Strip Card */}
+              <div className="p-2 rounded-xl bg-slate-900/70 border border-white/10 backdrop-blur-xl grid grid-cols-2 md:grid-cols-4 gap-2 divide-y md:divide-y-0 md:divide-x divide-white/5 shadow-md">
+                {/* Available Limit */}
+                <div 
+                  onClick={() => setVaultModalType('available_limit')}
+                  className="space-y-0.5 pr-2 cursor-pointer hover:bg-white/5 p-1.5 rounded-lg transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <div className="w-5 h-5 rounded bg-blue-500/10 text-blue-400 flex items-center justify-center">
+                        <PieChart className="w-3 h-3" />
+                      </div>
+                      <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider group-hover:text-blue-400 transition-colors">Available Limit</span>
+                    </div>
+                    <ChevronRight className="w-2.5 h-2.5 text-slate-500 group-hover:text-blue-400 transition-colors" />
+                  </div>
+                  <p className="text-xs sm:text-sm font-black text-white font-mono">৳ {availableLimitVal.toLocaleString()}</p>
+                  <p className="text-[8.5px] text-blue-400 font-semibold">Utilization {utilizationPctVal}%</p>
+                </div>
+
+                {/* Total Repaid */}
+                <div 
+                  onClick={() => setVaultModalType('total_repaid')}
+                  className="space-y-0.5 pt-1.5 md:pt-0 md:px-2 cursor-pointer hover:bg-white/5 p-1.5 rounded-lg transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <div className="w-5 h-5 rounded bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                        <CheckCircle2 className="w-3 h-3" />
+                      </div>
+                      <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider group-hover:text-emerald-400 transition-colors">Total Repaid</span>
+                    </div>
+                    <ChevronRight className="w-2.5 h-2.5 text-slate-500 group-hover:text-emerald-400 transition-colors" />
+                  </div>
+                  <p className="text-xs sm:text-sm font-black text-white font-mono">৳ {totalRepaidVal.toLocaleString()}</p>
+                  <p className="text-[8.5px] text-emerald-400 font-semibold">Verified Total</p>
+                </div>
+
+                {/* Reserve Fund */}
+                <div 
+                  onClick={() => setVaultModalType('reserve_fund')}
+                  className="space-y-0.5 pt-1.5 md:pt-0 md:px-2 cursor-pointer hover:bg-white/5 p-1.5 rounded-lg transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <div className="w-5 h-5 rounded bg-purple-500/10 text-purple-400 flex items-center justify-center">
+                        <Shield className="w-3 h-3" />
+                      </div>
+                      <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider group-hover:text-purple-400 transition-colors">Reserve Fund</span>
+                    </div>
+                    <ChevronRight className="w-2.5 h-2.5 text-slate-500 group-hover:text-purple-400 transition-colors" />
+                  </div>
+                  <p className="text-xs sm:text-sm font-black text-white font-mono">৳ {reserveContribVal.toLocaleString()}</p>
+                  <p className="text-[8.5px] text-purple-400 font-semibold">Your contribution</p>
+                </div>
+
+                {/* Total Documents */}
+                <div 
+                  onClick={() => setVaultModalType('total_documents')}
+                  className="space-y-0.5 pt-1.5 md:pt-0 md:pl-2 flex flex-col justify-between cursor-pointer hover:bg-white/5 p-1.5 rounded-lg transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <div className="w-5 h-5 rounded bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                        <FileText className="w-3 h-3" />
+                      </div>
+                      <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider group-hover:text-amber-400 transition-colors">Total Documents</span>
+                    </div>
+                    <ChevronRight className="w-2.5 h-2.5 text-slate-500 group-hover:text-amber-400 transition-colors" />
+                  </div>
+                  <div className="flex items-baseline justify-between">
+                    <p className="text-xs sm:text-sm font-black text-white font-mono">{totalDocsCount}</p>
+                    <span className="text-[8.5px] font-black text-blue-400 uppercase group-hover:underline">
+                      View all
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Smart Recent Activity & Ledger History Section matching user image */}
+              <div id="recent-activity-section" className="space-y-2 pt-1 select-none">
+                {/* Search Bar at top */}
+                <div className="relative w-full">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input 
+                    type="text"
+                    value={docSearch}
+                    onChange={(e) => setDocSearch(e.target.value)}
+                    placeholder="Search statements by ID, type, method..."
+                    className="w-full bg-slate-900/90 border border-slate-800 focus:border-blue-500 rounded-xl py-2 pl-9 pr-7 text-[11px] font-mono font-medium text-white placeholder:text-slate-500 focus:outline-none transition-all shadow-inner"
+                  />
+                  {docSearch && (
+                    <button 
+                      onClick={() => setDocSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded-full bg-slate-800/80 cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Category Filter Pills */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+                  {[
+                    { id: 'all', label: 'ALL' },
+                    { id: 'vouchers', label: 'VOUCHERS' },
+                    { id: 'loans', label: 'LOANS' },
+                    { id: 'deposits', label: 'DEPOSITS' },
+                    { id: 'certificates', label: 'CERTIFICATES' }
+                  ].map((tab) => {
+                    const isActive = docFilter === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setDocFilter(tab.id as any)}
+                        className={cn(
+                          "px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all duration-200 cursor-pointer shrink-0 shadow-sm",
+                          isActive 
+                            ? "bg-blue-600 text-white shadow-md shadow-blue-900/50" 
+                            : "bg-slate-900/80 border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800"
+                        )}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Sub-header Bar */}
+                {(() => {
+                  // Compile smart ledger entries list
+                  const combinedLedger: any[] = [];
+
+                  // 1. Always include Membership Certificate
+                  combinedLedger.push({
+                    id: `CERT-${profile.memberId || 'MEMB-2026'}`,
+                    title: 'Membership Certificate',
+                    subtitle: `CERT-${profile.memberId || 'N/A'} • T.U.T OFFICIAL`,
+                    category: 'certificates',
+                    type: 'certificate',
+                    avatarType: 'crown',
+                    isBadge: true,
+                    badgeText: 'SECURED',
+                    amountVal: 0,
+                    timestamp: profile.createdAt || new Date(),
+                    memoId: `CERT-${profile.memberId || 'MEMB-2026'}`,
+                    method: 'T.U.T Official'
+                  });
+
+                  // 2. Add user transactions if available
+                  userConfirmedTxs.forEach((tx) => {
+                    let title = 'Deposit Entry';
+                    let category = 'deposits';
+                    let avatarType = 'letter_D';
                     let sign = '+';
                     let colorClass = 'text-emerald-400';
 
-                    switch (tx.type) {
-                      case 'deposit':
-                        iconBg = 'from-emerald-600 to-teal-500';
-                        initial = 'D';
-                        title = 'Deposit Statement';
-                        sign = '+';
-                        colorClass = 'text-emerald-400';
-                        break;
-                      case 'loan':
-                        iconBg = 'from-blue-600 to-indigo-500';
-                        initial = 'L';
-                        title = 'Official Loan Record';
-                        sign = '+';
-                        colorClass = 'text-blue-400';
-                        break;
-                      case 'refund':
-                        iconBg = 'from-teal-500 to-emerald-400';
-                        initial = 'R';
-                        title = 'Refund Settlement';
-                        sign = '+';
-                        colorClass = 'text-emerald-400';
-                        break;
-                      case 'pay_due':
-                        iconBg = 'from-rose-500 to-red-600';
-                        initial = 'P';
-                        title = 'Repayment Voucher';
-                        sign = '-';
-                        colorClass = 'text-rose-400';
-                        break;
-                      case 'subscription':
-                        iconBg = 'from-amber-500 to-yellow-600';
-                        initial = 'S';
-                        title = 'Membership Subscription';
-                        sign = '-';
-                        colorClass = 'text-amber-400';
-                        break;
+                    if (tx.type === 'loan') {
+                      title = 'Loan Disbursement';
+                      category = 'loans';
+                      avatarType = 'letter_L';
+                      sign = '+';
+                      colorClass = 'text-emerald-400';
+                    } else if (tx.type === 'pay_due') {
+                      title = 'Repayment Voucher';
+                      category = 'vouchers';
+                      avatarType = 'letter_P';
+                      sign = '-';
+                      colorClass = 'text-rose-400';
+                    } else if (tx.type === 'refund') {
+                      title = 'Refund Settlement';
+                      category = 'vouchers';
+                      avatarType = 'letter_R';
+                      sign = '+';
+                      colorClass = 'text-emerald-400';
+                    } else if (tx.type === 'subscription') {
+                      title = 'Membership Subscription';
+                      category = 'vouchers';
+                      avatarType = 'letter_S';
+                      sign = '-';
+                      colorClass = 'text-rose-400';
                     }
 
-                    if (tx.isTransfer) {
-                      iconBg = 'from-cyan-500 to-blue-500';
-                      initial = 'T';
-                      if (tx.transferType === 'out') {
-                        sign = '-';
-                        colorClass = 'text-rose-400';
-                        title = `Sent to ${tx.transferRecipientName || 'User'}`;
-                      } else {
-                        sign = '+';
-                        colorClass = 'text-emerald-400';
-                        title = `Recv from ${tx.transferSenderName || 'User'}`;
-                      }
+                    const txDateStr = tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Recent';
+                    const memoCode = (tx.memoId || tx.id).substring(0, 10).toUpperCase();
+
+                    combinedLedger.push({
+                      id: tx.id,
+                      title,
+                      subtitle: `${txDateStr.toUpperCase()} • DOC-TUT-MEMO-${memoCode}`,
+                      category,
+                      type: tx.type,
+                      avatarType,
+                      isBadge: false,
+                      sign,
+                      colorClass,
+                      amountVal: tx.amount,
+                      amountFormatted: `${sign}৳${tx.amount.toLocaleString()}`,
+                      timestamp: tx.timestamp,
+                      rawTx: tx
+                    });
+                  });
+
+                  // Apply Filter & Search
+                  const filteredLedger = combinedLedger.filter((item) => {
+                    // Category filter check
+                    if (docFilter !== 'all') {
+                      if (docFilter === 'vouchers' && item.category !== 'vouchers') return false;
+                      if (docFilter === 'loans' && item.category !== 'loans') return false;
+                      if (docFilter === 'deposits' && item.category !== 'deposits') return false;
+                      if (docFilter === 'certificates' && item.category !== 'certificates') return false;
                     }
 
-                    const txDate = tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Just now';
+                    // Search query check
+                    if (docSearch.trim()) {
+                      const q = docSearch.toLowerCase().trim();
+                      const matchTitle = item.title.toLowerCase().includes(q);
+                      const matchSubtitle = item.subtitle.toLowerCase().includes(q);
+                      const matchId = item.id.toLowerCase().includes(q);
+                      const matchAmount = item.amountFormatted?.toLowerCase().includes(q) || item.amountVal?.toString().includes(q);
+                      return matchTitle || matchSubtitle || matchId || matchAmount;
+                    }
 
-                    return (
-                      <div
-                        key={tx.id}
-                        onClick={() => setSelectedDoc(tx)}
-                        className="bg-slate-900/30 border border-white/5 hover:border-white/10 rounded-xl p-2 flex justify-between items-center cursor-pointer transition-all active:scale-[0.98] group"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={cn("w-7.5 h-7.5 rounded-lg flex items-center justify-center font-black text-[10px] text-white shrink-0 bg-gradient-to-tr", iconBg)}>
-                            {initial}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-[10.5px] font-black text-white tracking-tight truncate leading-none">{title}</p>
-                            <p className="text-[7.5px] text-slate-500 font-bold uppercase tracking-wider mt-1 truncate leading-none">
-                              {txDate} <span className="mx-0.5">•</span> DOC-{tx.memoId || tx.id.substring(0, 8).toUpperCase()}
-                            </p>
-                          </div>
+                    return true;
+                  });
+
+                  return (
+                    <div className="space-y-1.5">
+                      {docFilter === 'loans' && (
+                        <div className="mb-3">
+                          <MemberLoanHistoryCard 
+                            summary={memberLoanSummary} 
+                            title="T.U.T Individual Loan Allocation & Repayment Status"
+                            onViewReceipt={(loan) => setSelectedDoc(loan.rawTransaction || loan)}
+                          />
                         </div>
-                        <div className="text-right shrink-0">
-                          <p className={cn("text-[10.5px] font-black font-mono tracking-tight", colorClass)}>
-                            {sign}৳{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </p>
-                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between text-[9.5px] font-mono font-bold tracking-wider px-1 pt-0.5">
+                        <span className="text-slate-400 uppercase tracking-widest font-black">LEDGER ENTRIES</span>
+                        <span className="text-slate-400">Showing <strong className="text-slate-200 font-mono font-black">{filteredLedger.length}</strong> verified</span>
                       </div>
-                    );
-                  })}
 
-                {/* Empty State */}
-                {transactions.filter(t => t.status === 'confirmed').length === 0 && (
-                  <div className="py-12 text-center bg-slate-900/15 border border-dashed border-white/5 rounded-2xl flex flex-col items-center justify-center gap-1.5 flex-1 h-full font-sans">
-                    <FileText className="w-6 h-6 text-slate-500/40" />
-                    <p className="text-slate-500 font-bold uppercase tracking-widest text-[8px]">No verified ledger entries found</p>
-                  </div>
-                )}
+                      {/* List of Entries */}
+                      <div className="space-y-1.5">
+                        {filteredLedger.length > 0 ? (
+                          filteredLedger.map((item) => {
+                            // Render avatar icon box matching screenshot
+                            let avatarBox = null;
+                            if (item.avatarType === 'crown') {
+                              avatarBox = (
+                                <div className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-base shadow-md shrink-0">
+                                  👑
+                                </div>
+                              );
+                            } else if (item.avatarType === 'letter_R') {
+                              avatarBox = (
+                                <div className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-xl bg-emerald-500 text-slate-950 font-black text-base sm:text-lg flex items-center justify-center shadow-md shrink-0">
+                                  R
+                                </div>
+                              );
+                            } else if (item.avatarType === 'letter_P') {
+                              avatarBox = (
+                                <div className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-xl bg-rose-500 text-white font-black text-base sm:text-lg flex items-center justify-center shadow-md shrink-0">
+                                  P
+                                </div>
+                              );
+                            } else if (item.avatarType === 'letter_D') {
+                              avatarBox = (
+                                <div className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-xl bg-emerald-500 text-slate-950 font-black text-base sm:text-lg flex items-center justify-center shadow-md shrink-0">
+                                  D
+                                </div>
+                              );
+                            } else if (item.avatarType === 'letter_L') {
+                              avatarBox = (
+                                <div className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-xl bg-blue-600 text-white font-black text-base sm:text-lg flex items-center justify-center shadow-md shrink-0">
+                                  L
+                                </div>
+                              );
+                            } else {
+                              avatarBox = (
+                                <div className="w-8.5 h-8.5 sm:w-9.5 sm:h-9.5 rounded-xl bg-purple-600 text-white font-black text-base sm:text-lg flex items-center justify-center shadow-md shrink-0">
+                                  S
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={item.id}
+                                onClick={() => setSelectedDoc(item.rawTx || item)}
+                                className="p-2.5 sm:p-3 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-slate-700 transition-all flex items-center justify-between cursor-pointer group shadow-sm"
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                                  {avatarBox}
+                                  <div className="min-w-0">
+                                    <h4 className="text-xs sm:text-sm font-black text-white group-hover:text-blue-300 transition-colors truncate">
+                                      {item.title}
+                                    </h4>
+                                    <p className="text-[9px] text-slate-400 font-mono font-bold tracking-tight truncate mt-0.5">
+                                      {item.subtitle}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="shrink-0 text-right">
+                                  {item.isBadge ? (
+                                    <span className="inline-block bg-amber-500/10 border border-amber-500/30 text-amber-400 font-black text-[9px] uppercase tracking-wider px-2.5 py-0.5 rounded-md">
+                                      {item.badgeText}
+                                    </span>
+                                  ) : (
+                                    <span className={cn("font-black font-mono text-xs sm:text-sm tracking-tight", item.colorClass)}>
+                                      {item.amountFormatted}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="py-6 px-4 text-center space-y-1.5 bg-slate-900/60 border border-slate-800 rounded-xl">
+                            <Search className="w-5 h-5 text-slate-500 mx-auto" />
+                            <p className="text-[11px] font-bold text-slate-300">No ledger entries match your filter or search query</p>
+                            <button 
+                              onClick={() => { setDocSearch(''); setDocFilter('all'); }} 
+                              className="text-[9.5px] font-black text-blue-400 uppercase hover:underline cursor-pointer"
+                            >
+                              Reset Search Filters
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
+
             </div>
-          </div>
         )}
 
             {/* Premium Interactive Document Viewer Overlay */}
@@ -1487,7 +2819,13 @@ export function MemberDashboard({
                     transition={{ type: "spring", duration: 0.5 }}
                     className="relative w-full max-w-lg bg-slate-900 border border-white/10 rounded-3xl overflow-hidden shadow-2xl p-6 md:p-8"
                   >
-                    {/* Floating Close Button */}
+                    {/* Floating Back and Close Buttons */}
+                    <button 
+                      onClick={() => setSelectedDoc(null)}
+                      className="absolute top-4 left-4 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/10 transition-all cursor-pointer z-20"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" /> Back
+                    </button>
                     <button 
                       onClick={() => setSelectedDoc(null)}
                       className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 transition-all cursor-pointer z-20"
@@ -1572,7 +2910,9 @@ export function MemberDashboard({
                               </h4>
                               <div className="flex justify-between items-center">
                                 <span className="text-sm font-mono font-bold text-blue-950 tracking-tighter">
-                                  DOC-{selectedDoc.memoId || selectedDoc.id.substring(0, 10).toUpperCase()}
+                                  {selectedDoc.memoId 
+                                    ? (selectedDoc.memoId.startsWith('TUT-MEMO-') ? selectedDoc.memoId : `TUT-MEMO-${selectedDoc.memoId}`)
+                                    : `TUT-MEMO-${selectedDoc.id.substring(0, 8).toUpperCase()}`}
                                 </span>
                                 <span className="text-[9px] font-mono text-slate-400">
                                   Ref: TUT-2026-LN
@@ -1618,6 +2958,38 @@ export function MemberDashboard({
                                   </span>
                                 </div>
                               )}
+                              {(selectedDoc.transactionId || selectedDoc.id) && (
+                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Transaction ID</span>
+                                  <span className="font-mono font-bold text-blue-900 break-all max-w-[170px] text-right">
+                                    {selectedDoc.transactionId || selectedDoc.id}
+                                  </span>
+                                </div>
+                              )}
+                              {selectedDoc.reference && (
+                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Reference</span>
+                                  <span className="font-bold text-slate-800 break-all max-w-[150px] text-right">
+                                    {selectedDoc.reference}
+                                  </span>
+                                </div>
+                              )}
+                              {(selectedDoc.loanReason || selectedDoc.purpose) && (
+                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Reason for Loan</span>
+                                  <span className="font-medium text-slate-800 break-words max-w-[180px] text-right italic">
+                                    "{selectedDoc.loanReason || selectedDoc.purpose}"
+                                  </span>
+                                </div>
+                              )}
+                              {selectedDoc.adminNotes && (
+                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Official Memo</span>
+                                  <span className="font-bold text-slate-800 break-all max-w-[150px] text-right">
+                                    {selectedDoc.adminNotes}
+                                  </span>
+                                </div>
+                              )}
                               {selectedDoc.type === 'loan' && selectedDoc.estimatedRepaymentDate && (
                                 <div className="flex justify-between border-b border-slate-50 pb-1.5">
                                   <span className="font-bold text-slate-400 uppercase text-[9px]">Estimated Repayment Date</span>
@@ -1657,7 +3029,14 @@ export function MemberDashboard({
                     </div>
 
                     {/* Action button section */}
-                    <div className="mt-6 flex gap-3">
+                    <div className="mt-6 flex flex-col sm:flex-row gap-3">
+                      <button 
+                        type="button"
+                        onClick={() => setSelectedDoc(null)}
+                        className="py-3 px-4 text-xs font-black uppercase tracking-wider rounded-2xl bg-slate-800 hover:bg-slate-700 border border-white/10 text-slate-200 flex items-center justify-center gap-2 transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-4 h-4" /> Back
+                      </button>
                       <button 
                         onClick={() => {
                           // Copy digital hash / signature
@@ -1682,773 +3061,3411 @@ export function MemberDashboard({
               )}
             </AnimatePresence>
 
-        {/* TAB 3: PREMIUM SUBSCRIPTION (Active Plan, streaks, selector & manual verification form) */}
-        {memberTab === 'subscription' && (
-          <div className="space-y-4 animate-fade-in text-left">
-            {/* Visual Stepper at the Top */}
-            <div className="grid grid-cols-3 gap-2 max-w-xl mx-auto mb-1 p-1 bg-slate-950/40 rounded-xl border border-white/5 backdrop-blur-md">
-              <div className={cn(
-                "flex flex-col sm:flex-row items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-center sm:text-left justify-center",
-                !showSubPaymentMode ? 'bg-blue-600/10 border border-blue-500/20 text-blue-400' : 'text-slate-500'
-              )}>
-                <span className={cn(
-                  "w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black border",
-                  !showSubPaymentMode ? 'bg-blue-600 border-blue-400 text-white' : 'border-slate-800'
-                )}>1</span>
-                <div>
-                  <p className="text-[10px] font-black tracking-wider uppercase leading-none">Select Tier</p>
-                  <p className="text-[8px] font-medium hidden sm:block mt-0.5 opacity-85">Choose credit limits</p>
-                </div>
-              </div>
-
-              <div className={cn(
-                "flex flex-col sm:flex-row items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-center sm:text-left justify-center",
-                showSubPaymentMode && profile.subscriptionStatus !== 'pending_approval' ? 'bg-blue-600/10 border border-blue-500/20 text-blue-400' : 'text-slate-500'
-              )}>
-                <span className={cn(
-                  "w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black border",
-                  showSubPaymentMode && profile.subscriptionStatus !== 'pending_approval' ? 'bg-blue-600 border-blue-400 text-white' : 'border-slate-800'
-                )}>2</span>
-                <div>
-                  <p className="text-[10px] font-black tracking-wider uppercase leading-none">Checkout</p>
-                  <p className="text-[8px] font-medium hidden sm:block mt-0.5 opacity-85">Bank Verification</p>
-                </div>
-              </div>
-
-              <div className={cn(
-                "flex flex-col sm:flex-row items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-center sm:text-left justify-center",
-                profile.subscriptionStatus === 'pending_approval' || profile.subscriptionStatus === 'active' ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' : 'text-slate-500'
-              )}>
-                <span className={cn(
-                  "w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black border",
-                  profile.subscriptionStatus === 'pending_approval' || profile.subscriptionStatus === 'active' ? 'bg-emerald-500 border-emerald-400 text-white' : 'border-slate-800'
-                )}>3</span>
-                <div>
-                  <p className="text-[10px] font-black tracking-wider uppercase leading-none">Activation</p>
-                  <p className="text-[8px] font-medium hidden sm:block mt-0.5 opacity-85">Limits Dispatched</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="glass p-4 sm:p-5 rounded-2xl border border-blue-500/10 bg-slate-950/40 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/5">
-                <div>
-                  <h3 className="text-lg font-black tracking-tight flex items-center gap-2 text-white">
-                    <span className="text-lg">👑</span>
-                    T.U.T. Subscription Hub
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-0.5 font-medium">Configure borrowing limits and loyalty discount cycles</p>
-                </div>
-                <div className="flex items-center gap-1.5 bg-blue-950/40 border border-blue-500/20 px-2.5 py-1 rounded-xl text-[9px] font-black tracking-wider uppercase text-blue-400 w-fit">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Live Cycle Status
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                {/* LEFT COLUMN: Active Plan Status + Loyalty Trackers */}
-                <div className="md:col-span-5 space-y-4">
-                  {/* Current Active Plan Card */}
-                  <div className="p-4 bg-gradient-to-br from-slate-900 to-slate-950 rounded-xl border border-white/10 space-y-3 shadow-xl relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-20 h-20 bg-blue-500/5 rounded-full blur-2xl pointer-events-none" />
-                    <div className="flex justify-between items-center">
-                      <h4 className="text-[10px] font-black text-blue-400 uppercase tracking-widest">Active Plan Details</h4>
-                      <Shield className="w-3.5 h-3.5 text-blue-500/50" />
-                    </div>
-                    
-                    {profile.subscriptionStatus === 'active' ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between p-2.5 bg-white/5 rounded-lg border border-white/5">
-                          <span className="text-xs font-bold text-slate-300">Tier Badge</span>
-                          <SubscriptionBadge tier={profile.subscriptionTier} status={profile.subscriptionStatus} expiresAtStr={profile.subscriptionExpiresAt} />
+            {/* Comprehensive Vault Metric Details Modal Overlay */}
+            <AnimatePresence>
+              {vaultModalType && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/90 backdrop-blur-md overflow-y-auto">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                    className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden my-auto max-h-[90vh] flex flex-col text-left"
+                  >
+                    {/* Modal Header */}
+                    <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between bg-slate-950/50 shrink-0">
+                      <div className="flex items-center gap-3">
+                        <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center border shadow-inner",
+                          vaultModalType === 'credit_score' ? "bg-amber-500/10 border-amber-500/30 text-amber-400" :
+                          vaultModalType === 'total_loan' ? "bg-blue-500/10 border-blue-500/30 text-blue-400" :
+                          vaultModalType === 'total_deposits' ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" :
+                          vaultModalType === 'upcoming_repayment' ? "bg-purple-500/10 border-purple-500/30 text-purple-300" :
+                          vaultModalType === 'available_limit' ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400" :
+                          vaultModalType === 'total_repaid' ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" :
+                          vaultModalType === 'reserve_fund' ? "bg-purple-500/10 border-purple-500/30 text-purple-400" :
+                          "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                        )}>
+                          {vaultModalType === 'credit_score' && <Award className="w-5 h-5" />}
+                          {vaultModalType === 'total_loan' && <Wallet className="w-5 h-5" />}
+                          {vaultModalType === 'total_deposits' && <ArrowDownLeft className="w-5 h-5" />}
+                          {vaultModalType === 'upcoming_repayment' && <Calendar className="w-5 h-5" />}
+                          {vaultModalType === 'available_limit' && <PieChart className="w-5 h-5" />}
+                          {vaultModalType === 'total_repaid' && <CheckCircle2 className="w-5 h-5" />}
+                          {vaultModalType === 'reserve_fund' && <Shield className="w-5 h-5" />}
+                          {vaultModalType === 'total_documents' && <FileText className="w-5 h-5" />}
                         </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="p-2.5 bg-white/5 rounded-lg border border-white/5">
-                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Expires At</p>
-                            <p className="text-xs font-mono font-black text-emerald-400">
-                              {profile.subscriptionExpiresAt ? format(new Date(profile.subscriptionExpiresAt), 'dd MMM yyyy') : 'N/A'}
+                        <div>
+                          <h3 className="text-sm sm:text-base font-black text-white tracking-tight">
+                            {vaultModalType === 'credit_score' && 'Credit Score Analysis & History'}
+                            {vaultModalType === 'total_loan' && 'Total Loan Portfolio & Repayment Audit'}
+                            {vaultModalType === 'total_deposits' && 'Verified Savings & Deposits Breakdown'}
+                            {vaultModalType === 'upcoming_repayment' && 'Upcoming Repayment Schedule'}
+                            {vaultModalType === 'available_limit' && 'Available Credit Limit Calculation'}
+                            {vaultModalType === 'total_repaid' && 'Total Repayments History'}
+                            {vaultModalType === 'reserve_fund' && 'Emergency Reserve Fund Account'}
+                            {vaultModalType === 'total_documents' && 'Official Vault Document Repository'}
+                          </h3>
+                          <p className="text-[10px] text-slate-400 font-medium">Detailed statement & transaction drivers</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => setVaultModalType(null)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer shadow-sm"
+                        >
+                          <ArrowLeft className="w-3.5 h-3.5" /> Back
+                        </button>
+                        <button 
+                          onClick={() => setVaultModalType(null)}
+                          className="p-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Modal Body Content */}
+                    <div className="p-4 sm:p-5 overflow-y-auto space-y-4 text-xs">
+
+                      {/* 1. CREDIT SCORE MODAL DETAILS */}
+                      {vaultModalType === 'credit_score' && (
+                        <div className="space-y-4">
+                          <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex flex-col sm:flex-row items-center justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <span className="text-3xl font-black text-amber-400 font-mono">{dynamicScore}</span>
+                              <div>
+                                <span className={cn("text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border", scoreBadgeStyle)}>
+                                  {scoreLabel}
+                                </span>
+                                <p className="text-[10px] text-slate-300 font-medium mt-1">Calculated via central member credit ledger</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-[10px] text-slate-400 block font-semibold">Institutional Scale:</span>
+                              <span className="text-xs font-black text-white font-mono">300 to 850 (FICO)</span>
+                            </div>
+                          </div>
+
+                          {/* Score Drivers Breakdown */}
+                          <div className="space-y-2">
+                            <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                              <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                              Key Credit Drivers & Weight Factor
+                            </h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
+                                <div className="flex justify-between items-center text-[10px]">
+                                  <span className="font-bold text-white">On-Time Repayments (35%)</span>
+                                  <span className="font-black text-emerald-400 font-mono">High Positive (+40 pts)</span>
+                                </div>
+                                <p className="text-[9.5px] text-slate-400">Zero default records on loan schedules boost your trust rating.</p>
+                              </div>
+
+                              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
+                                <div className="flex justify-between items-center text-[10px]">
+                                  <span className="font-bold text-white">Deposit Consistency (30%)</span>
+                                  <span className="font-black text-emerald-400 font-mono">Verified Active (+35 pts)</span>
+                                </div>
+                                <p className="text-[9.5px] text-slate-400">Regular monthly subscription deposits maintain strong score stability.</p>
+                              </div>
+
+                              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
+                                <div className="flex justify-between items-center text-[10px]">
+                                  <span className="font-bold text-white">Loan Utilization (20%)</span>
+                                  <span className={cn("font-black font-mono", utilizationPctVal > 80 ? "text-amber-400" : "text-emerald-400")}>
+                                    {utilizationPctVal}% Utilized
+                                  </span>
+                                </div>
+                                <p className="text-[9.5px] text-slate-400">Lower loan debt utilization preserves a higher safety margin.</p>
+                              </div>
+
+                              <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
+                                <div className="flex justify-between items-center text-[10px]">
+                                  <span className="font-bold text-white">Membership History (15%)</span>
+                                  <span className="font-black text-blue-400 font-mono">Established (+15 pts)</span>
+                                </div>
+                                <p className="text-[9.5px] text-slate-400">Active member account verified by T.U.T Authority.</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Recent Score Activity Log */}
+                          <div className="space-y-2">
+                            <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-300">Score Audit Logs</h4>
+                            <div className="space-y-1.5">
+                              <div className="p-2 rounded-lg bg-slate-950/40 border border-slate-800/80 flex items-center justify-between text-[10px]">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                  <div>
+                                    <span className="font-bold text-white">Monthly Deposit Verified</span>
+                                    <span className="text-[9px] text-slate-400 block">System auto-audit credit bump</span>
+                                  </div>
+                                </div>
+                                <span className="font-mono font-black text-emerald-400">+15 Points</span>
+                              </div>
+
+                              <div className="p-2 rounded-lg bg-slate-950/40 border border-slate-800/80 flex items-center justify-between text-[10px]">
+                                <div className="flex items-center gap-2">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                                  <div>
+                                    <span className="font-bold text-white">Timely Loan Installment Repayment</span>
+                                    <span className="text-[9px] text-slate-400 block">Recorded on-time installment payment</span>
+                                  </div>
+                                </div>
+                                <span className="font-mono font-black text-emerald-400">+25 Points</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 2. TOTAL LOAN MODAL DETAILS */}
+                      {vaultModalType === 'total_loan' && (
+                        <div className="space-y-4">
+                          <MemberLoanHistoryCard 
+                            summary={memberLoanSummary} 
+                            title="T.U.T Individual Loan Portfolio & Payment Allocations"
+                            onViewReceipt={(loan) => { setVaultModalType(null); setSelectedDoc(loan.rawTransaction || loan); }}
+                          />
+
+                          {/* Actions */}
+                          <div className="flex gap-2 pt-2">
+                            {remainingDebtVal > 0 && (
+                              <button 
+                                onClick={() => { setVaultModalType(null); onRequestAction('pay_due'); }}
+                                className="flex-1 py-2.5 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black uppercase text-[10px] tracking-wider transition-all cursor-pointer text-center shadow-lg"
+                              >
+                                Pay Repayment Now (৳{remainingDebtVal.toLocaleString()})
+                              </button>
+                            )}
+                            <button 
+                              onClick={() => { setVaultModalType(null); onRequestAction('loan'); }}
+                              className="flex-1 py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black uppercase text-[10px] tracking-wider transition-all cursor-pointer text-center shadow-lg"
+                            >
+                              Apply For New Loan
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 3. TOTAL DEPOSITS MODAL DETAILS */}
+                      {vaultModalType === 'total_deposits' && (
+                        <div className="space-y-4">
+                          <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
+                            <div>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase block">Total Verified Savings</span>
+                              <span className="text-xl font-black text-white font-mono">৳ {totalDepositsVal.toLocaleString()}</span>
+                            </div>
+                            <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/30 uppercase">
+                              100% Audit Verified
+                            </span>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-300">Verified Deposits Ledger</h4>
+                            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                              {userConfirmedTxs.filter(t => t.type === 'deposit').length > 0 ? (
+                                userConfirmedTxs.filter(t => t.type === 'deposit').map(tx => (
+                                  <div key={tx.id} className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-6 h-6 rounded bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-mono font-bold text-[9px]">
+                                        DEP
+                                      </div>
+                                      <div>
+                                        <div className="font-bold text-white text-[10px]">{tx.title || 'Monthly Vault Deposit'}</div>
+                                        <div className="text-[9px] text-slate-400 font-mono">{tx.date} • {tx.method || 'bkash'}</div>
+                                      </div>
+                                    </div>
+                                    <span className="font-mono font-black text-emerald-400 text-xs">
+                                      +৳{(tx.amount || 0).toLocaleString()}
+                                    </span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+                                  <div>
+                                    <div className="font-bold text-white text-[10px]">Initial Vault Deposit</div>
+                                    <div className="text-[9px] text-slate-400 font-mono">2026-01-01 • Direct System Sync</div>
+                                  </div>
+                                  <span className="font-mono font-black text-emerald-400 text-xs">
+                                    +৳{totalDepositsVal.toLocaleString()}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <button 
+                            onClick={() => { setVaultModalType(null); onRequestAction('deposit'); }}
+                            className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black uppercase text-[10px] tracking-wider transition-all cursor-pointer text-center"
+                          >
+                            + Make New Vault Deposit
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 4. UPCOMING REPAYMENT MODAL DETAILS */}
+                      {vaultModalType === 'upcoming_repayment' && (
+                        <div className="space-y-4">
+                          <div className="p-3.5 rounded-xl bg-purple-500/10 border border-purple-500/20 space-y-2">
+                            <div className="flex justify-between items-center text-[10px]">
+                              <span className="text-purple-300 font-bold uppercase">Target Loan For Payment</span>
+                              <span className="font-mono font-black text-amber-300">
+                                {activeAllocatedLoan ? `${activeAllocatedLoan.loanNumber} (${activeAllocatedLoan.memoId})` : 'Oldest Outstanding Loan'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-[10px]">
+                              <span className="text-purple-300 font-bold uppercase">Repayment Due Date</span>
+                              <span className="font-mono font-black text-white">{activeAllocatedLoan?.dueDateStr || activeLoan?.estimatedRepaymentDate || '10th of every month'}</span>
+                            </div>
+                            <div className="flex justify-between items-center pt-1 border-t border-purple-500/20">
+                              <span className="text-slate-400 font-semibold text-[10px]">Total Outstanding Debt</span>
+                              <span className="text-lg font-black text-rose-400 font-mono">৳ {remainingDebtVal.toLocaleString()}</span>
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1.5 text-[10px]">
+                            <h4 className="font-bold text-white uppercase flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+                              Individual Loan Payment Allocation Rule
+                            </h4>
+                            <p className="text-slate-400">
+                              Every payment you make is automatically allocated chronologically to your oldest outstanding loan until it is fully <strong>PAID / COMPLETED</strong>. Any excess payment automatically flows to subsequent loans.
                             </p>
                           </div>
-                          <div className="p-2.5 bg-white/5 rounded-lg border border-white/5">
-                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">Status</p>
-                            <span className="text-[9px] font-black tracking-wider uppercase px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 block text-center">Active</span>
-                          </div>
-                        </div>
-                      </div>
-                    ) : profile.subscriptionStatus === 'pending_approval' ? (
-                      <div className="space-y-2 text-center py-3 bg-amber-500/5 rounded-lg border border-amber-500/10">
-                        <div className="w-10 h-10 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto border border-amber-500/20">
-                          <Clock className="w-5 h-5 text-amber-500 animate-pulse" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-black text-amber-500 uppercase tracking-wider">Verification Pending</p>
-                          <p className="text-xs text-slate-400 max-w-[220px] mx-auto mt-1 leading-normal">
-                            Our clearing desk is auditing your gateway logs. Your credit limit is queued for dispatch.
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-2 text-center py-3 bg-rose-500/5 rounded-lg border border-rose-500/10">
-                        <div className="w-10 h-10 bg-rose-500/10 rounded-full flex items-center justify-center mx-auto border border-rose-500/20">
-                          <Lock className="w-5 h-5 text-rose-500" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-black text-rose-400 uppercase tracking-wider">No Active Subscription</p>
-                          <p className="text-xs text-slate-400 max-w-[220px] mx-auto mt-1 leading-normal">
-                            Activate a premium tier below to establish borrowing limits and begin.
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Loyalty Progress Trackers */}
-                  <div className="p-4 bg-slate-900/60 rounded-xl border border-white/5 space-y-3">
-                    <h4 className="text-[10px] font-black text-blue-400/60 uppercase tracking-widest">Loyalty & Reward Tracking</h4>
-                    
-                    <div className="space-y-3">
-                      <div className="flex items-start gap-2.5 p-2.5 bg-white/5 rounded-lg border border-white/5">
-                        <div className="w-7 h-7 rounded-md bg-blue-500/10 border border-blue-500/20 flex items-center justify-center flex-shrink-0 text-blue-400 font-bold text-xs">
-                          🔥
+                          {remainingDebtVal > 0 ? (
+                            <button 
+                              onClick={() => { setVaultModalType(null); onRequestAction('pay_due'); }}
+                              className="w-full py-2.5 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black uppercase text-[10px] tracking-wider transition-all cursor-pointer text-center"
+                            >
+                              Pay Repayment Now (৳{remainingDebtVal.toLocaleString()})
+                            </button>
+                          ) : (
+                            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center text-emerald-400 font-bold text-[10px]">
+                              ✓ No pending repayments due at this time!
+                            </div>
+                          )}
                         </div>
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-bold text-slate-300">Renewal Streak</span>
-                            <span className="text-xs font-mono font-black text-amber-400">{(profile.continuousSubscriptionMonths || 0)} Mo</span>
-                          </div>
-                          <p className="text-[10px] text-slate-400 mt-0.5 leading-normal">Renew monthly to secure a permanent <strong className="text-amber-400">+৳500</strong> bonus limit!</p>
-                        </div>
-                      </div>
+                      )}
 
-                      <div className="flex items-start gap-2.5 p-2.5 bg-white/5 rounded-lg border border-white/5">
-                        <div className="w-7 h-7 rounded-md bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center flex-shrink-0 text-emerald-400 font-bold text-xs">
-                          🎁
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-bold text-slate-300">No-Loan Cycles</span>
-                            <span className="text-xs font-mono font-black text-emerald-400">{(profile.consecutiveNoLoanMonths || 0)} Mo</span>
+                      {/* 5. AVAILABLE LIMIT MODAL DETAILS */}
+                      {vaultModalType === 'available_limit' && (
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-2 gap-2 p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/20">
+                            <div>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase block">Available Credit Limit</span>
+                              <span className="text-base font-black text-cyan-400 font-mono">৳ {availableLimitVal.toLocaleString()}</span>
+                            </div>
+                            <div>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase block">Utilization Rate</span>
+                              <span className="text-base font-black text-amber-400 font-mono">{utilizationPctVal}%</span>
+                            </div>
                           </div>
-                          <p className="text-[10px] text-slate-400 mt-0.5 leading-normal">Skip loans for 2 months to earn a <strong className="text-emerald-400">50% discount</strong> on renewal!</p>
+
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2 text-[10px]">
+                            <h4 className="font-bold text-white uppercase">How Your Borrowing Limit Is Calculated</h4>
+                            <ul className="space-y-1 text-slate-300 list-disc list-inside">
+                              <li>Base Credit Multiplier: 3x of total verified vault deposits (৳{totalDepositsVal.toLocaleString()})</li>
+                              <li>Credit Score Bonus: Applied based on your {dynamicScore} point score</li>
+                              <li>Current Active Debt: Subtracted from total sanctioned credit allowance</li>
+                            </ul>
+                          </div>
                         </div>
-                      </div>
+                      )}
+
+                      {/* 6. TOTAL REPAID MODAL DETAILS */}
+                      {vaultModalType === 'total_repaid' && (
+                        <div className="space-y-4">
+                          <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
+                            <div>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase block">Total Verified Repayments</span>
+                              <span className="text-xl font-black text-emerald-400 font-mono">৳ {totalRepaidVal.toLocaleString()}</span>
+                            </div>
+                            <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/30 uppercase">
+                              Zero Default Record
+                            </span>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <h4 className="text-[11px] font-black uppercase tracking-wider text-slate-300">Repayments History</h4>
+                            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                              {userConfirmedTxs.filter(t => t.type === 'loan' || t.type === 'subscription').length > 0 ? (
+                                userConfirmedTxs.filter(t => t.type === 'loan' || t.type === 'subscription').map(tx => (
+                                  <div key={tx.id} className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+                                    <div>
+                                      <div className="font-bold text-white text-[10px]">{tx.title || 'Loan Installment Repayment'}</div>
+                                      <div className="text-[9px] text-slate-400 font-mono">{tx.date} • {tx.method || 'bKash'}</div>
+                                    </div>
+                                    <span className="font-mono font-black text-emerald-400 text-xs">
+                                      ৳{(tx.amount || 0).toLocaleString()}
+                                    </span>
+                                  </div>
+                                ))
+                              ) : (
+                                <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-center text-slate-400 text-[10px]">
+                                  No past repayment records logged yet.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 7. RESERVE FUND MODAL DETAILS */}
+                      {vaultModalType === 'reserve_fund' && (
+                        <div className="space-y-4">
+                          <div className="p-3.5 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-between">
+                            <div>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase block">Your Reserve Contribution</span>
+                              <span className="text-xl font-black text-purple-300 font-mono">৳ {reserveContribVal.toLocaleString()}</span>
+                            </div>
+                            <span className="text-[10px] font-black text-purple-300 bg-purple-500/20 px-2.5 py-1 rounded-lg border border-purple-500/30 uppercase">
+                              Active Backup
+                            </span>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1.5 text-[10px]">
+                            <h4 className="font-bold text-white uppercase">Emergency Reserve Fund Policy</h4>
+                            <p className="text-slate-400">
+                              The Reserve Fund is pooled by T.U.T members to guarantee micro-loans, cover emergency medical grants, and protect member equity during unforeseen hardships.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 8. TOTAL DOCUMENTS MODAL DETAILS */}
+                      {vaultModalType === 'total_documents' && (
+                        <div className="space-y-4">
+                          <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-between">
+                            <div>
+                              <span className="text-[9px] font-bold text-slate-400 uppercase block">Total Digital Certificates & Vouchers</span>
+                              <span className="text-xl font-black text-amber-400 font-mono">{totalDocsCount} Documents</span>
+                            </div>
+                            <button 
+                              onClick={() => { setVaultModalType(null); setDocFilter('certificates'); }}
+                              className="text-[10px] font-black text-blue-400 underline uppercase cursor-pointer"
+                            >
+                              Filter Ledger →
+                            </button>
+                          </div>
+
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                            {userConfirmedTxs.map(tx => (
+                              <div 
+                                key={tx.id} 
+                                onClick={() => { setVaultModalType(null); setSelectedDoc(tx); }}
+                                className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between hover:bg-slate-800/80 transition-all cursor-pointer"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <FileText className="w-4 h-4 text-amber-400 shrink-0" />
+                                  <div>
+                                    <div className="font-bold text-white text-[10px]">{tx.title || 'Official Transaction Document'}</div>
+                                    <div className="text-[9px] text-slate-400 font-mono">{tx.id} • {tx.date}</div>
+                                  </div>
+                                </div>
+                                <span className="text-[9.5px] font-black text-blue-400 uppercase hover:underline">
+                                  View Official Document →
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                     </div>
-                  </div>
+
+                    {/* Modal Footer */}
+                    <div className="p-3.5 sm:p-4 border-t border-slate-800 bg-slate-950/80 flex justify-end shrink-0">
+                      <button 
+                        onClick={() => setVaultModalType(null)}
+                        className="py-2 px-5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-colors cursor-pointer"
+                      >
+                        Close Details
+                      </button>
+                    </div>
+                  </motion.div>
                 </div>
+              )}
+            </AnimatePresence>
 
-                {/* RIGHT COLUMN: Subscription Payment Selection */}
-                <div className="md:col-span-7">
-                  {(() => {
-                    const pricing = getSubscriptionPricing(selectedSubTier, profile);
-                    return !showSubPaymentMode ? (
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center">
-                          <h4 className="text-[10px] font-black text-blue-400/80 uppercase tracking-widest">Select Membership Tier</h4>
-                          <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">High Legibility Options</span>
-                        </div>
-                        
-                        {/* Gorgeous Tier Cards with Improved Colors and Legible Fonts */}
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          {/* Bronze Card */}
-                          <button 
-                            type="button"
-                            onClick={() => setSelectedSubTier('bronze')}
-                            className={cn(
-                              "p-3.5 rounded-xl border text-left transition-all relative flex flex-col justify-between min-h-[145px] cursor-pointer group",
-                              selectedSubTier === 'bronze' 
-                                ? "border-[#cd7f32] bg-gradient-to-br from-[#cd7f32]/25 via-slate-900 to-slate-950 shadow-[0_0_12px_rgba(205,127,50,0.3)] scale-[1.01]" 
-                                : "border-white/5 bg-slate-900/60 hover:border-white/15"
-                            )}
-                          >
-                            <div className="absolute top-2 right-2 flex items-center gap-1">
-                              <span className="text-xs">🥉</span>
-                              <span className={cn("w-1.5 h-1.5 rounded-full", selectedSubTier === 'bronze' ? 'bg-[#cd7f32] animate-pulse' : 'bg-transparent')} />
-                            </div>
-                            <div>
-                              <p className="text-[9px] font-black text-[#cd7f32] tracking-wider uppercase font-mono">T.U.T. BRONZE</p>
-                              <h5 className="text-xs font-black text-white uppercase tracking-tight mt-0.5">Bronze Member</h5>
-                              <ul className="space-y-1 mt-2 text-[10px] text-slate-400 leading-normal font-medium">
-                                <li>✓ Limit: <strong>৳500/Mo</strong></li>
-                                <li>✓ Standard dispatch</li>
-                                <li>✓ 30-Day period</li>
-                              </ul>
-                            </div>
-                            <div className="mt-3 pt-2 border-t border-white/5 flex items-end justify-between leading-none">
-                              <span className="text-[8px] text-slate-500 uppercase font-black">Fee</span>
-                              <p className="text-xs font-black text-white">৳20<span className="text-[8px] font-normal text-slate-400">/Mo</span></p>
-                            </div>
-                          </button>
-
-                          {/* Silver Card */}
-                          <button 
-                            type="button"
-                            onClick={() => setSelectedSubTier('silver')}
-                            className={cn(
-                              "p-3.5 rounded-xl border text-left transition-all relative flex flex-col justify-between min-h-[145px] cursor-pointer group",
-                              selectedSubTier === 'silver' 
-                                ? "border-slate-300 bg-gradient-to-br from-slate-300/25 via-slate-900 to-slate-950 shadow-[0_0_12px_rgba(203,213,225,0.35)] scale-[1.01]" 
-                                : "border-white/5 bg-slate-900/60 hover:border-white/15"
-                            )}
-                          >
-                            <div className="absolute top-2 right-2 flex items-center gap-1">
-                              <span className="text-xs">🥈</span>
-                              <span className={cn("w-1.5 h-1.5 rounded-full", selectedSubTier === 'silver' ? 'bg-slate-300 animate-pulse' : 'bg-transparent')} />
-                            </div>
-                            <div>
-                              <p className="text-[9px] font-black text-slate-300 tracking-wider uppercase font-mono">T.U.T. EXECUTIVE</p>
-                              <h5 className="text-xs font-black text-white uppercase tracking-tight mt-0.5">Silver Exec</h5>
-                              <ul className="space-y-1 mt-2 text-[10px] text-slate-400 leading-normal font-medium">
-                                <li>✓ Limit: <strong>৳1,500/Mo</strong></li>
-                                <li>✓ Priority dispatch</li>
-                                <li>✓ Chairman Signature</li>
-                              </ul>
-                            </div>
-                            <div className="mt-3 pt-2 border-t border-white/5 flex items-end justify-between leading-none">
-                              <span className="text-[8px] text-slate-500 uppercase font-black">Fee</span>
-                              <p className="text-xs font-black text-white">৳50<span className="text-[8px] font-normal text-slate-400">/Mo</span></p>
-                            </div>
-                          </button>
-
-                          {/* Gold Card */}
-                          <button 
-                            type="button"
-                            onClick={() => setSelectedSubTier('gold')}
-                            className={cn(
-                              "p-3.5 rounded-xl border text-left transition-all relative flex flex-col justify-between min-h-[145px] cursor-pointer group",
-                              selectedSubTier === 'gold' 
-                                ? "border-yellow-400 bg-gradient-to-br from-yellow-400/25 via-slate-900 to-slate-950 shadow-[0_0_12px_rgba(234,179,8,0.4)] scale-[1.01]" 
-                                : "border-white/5 bg-slate-900/60 hover:border-white/15"
-                            )}
-                          >
-                            <div className="absolute top-2 right-2 flex items-center gap-1">
-                              <span className="text-xs">👑</span>
-                              <span className={cn("w-1.5 h-1.5 rounded-full", selectedSubTier === 'gold' ? 'bg-yellow-400 animate-pulse' : 'bg-transparent')} />
-                            </div>
-                            <div>
-                              <p className="text-[9px] font-black text-yellow-400 tracking-wider uppercase font-mono">T.U.T. VIP ELITE</p>
-                              <h5 className="text-xs font-black text-white uppercase tracking-tight mt-0.5">Gold Elite</h5>
-                              <ul className="space-y-1 mt-2 text-[10px] text-slate-400 leading-normal font-medium">
-                                <li>✓ Limit: <strong>৳2,500/Mo</strong></li>
-                                <li>✓ Auto VIP dispatch</li>
-                                <li>✓ Direct Ledger Audit</li>
-                              </ul>
-                            </div>
-                            <div className="mt-3 pt-2 border-t border-white/5 flex items-end justify-between leading-none">
-                              <span className="text-[8px] text-slate-500 uppercase font-black">Fee</span>
-                              <p className="text-xs font-black text-yellow-400 font-extrabold">৳100<span className="text-[8px] font-normal text-slate-400">/Mo</span></p>
-                            </div>
-                          </button>
-                        </div>
-
-                        {/* Pricing details */}
-                        <div className="p-4 bg-gradient-to-r from-slate-900 to-slate-950 rounded-xl border border-white/5 space-y-3">
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="font-bold text-slate-300">Subscription Term</span>
-                            <span className="font-black text-white uppercase tracking-wider font-mono">{pricing.label}</span>
-                          </div>
-                          
-                          {pricing.isLate && (
-                            <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-lg text-[10.5px] text-rose-300 leading-relaxed flex items-start gap-1.5">
-                              <span className="text-xs">⚠️</span>
-                              <div className="font-semibold">
-                                <strong>Late Renewal Catch-up Triggered (Day 6 onwards):</strong> Payments cover both this month and next month.
-                              </div>
-                            </div>
-                          )}
-
-                          {pricing.discountApplied > 0 && (
-                            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-[10.5px] text-emerald-300 leading-relaxed flex items-start gap-1.5">
-                              <span className="text-xs">🎉</span>
-                              <div className="font-bold">{pricing.discountReason}</div>
-                            </div>
-                          )}
-
-                          <div className="flex justify-between items-center pt-2.5 border-t border-white/5 leading-none">
-                            <div>
-                              <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block">Total Payable</span>
-                              <span className="text-[8px] text-slate-500 uppercase font-bold">Secure automatic dispatch</span>
-                            </div>
-                            <span className="text-xl font-black text-white tracking-tight font-mono">৳ {pricing.price.toLocaleString()}</span>
-                          </div>
-
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              onRequestAction('subscription');
-                            }}
-                            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black text-xs py-3 rounded-xl tracking-widest uppercase transition-all shadow-[0_4px_12px_rgba(37,99,235,0.3)] flex items-center justify-center gap-1.5 cursor-pointer"
-                          >
-                            <CreditCard className="w-4 h-4 text-white" />
-                            Proceed to Secure Payment Gateway
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {/* Header containing choice to go back */}
-                        <div className="flex justify-between items-center pb-1">
-                          <div>
-                            <h4 className="text-xs font-black text-white uppercase tracking-wider">Payment Verification</h4>
-                            <p className="text-[9px] text-slate-500 mt-0.5 uppercase font-bold">Manual secure checkout slip</p>
-                          </div>
-                          <button 
-                            type="button"
-                            onClick={() => setShowSubPaymentMode(false)}
-                            className="text-[10px] text-blue-400 hover:text-white transition-colors cursor-pointer font-black uppercase tracking-wider bg-white/5 px-3 py-1.5 rounded-lg border border-white/5"
-                          >
-                            ← Back
-                          </button>
-                        </div>
-
-                        {/* Payment Method Gateway Tabs */}
-                        <div className="grid grid-cols-3 gap-2 bg-slate-900 p-1 rounded-xl border border-white/5">
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              setSubCheckoutMethod('bkash');
-                              setSubWallet('Bkash');
-                              setSubTrxId('');
-                            }}
-                            className={cn(
-                              "py-2 px-1 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1 cursor-pointer border",
-                              subCheckoutMethod === 'bkash' ? 'bg-[#E2136E]/10 border-[#E2136E]/40 text-[#E2136E] shadow-md' : 'border-transparent text-slate-400 hover:text-slate-200'
-                            )}
-                          >
-                            <span className="text-lg">📱</span>
-                            <span className="leading-none mt-0.5 font-bold">bKash</span>
-                          </button>
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              setSubCheckoutMethod('nagad');
-                              setSubWallet('Nagad');
-                              setSubTrxId('');
-                            }}
-                            className={cn(
-                              "py-2 px-1 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1 cursor-pointer border",
-                              subCheckoutMethod === 'nagad' ? 'bg-[#F15A22]/10 border-[#F15A22]/40 text-[#F15A22] shadow-md' : 'border-transparent text-slate-400 hover:text-slate-200'
-                            )}
-                          >
-                            <span className="text-lg">🔥</span>
-                            <span className="leading-none mt-0.5 font-bold">Nagad</span>
-                          </button>
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              setSubCheckoutMethod('cash');
-                              setSubWallet('Cash');
-                              setSubTrxId('');
-                            }}
-                            className={cn(
-                              "py-2 px-1 rounded-lg text-xs font-black uppercase tracking-wider transition-all flex flex-col items-center justify-center gap-1 cursor-pointer border",
-                              subCheckoutMethod === 'cash' ? 'bg-emerald-600/10 border border-emerald-500/40 text-emerald-400 shadow-md' : 'border-transparent text-slate-400 hover:text-slate-200'
-                            )}
-                          >
-                            <span className="text-lg">💵</span>
-                            <span className="leading-none mt-0.5 font-bold">Desk Cash</span>
-                          </button>
-                        </div>
-
-                        {/* Payment window info */}
-                        <div className="p-4 bg-slate-900 rounded-xl border border-white/5 flex flex-col justify-between space-y-3">
-                          
-                          {subCheckoutMethod === 'bkash' && (
-                            <div className="space-y-2">
-                              <div className="p-3 bg-pink-500/5 border border-pink-500/20 rounded-xl">
-                                <span className="text-[9px] font-black uppercase text-pink-500 tracking-wider block mb-1">bKash Send Money</span>
-                                <p className="text-xs text-slate-300 leading-relaxed font-semibold">
-                                  Send <strong className="text-white">৳{pricing.price.toLocaleString()} BDT</strong> to the official personal bKash account below:
-                                </p>
-                                <div className="mt-2.5 flex items-center justify-between p-2 bg-slate-950 rounded-lg border border-white/5 leading-none">
-                                  <div>
-                                    <p className="text-[8px] font-black text-pink-400 uppercase tracking-widest font-mono">Personal Wallet</p>
-                                    <p className="text-sm font-mono font-black text-white mt-0.5 select-all">01713710607</p>
-                                  </div>
-                                  <CopyButton text="01713710607" />
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {subCheckoutMethod === 'nagad' && (
-                            <div className="space-y-2">
-                              <div className="p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl">
-                                <span className="text-[9px] font-black uppercase text-orange-500 tracking-wider block mb-1">Nagad Send Money</span>
-                                <p className="text-xs text-slate-300 leading-relaxed font-semibold">
-                                  Send <strong className="text-white">৳{pricing.price.toLocaleString()} BDT</strong> to the official personal Nagad account below:
-                                </p>
-                                <div className="mt-2.5 flex items-center justify-between p-2 bg-slate-950 rounded-lg border border-white/5 leading-none">
-                                  <div>
-                                    <p className="text-[8px] font-black text-orange-400 uppercase tracking-widest font-mono">Personal Wallet</p>
-                                    <p className="text-sm font-mono font-black text-white mt-0.5 select-all">01921801100</p>
-                                  </div>
-                                  <CopyButton text="01921801100" />
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {subCheckoutMethod === 'cash' && (
-                            <div className="space-y-2">
-                              <div className="p-3 bg-emerald-600/5 border border-emerald-500/20 rounded-xl">
-                                <span className="text-[9px] font-black uppercase text-emerald-400 tracking-wider block mb-1">Direct Cash Verification</span>
-                                <p className="text-xs text-slate-300 leading-relaxed font-semibold">
-                                  Please deposit <strong className="text-white">৳{pricing.price.toLocaleString()} BDT</strong> directly at our designated branch cashier desk.
-                                </p>
-                                <div className="mt-2.5 p-2 bg-slate-950 rounded-lg border border-white/5">
-                                  <p className="text-xs font-bold text-slate-300">
-                                    Counter Reference: <strong className="text-white">{profile.name}</strong>
-                                  </p>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Slip verification fields */}
-                          <form onSubmit={handleBuySubscription} className="space-y-3.5 pt-1">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                              <div className="space-y-1">
-                                <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest font-mono">
-                                  {subCheckoutMethod === 'cash' ? 'Cash Receipt / Ref Code' : 'Sender Mobile'}
-                                </label>
-                                <input 
-                                  required
-                                  type="text"
-                                  placeholder={subCheckoutMethod === 'cash' ? 'e.g. CS-91JD72' : '01XXXXXXXXX'}
-                                  value={subSenderMobile}
-                                  onChange={(e) => setSubSenderMobile(e.target.value)}
-                                  className="w-full bg-slate-950 border border-white/10 rounded-lg text-xs font-bold text-white px-3 py-2 focus:border-blue-500 focus:outline-none font-mono"
-                                />
-                              </div>
-
-                              <div className="space-y-1">
-                                <label className="block text-[9px] font-black text-slate-400 uppercase tracking-widest font-mono">
-                                  Transaction ID (TrxID)
-                                </label>
-                                <input 
-                                  required
-                                  type="text"
-                                  placeholder="e.g. TRX82K18S2"
-                                  value={subTrxId}
-                                  onChange={(e) => setSubTrxId(e.target.value)}
-                                  className="w-full bg-slate-950 border border-white/10 rounded-lg text-xs font-bold text-white px-3 py-2 focus:border-blue-500 focus:outline-none font-mono uppercase"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="p-2.5 bg-white/5 rounded-lg border border-white/5 flex items-center justify-between leading-none">
-                              <span className="text-xs text-slate-400 font-bold uppercase">Expected Billing</span>
-                              <span className="text-sm font-black text-white font-mono">৳{pricing.price.toLocaleString()} BDT</span>
-                            </div>
-
-                            <div className="flex gap-3 pt-1">
-                              <button 
-                                type="button"
-                                onClick={() => setShowSubPaymentMode(false)}
-                                className="w-1/3 border border-white/10 hover:border-white/20 text-white font-bold text-xs py-2.5 rounded-xl uppercase transition-all"
-                              >
-                                Cancel
-                              </button>
-                              <button 
-                                type="submit"
-                                className="w-2/3 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs py-2.5 rounded-xl tracking-wider uppercase transition-all shadow-md"
-                              >
-                                Submit Slip
-                              </button>
-                            </div>
-                          </form>
-
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            </div>
-          </div>
+        {/* TAB 3: PREMIUM SUBSCRIPTION (Smart Tier System & Complete Purchasing Hub) */}
+        {memberTab === 'subscription' && (
+          <SubscriptionHubView
+            profile={profile}
+            transactions={transactions}
+            onBack={() => setMemberTab('dashboard')}
+            addToast={addToast || ((title: string, msg: string, type: any) => console.log(title, msg, type))}
+            sendWorkflowNotification={sendWorkflowNotification}
+            onRequestAction={onRequestAction}
+            initialTier={targetSubscriptionTier}
+          />
         )}
 
-        {/* TAB 4: PARTNERS & BRANDS (Sponsor deals, video ads) */}
-        {memberTab === 'partners' && (
-          <div className="space-y-8 animate-fade-in text-left">
-            {activeSponsorships.filter(s => s.status === 'active').length > 0 ? (
-              <div className="space-y-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
-                    <Briefcase className="w-5 h-5 text-indigo-400" />
+        {/* TAB 4: PARTNERS & BRANDS (Redesigned Deals & Partner Network) */}
+        {memberTab === 'partners' && (() => {
+          const partnerOffers = [
+            {
+              id: "1",
+              name: "Daraz",
+              category: "Shopping",
+              color: "#FF6801",
+              logoLetter: "D",
+              discount: "15% OFF",
+              title: "Daraz Exclusive",
+              subtitle: "Shop & Earn Cashback",
+              desc: "Up to ৳500 off on ৳1,500+ shopping cart",
+              code: "TUTDAR15",
+              valid: "31 Jul 2026",
+              saving: "৳500",
+              url: "https://www.daraz.com.bd"
+            },
+            {
+              id: "2",
+              name: "Foodpanda",
+              category: "Food",
+              color: "#FF2B85",
+              logoLetter: "FP",
+              discount: "FREE DEL",
+              title: "Foodpanda Feast",
+              subtitle: "Free Delivery x5",
+              desc: "On ৳250+ restaurant & pandamart orders",
+              code: "TUTFPDEL",
+              valid: "15 Aug 2026",
+              saving: "৳250",
+              url: "https://www.foodpanda.com.bd"
+            },
+            {
+              id: "3",
+              name: "Pathao",
+              category: "Mobility",
+              color: "#E3333B",
+              logoLetter: "P",
+              discount: "20% OFF",
+              title: "Pathao Rides",
+              subtitle: "Ride More Pay Less",
+              desc: "20% off on daily bike & car commute",
+              code: "TUTPATH20",
+              valid: "30 Jul 2026",
+              saving: "৳180",
+              url: "https://pathao.com"
+            },
+            {
+              id: "4",
+              name: "bKash",
+              category: "Fintech",
+              color: "#E2136E",
+              logoLetter: "B",
+              discount: "1.5% BONUS",
+              title: "bKash Bonus",
+              subtitle: "Deposit Extra",
+              desc: "1.5% instant bonus on personal deposit",
+              code: "TUTBKASH",
+              valid: "31 Dec 2026",
+              saving: "৳300",
+              url: "https://www.bkash.com"
+            },
+            {
+              id: "5",
+              name: "Nagad",
+              category: "Fintech",
+              color: "#F6921E",
+              logoLetter: "N",
+              discount: "৳100 BACK",
+              title: "Nagad Cashback",
+              subtitle: "Flat Cashback",
+              desc: "First add money via verified Nagad wallet",
+              code: "TUTNAGAD",
+              valid: "20 Aug 2026",
+              saving: "৳100",
+              url: "https://www.nagad.com.bd"
+            },
+            {
+              id: "6",
+              name: "Grameenphone",
+              category: "Telecom",
+              color: "#00A8E8",
+              logoLetter: "GP",
+              discount: "5GB FREE",
+              title: "GP Data Blast",
+              subtitle: "Free Internet Pack",
+              desc: "5GB 4G pack on ৳99 recharge through app",
+              code: "TUTGP5GB",
+              valid: "10 Sep 2026",
+              saving: "৳99",
+              url: "https://www.grameenphone.com"
+            }
+          ];
+
+          // Merge active sponsorships from Firestore
+          const dynamicOffers = activeSponsorships
+            .filter(s => s.status === 'active')
+            .map(s => ({
+              id: `sponsor-${s.id}`,
+              name: s.companyName,
+              category: s.campaignType?.includes('Partner') ? 'Fintech' : s.campaignType?.includes('Collab') ? 'Shopping' : 'General',
+              color: '#3B82F6',
+              logoLetter: s.companyName.charAt(0).toUpperCase(),
+              discount: s.specialOffer ? 'EXCLUSIVE' : 'PARTNER',
+              title: s.companyName,
+              subtitle: s.campaignType,
+              desc: s.promotionText,
+              code: s.specialOffer || 'TUTVIP',
+              valid: s.endDate || 'Active',
+              saving: '৳300',
+              url: s.targetUrl,
+              videoUrl: s.videoUrl,
+              imageUrl: s.imageUrl,
+              logoUrl: s.logoUrl
+            }));
+
+          const allOffers = [...partnerOffers, ...dynamicOffers];
+          const filteredOffers = dealCategory === 'All' 
+            ? allOffers 
+            : allOffers.filter(o => o.category.toLowerCase() === dealCategory.toLowerCase());
+
+          const partnerStories = [
+            { id: "s1", label: "New", emoji: "✨", active: true, tag: "Exclusive", info: "Exclusive zero-interest merchant perks just dropped!" },
+            { id: "s2", label: "TUT Pay", emoji: "💳", active: false, tag: "Fintech", info: "Pay zero processing fees on all portal transactions." },
+            { id: "s3", label: "Ramadan", emoji: "🌙", active: false, tag: "Special", info: "Special charity & groceries bundle with up to 25% off." },
+            { id: "s4", label: "Eid Offer", emoji: "🎉", active: true, tag: "Festival", info: "Mega Eid cashbacks on all partner brands." },
+            { id: "s5", label: "Refer & Earn", emoji: "🤝", active: false, tag: "Bonus", info: "Earn ৳500 instant vault credit per 3 member invites." }
+          ];
+
+          const promotionalCampaigns = [
+            {
+              id: "c1",
+              brand: "bKash",
+              color: "#E2136E",
+              title: "Zero Interest Week",
+              desc: "Pay with bKash via T.U.T. and get 0% for 7 days + vault x2 reserve return.",
+              tag: "FINTECH WEEK",
+              cta: "Join Now",
+              time: "3 days left",
+              code: "BKASHZERO"
+            },
+            {
+              id: "c2",
+              brand: "Daraz",
+              color: "#FF6801",
+              title: "Mega 11.11 Pre-Launch",
+              desc: "Early access for Authority members, extra ৳300 stackable coupon voucher.",
+              tag: "SHOPPING FEST",
+              cta: "Unlock",
+              time: "Live now",
+              code: "DARAZ1111"
+            },
+            {
+              id: "c3",
+              brand: "Pathao",
+              color: "#E3333B",
+              title: "Commute Cashback",
+              desc: "10 rides = ৳400 back, tracked automatically in portal with instant ledger settlement.",
+              tag: "MOBILITY",
+              cta: "Start Riding",
+              time: "Ends 31 Jul",
+              code: "PATHAORIDE"
+            }
+          ];
+
+          const dealCategoriesList = ["All", "Shopping", "Food", "Mobility", "Telecom", "Fintech"];
+
+          const copyCodeWithToast = async (code: string, label: string = 'Coupon Code') => {
+            try {
+              await navigator.clipboard.writeText(code);
+              addToast?.('Code Copied', `${code} copied to clipboard for ${label}.`, 'success');
+            } catch (e) {
+              addToast?.('Code Display', `${code} is ready to use!`, 'info');
+            }
+          };
+
+          const scrollFeatured = (direction: 'left' | 'right') => {
+            if (!featuredDropsScrollRef.current) return;
+            const scrollAmount = 280;
+            featuredDropsScrollRef.current.scrollBy({
+              left: direction === 'left' ? -scrollAmount : scrollAmount,
+              behavior: 'smooth'
+            });
+          };
+
+          return (
+            <div className="space-y-3.5 animate-fade-in text-left pb-28 max-w-4xl mx-auto select-none">
+              
+              {/* TOP COMPACT NAV BAR - Just small back to dashboard button as requested */}
+              <div className="flex items-center justify-between pt-0.5 pb-1 border-b border-white/5">
+                <button
+                  type="button"
+                  onClick={() => setMemberTab('dashboard')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95 shadow-sm"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  <span>Back to Dashboard</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full border shadow-sm",
+                    profile.subscriptionTier === 'gold'
+                      ? "text-amber-300 bg-amber-500/15 border-amber-400/30"
+                      : profile.subscriptionTier === 'silver'
+                      ? "text-slate-200 bg-slate-300/15 border-slate-300/30"
+                      : "text-amber-500 bg-amber-500/10 border-amber-500/20"
+                  )}>
+                    <span>{profile.subscriptionTier === 'gold' ? '👑 Gold VIP Perks' : profile.subscriptionTier === 'silver' ? '🥈 Silver Executive' : '🥉 Bronze Member'}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-400 bg-slate-900/70 border border-slate-800 px-2.5 py-1 rounded-full shadow-sm">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>{allOffers.length} Partner Deals Live</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* 1. HERO SPONSORED PROMO BANNER (With Back Button & Countdown) */}
+              <div className="relative rounded-2xl overflow-hidden border border-slate-800/80 bg-gradient-to-r from-slate-900 via-slate-900/95 to-slate-950 p-3.5 sm:p-4 shadow-xl shadow-black/40">
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-amber-500/10 via-transparent to-transparent pointer-events-none" />
+                <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Back button on Card */}
+                      <button
+                        type="button"
+                        onClick={() => setMemberTab('dashboard')}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-semibold text-slate-300 hover:text-white transition-all cursor-pointer"
+                        title="Back to Dashboard"
+                      >
+                        <ArrowLeft className="w-2.5 h-2.5" />
+                        <span>Back</span>
+                      </button>
+
+                      <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 border border-white/10 text-slate-300">
+                        Sponsored
+                      </span>
+                      <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 shadow-sm font-mono font-bold">
+                        LIVE
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-200 flex items-center gap-1 bg-slate-950/70 border border-white/10 px-2 py-0.5 rounded-md">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+                        <span>{String(dealCountdown.h).padStart(2, '0')}:{String(dealCountdown.m).padStart(2, '0')}:{String(dealCountdown.s).padStart(2, '0')}</span>
+                      </span>
+                    </div>
+
+                    <div>
+                      <div className="text-xs sm:text-sm font-black text-amber-300 tracking-tight flex items-center gap-1.5">
+                        <span>T.U.T. Authority × bKash Exclusive</span>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                      </div>
+                      <div className="text-sm sm:text-base font-extrabold text-white tracking-tight leading-tight">Zero Interest Week</div>
+                      <div className="text-[10px] sm:text-[11px] text-slate-300/80 mt-0.5 font-medium truncate">
+                        0% fee on ৳5,000+ • Vault 2x reserve return • Verified charter perk
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-black text-white uppercase tracking-wider">Strategic Brand Collaborations</h3>
-                    <p className="text-xs text-slate-400 font-medium">Exclusive promo codes, partner coupons, and support portals.</p>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setActivePromoVideoModal({
+                        title: 'bKash Zero Interest Week Launch Ceremony',
+                        brand: 'bKash Official',
+                        url: 'https://www.youtube.com'
+                      })}
+                      className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-white/10 text-white flex items-center justify-center shadow-md transition-all cursor-pointer"
+                      title="Play Promotional Video"
+                    >
+                      <Play className="w-4 h-4 fill-white ml-0.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDealMemo({
+                        id: "promo-bkash",
+                        name: "bKash Official",
+                        category: "Fintech",
+                        color: "#E2136E",
+                        logoLetter: "B",
+                        discount: "0% INTEREST",
+                        title: "Zero Interest Week Campaign",
+                        subtitle: "T.U.T. Authority Charter Perk",
+                        desc: "Exclusive zero interest borrowing voucher for verified members on personal deposit additions of ৳5,000 or above.",
+                        code: "BKASHZERO",
+                        valid: "31 Dec 2026",
+                        saving: "৳750",
+                        url: "https://www.bkash.com"
+                      })}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-blue-400 hover:text-blue-300 border border-blue-500/30 text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1"
+                    >
+                      <FileText className="w-3 h-3" />
+                      <span>Memo</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => copyCodeWithToast('BKASHZERO', 'bKash Zero Interest Week')}
+                      className="px-3.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-black tracking-wider uppercase shadow-md transition-all active:scale-95 cursor-pointer"
+                    >
+                      Claim
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. STORY HIGHLIGHTS CAROUSEL */}
+              <div className="flex items-center gap-3 overflow-x-auto hide-scrollbar py-1">
+                {partnerStories.map((story) => (
+                  <button
+                    key={story.id}
+                    type="button"
+                    onClick={() => setActiveStoryModal(story)}
+                    className="shrink-0 flex flex-col items-center gap-1.5 cursor-pointer group active:scale-95 transition-all"
+                  >
+                    <div className={cn(
+                      "w-13 h-13 sm:w-14 sm:h-14 rounded-full p-[2px] transition-all duration-300 shadow-md",
+                      story.active
+                        ? "bg-gradient-to-br from-amber-400 via-amber-200 to-amber-500 shadow-amber-500/20 group-hover:scale-105"
+                        : "bg-slate-800 border border-slate-700"
+                    )}>
+                      <div className="w-full h-full rounded-full bg-slate-900 border-2 border-slate-950 flex items-center justify-center text-lg sm:text-xl">
+                        {story.emoji}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-300 tracking-tight max-w-[62px] truncate text-center">
+                      {story.label}
+                    </span>
+                  </button>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() => addToast?.('More Drops Coming', 'Follow our official channel for Ramadan and Eid partner perks.', 'info')}
+                  className="shrink-0 flex flex-col items-center gap-1.5 cursor-pointer group"
+                >
+                  <div className="w-13 h-13 sm:w-14 sm:h-14 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 hover:text-white hover:border-slate-700 transition-all shadow-sm">
+                    <Plus className="w-4 h-4" />
+                  </div>
+                  <span className="text-[10px] font-bold text-slate-400">More</span>
+                </button>
+              </div>
+
+              {/* 3. QUICK STATS PILL ROW */}
+              <div className="flex gap-2">
+                {[
+                  { label: `${allOffers.length} Partners`, icon: "✓", color: "text-emerald-400" },
+                  { label: "5 Categories", icon: "📁", color: "text-blue-400" },
+                  { label: "৳2,500+ Saved", icon: "💎", color: "text-amber-400" }
+                ].map((stat, idx) => (
+                  <div 
+                    key={idx}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-slate-900/70 border border-slate-800 shadow-sm text-center"
+                  >
+                    <span className={cn("text-xs font-bold", stat.color)}>{stat.icon}</span>
+                    <span className="text-[10px] sm:text-xs font-bold text-slate-200">{stat.label}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* 4. REFERRAL BLITZ CARD (With Back Button) */}
+              <div className="rounded-2xl bg-slate-900/80 border border-amber-500/25 p-3.5 relative overflow-hidden shadow-lg shadow-black/40">
+                <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-amber-500/5 blur-xl pointer-events-none -mr-6 -mt-6" />
+                <div className="flex gap-3 relative z-10">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-xl shrink-0">
+                    🚀
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-extrabold text-white">Referral Blitz</span>
+                        <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                          2/3 Active
+                        </span>
+                      </div>
+                      
+                      <div className="flex items-center gap-1.5">
+                        {/* Back button on Card */}
+                        <button
+                          type="button"
+                          onClick={() => setMemberTab('dashboard')}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-[9.5px] font-semibold transition-all cursor-pointer"
+                          title="Back to Dashboard"
+                        >
+                          <ArrowLeft className="w-2.5 h-2.5" />
+                          <span>Back</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyCodeWithToast(profile.memberId || profile.phone || 'TUT-VIP', 'Referral Code')}
+                          className="text-[10px] font-black text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
+                        >
+                          Invite →
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      Invite 3 friends to get an instant ৳500 ledger vault bonus credited to your account.
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="mt-2.5 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                      <div className="h-full w-[66%] bg-gradient-to-r from-amber-500 to-amber-300 rounded-full" />
+                    </div>
+
+                    <div className="mt-1.5 flex items-center justify-between text-[9px] text-slate-400 font-mono">
+                      <span>1 more member registration to unlock</span>
+                      <span className="text-amber-400 font-bold">Reward: ৳500 BDT</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. FEATURED DROPS CAROUSEL (With Back Buttons & Deal Memo View) */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">⭐</span>
+                    <span className="text-xs font-black tracking-wider uppercase text-white">Featured Drops</span>
+                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                      {allOffers.length} NEW
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => scrollFeatured('left')}
+                      className="w-6 h-6 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center text-slate-300 hover:text-white transition-all cursor-pointer"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scrollFeatured('right')}
+                      className="w-6 h-6 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center text-slate-300 hover:text-white transition-all cursor-pointer"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {activeSponsorships.filter(s => s.status === 'active').map((s) => (
-                    <div 
-                      key={s.id} 
-                      className="glass p-6 rounded-3xl border-indigo-500/10 bg-indigo-950/10 hover:bg-indigo-950/20 relative overflow-hidden group transition-all duration-300 flex flex-col gap-3.5"
+                <div 
+                  ref={featuredDropsScrollRef}
+                  className="flex gap-3 overflow-x-auto hide-scrollbar pb-1 snap-x snap-mandatory"
+                >
+                  {allOffers.map((offer) => (
+                    <div
+                      key={`feat-${offer.id}`}
+                      className="snap-start shrink-0 w-[270px] sm:w-[290px] h-[155px] rounded-2xl border border-slate-800/80 relative overflow-hidden shadow-lg shadow-black/40 group flex flex-col justify-between p-3 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950"
                     >
-                      {/* Background glowing orb */}
-                      <div className="absolute -top-12 -right-12 w-28 h-28 bg-indigo-500/5 rounded-full blur-xl group-hover:bg-indigo-500/10 transition-all duration-700" />
-                      
-                      {/* Brand Header */}
-                      <div className="flex items-center justify-between z-10">
-                        <div className="flex items-center gap-2.5">
-                          {s.logoUrl ? (
-                            <img 
-                              src={s.logoUrl} 
-                              alt={`${s.companyName} logo`} 
-                              className="w-8 h-8 object-contain rounded-xl bg-slate-900 p-1 border border-white/10"
-                              referrerPolicy="no-referrer"
-                            />
-                          ) : (
-                            <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 font-black text-indigo-300 flex items-center justify-center text-xs">
-                              {s.companyName.charAt(0)}
-                            </div>
-                          )}
+                      {/* Ambient background glow */}
+                      <div 
+                        className="absolute -top-10 -right-10 w-24 h-24 rounded-full blur-2xl opacity-25 pointer-events-none"
+                        style={{ backgroundColor: offer.color }}
+                      />
+
+                      {/* Card Top */}
+                      <div className="relative z-10 flex items-start justify-between">
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="w-7 h-7 rounded-lg flex items-center justify-center font-black text-xs text-white border border-white/20 shadow-sm"
+                            style={{ backgroundColor: offer.color }}
+                          >
+                            {offer.logoLetter}
+                          </div>
                           <div>
-                            <h4 className="text-xs font-black text-white tracking-tight leading-none mb-1">
-                              {s.companyName}
-                            </h4>
-                            <span className="text-[7.5px] font-black tracking-widest text-indigo-400 uppercase bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20 leading-none inline-block">
-                              {s.campaignType}
+                            <div className="text-[11px] font-black text-white leading-none flex items-center gap-1">
+                              <span>{offer.name}</span>
+                              <CheckCircle2 className="w-3 h-3 text-blue-400" />
+                            </div>
+                            <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400 mt-0.5 block">
+                              {offer.category}
                             </span>
                           </div>
                         </div>
-                        
-                        <span className="text-[8px] font-mono text-emerald-400/80 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
-                          <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-                          Verified Partner
-                        </span>
-                      </div>
 
-                      {/* Promotion Description */}
-                      <p className="text-[11px] text-blue-100/80 leading-relaxed italic">
-                        "{s.promotionText}"
-                      </p>
-
-                      {/* Campaign Poster Image */}
-                      {s.imageUrl && (
-                        <div className="relative overflow-hidden rounded-2xl border border-white/5 w-full bg-slate-950 flex justify-center items-center">
-                          <img 
-                            src={s.imageUrl} 
-                            alt={`${s.companyName} Campaign Poster`} 
-                            className="w-full h-auto max-h-[220px] object-contain group-hover:scale-102 transition-all duration-500 block"
-                            referrerPolicy="no-referrer"
-                          />
-                        </div>
-                      )}
-
-                      {/* Coupon Copy box */}
-                      {s.specialOffer && (
-                        <div className="bg-gradient-to-r from-amber-500/10 to-orange-500/5 border border-dashed border-amber-500/30 p-3.5 rounded-2xl flex items-center justify-between gap-3 text-left relative overflow-hidden group">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-[8px] font-black uppercase tracking-widest text-amber-400 leading-none block">
-                              Exclusive Partner Coupon
-                            </span>
-                            <p className="text-[11px] font-mono font-black text-amber-100 mt-1 truncate">
-                              {s.specialOffer}
-                            </p>
-                          </div>
+                        <div className="flex items-center gap-1">
+                          {/* Back Button on Card */}
                           <button
                             type="button"
-                            onClick={async () => {
-                              handleAdClick(s.id);
-                              try {
-                                await navigator.clipboard.writeText(s.specialOffer || "");
-                                setCopiedCouponId(s.id);
-                                setTimeout(() => setCopiedCouponId(null), 3000);
-                              } catch (err) {
-                                alert(`Coupon Code is: ${s.specialOffer}`);
-                              }
-                            }}
-                            className={cn(
-                              "text-[8.5px] font-black uppercase tracking-wider px-3 py-1.5 rounded-lg border transition-all duration-300 cursor-pointer flex items-center gap-1 shrink-0",
-                              copiedCouponId === s.id 
-                                ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300 font-bold" 
-                                : "bg-amber-500 hover:bg-amber-400 text-slate-950 border-amber-400/30 font-extrabold shadow-md active:scale-95"
-                            )}
+                            onClick={() => setMemberTab('dashboard')}
+                            className="p-1 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white border border-white/5 transition-colors cursor-pointer"
+                            title="Back to Dashboard"
                           >
-                            {copiedCouponId === s.id ? (
-                              <>
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>Copied!</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3 h-3" />
-                                <span>Copy Code</span>
-                              </>
-                            )}
+                            <ArrowLeft className="w-3 h-3" />
+                          </button>
+                          <span className="text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 shadow-sm">
+                            {offer.discount}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Card Middle */}
+                      <div className="relative z-10 my-1">
+                        <div className="text-xs font-black text-white leading-tight truncate">{offer.title}</div>
+                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{offer.subtitle}</div>
+                      </div>
+
+                      {/* Card Bottom */}
+                      <div className="relative z-10 flex items-center justify-between pt-1.5 border-t border-white/5">
+                        <span className="text-[9px] font-mono text-slate-400">Till {offer.valid}</span>
+                        <div className="flex items-center gap-2">
+                          {/* Deal Memo Button */}
+                          <button
+                            type="button"
+                            onClick={() => setSelectedDealMemo(offer)}
+                            className="text-[9.5px] font-bold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-0.5 cursor-pointer"
+                          >
+                            <FileText className="w-2.5 h-2.5" />
+                            <span>Memo</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (offer.url) handleAdClick(offer.id);
+                              copyCodeWithToast(offer.code, offer.name);
+                            }}
+                            className="text-[9.5px] font-black text-amber-400 hover:text-amber-300 transition-colors flex items-center gap-0.5 cursor-pointer"
+                          >
+                            <span>Save {offer.saving}</span>
+                            <span>→</span>
                           </button>
                         </div>
-                      )}
-
-                      {/* Video clip triggers */}
-                      {s.videoUrl && (
-                        <div className="text-left mt-1">
-                          <a 
-                            href={s.videoUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            onClick={() => handleAdClick(s.id)}
-                            className="inline-flex items-center gap-1.5 text-[9px] uppercase font-black tracking-widest text-[#50e3c2] hover:underline"
-                          >
-                            <Play className="w-2.5 h-2.5 fill-current" />
-                            Watch Promotional Video
-                          </a>
-                        </div>
-                      )}
-
-                      {/* Target Portal trigger */}
-                      {s.targetUrl && (
-                        <div className="pt-2 border-t border-white/5 mt-1">
-                          <a 
-                            href={s.targetUrl} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            onClick={() => handleAdClick(s.id)}
-                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[10px] uppercase tracking-widest rounded-xl flex items-center justify-center gap-1 transition-all shadow-md active:scale-[0.98]"
-                          >
-                            <span>Visit Partner Portal</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        </div>
-                      )}
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
-            ) : (
-              <div className="py-20 text-center bg-slate-900/15 border border-dashed border-indigo-500/10 rounded-3xl max-w-xl mx-auto">
-                <Tag className="w-12 h-12 text-indigo-400/10 mx-auto mb-4" />
-                <p className="text-indigo-400/40 font-bold uppercase tracking-widest text-xs">No active strategic partner collaborations</p>
+
+              {/* 6. URGENT FLASH SALE BANNER (With Back Button) */}
+              <div className="rounded-2xl border border-rose-500/25 bg-gradient-to-r from-slate-900 via-slate-900 to-rose-950/30 p-3 flex items-center gap-3 relative overflow-hidden shadow-lg shadow-black/40">
+                <div className="w-9 h-9 rounded-xl bg-rose-500 text-white flex items-center justify-center shrink-0 text-lg shadow-md shadow-rose-500/30 animate-pulse">
+                  ⚡
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs font-black uppercase tracking-wider text-white">Flash Sale</span>
+                    <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-500 text-white">
+                      LIVE
+                    </span>
+                  </div>
+                  <div className="text-[10px] sm:text-xs text-slate-300 font-medium truncate mt-0.5">
+                    Daraz + Foodpanda bundle extra 10% - next 2h only
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span className="px-2 py-0.5 rounded-md bg-slate-950/80 border border-white/10 font-mono text-[10px] font-bold text-white">
+                    {String(dealCountdown.h).padStart(2, '0')}:{String(dealCountdown.m).padStart(2, '0')}:{String(dealCountdown.s).padStart(2, '0')}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {/* Back Button on Card */}
+                    <button
+                      type="button"
+                      onClick={() => setMemberTab('dashboard')}
+                      className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-[9.5px] font-semibold flex items-center gap-1 cursor-pointer"
+                      title="Back to Dashboard"
+                    >
+                      <ArrowLeft className="w-2.5 h-2.5" /> Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => copyCodeWithToast('FLASH10', 'Flash Sale Bundle')}
+                      className="text-[10px] font-black text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
+                    >
+                      Grab →
+                    </button>
+                  </div>
+                </div>
               </div>
+
+              {/* 7. SPOTLIGHT EXECUTIVE PARTNER INTERVIEW CARD (With Back Button) */}
+              <div className="rounded-2xl bg-slate-900/70 border border-slate-800/80 p-3.5 flex gap-3 items-center relative overflow-hidden shadow-lg shadow-black/40">
+                <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shrink-0 font-black text-sm text-[#E2136E] shadow-md">
+                  bK
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
+                      Spotlight
+                    </span>
+                    <span className="text-[9px] text-slate-400">CEO Interview</span>
+                  </div>
+                  <p className="text-[11px] text-slate-200 italic leading-snug mt-1 line-clamp-2">
+                    “T.U.T. Authority members are our highest LTV - we built Zero Interest Week just for them.”
+                  </p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-[9px] font-bold text-amber-400">— Kamal Quadir, bKash</span>
+                    <button
+                      type="button"
+                      onClick={() => setActivePromoVideoModal({
+                        title: 'Executive Interview: Kamal Quadir (bKash) on Zero Usury Lending',
+                        brand: 'bKash Leadership',
+                        url: 'https://www.youtube.com'
+                      })}
+                      className="text-[9px] font-semibold text-blue-400 hover:underline cursor-pointer"
+                    >
+                      Watch 45s
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {/* Back button on Card */}
+                  <button
+                    type="button"
+                    onClick={() => setMemberTab('dashboard')}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-[9.5px] font-semibold flex items-center gap-1 cursor-pointer"
+                    title="Back to Dashboard"
+                  >
+                    <ArrowLeft className="w-2.5 h-2.5" /> Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActivePromoVideoModal({
+                      title: 'Executive Interview: Kamal Quadir (bKash) on Zero Usury Lending',
+                      brand: 'bKash Leadership',
+                      url: 'https://www.youtube.com'
+                    })}
+                    className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 border border-white/10 flex items-center justify-center shrink-0 text-white transition-all cursor-pointer"
+                    title="Watch Video"
+                  >
+                    <Play className="w-3 h-3 fill-current ml-0.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* 8. PARTNER OFFERS WITH FILTER CATEGORY TABS & 2-COLUMN GRID */}
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-black uppercase tracking-wider text-white">Partner Offers</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-slate-400">{filteredOffers.length} active</span>
+                </div>
+
+                {/* Filter Tabs */}
+                <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-1">
+                  {dealCategoriesList.map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setDealCategory(cat)}
+                      className={cn(
+                        "shrink-0 px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer border",
+                        dealCategory === cat
+                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm shadow-amber-500/10"
+                          : "bg-slate-900/80 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700"
+                      )}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Offers Grid: 2 columns on desktop, 1 on mobile */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {filteredOffers.map((offer) => (
+                    <div
+                      key={offer.id}
+                      className="rounded-2xl bg-slate-900/70 border border-slate-800/80 p-3 flex flex-col justify-between relative overflow-hidden hover:border-slate-700 transition-all shadow-md group"
+                    >
+                      <div 
+                        className="absolute top-0 right-0 w-20 h-20 rounded-full blur-xl opacity-15 pointer-events-none"
+                        style={{ backgroundColor: offer.color }}
+                      />
+
+                      <div className="relative z-10 space-y-2">
+                        {/* Top: Brand info, Back Button & discount badge */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <div 
+                              className="w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs text-white border border-white/10 shadow-sm"
+                              style={{ backgroundColor: offer.color }}
+                            >
+                              {offer.logoLetter}
+                            </div>
+                            <div>
+                              <div className="text-xs font-black text-white flex items-center gap-1">
+                                <span>{offer.name}</span>
+                                <CheckCircle2 className="w-3 h-3 text-blue-400" />
+                              </div>
+                              <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                                {offer.category}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            {/* Back button on Card */}
+                            <button
+                              type="button"
+                              onClick={() => setMemberTab('dashboard')}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-white border border-white/5 text-[9px] font-semibold transition-all cursor-pointer"
+                              title="Back to Dashboard"
+                            >
+                              <ArrowLeft className="w-2.5 h-2.5" />
+                              <span>Back</span>
+                            </button>
+
+                            <span className="text-[8.5px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-400 shrink-0">
+                              {offer.discount}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Title & Description */}
+                        <div>
+                          <div className="text-xs font-black text-slate-100 truncate">{offer.title}</div>
+                          <p className="text-[10px] text-slate-400 mt-0.5 leading-snug line-clamp-2">{offer.desc}</p>
+                        </div>
+
+                        {/* Coupon Code Strip */}
+                        <div className="flex items-center justify-between gap-2 p-1.5 rounded-xl bg-slate-950/80 border border-white/5 font-mono">
+                          <span className="text-[10px] font-bold text-amber-300 tracking-wider truncate px-1">
+                            {offer.code}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (offer.url) handleAdClick(offer.id);
+                              copyCodeWithToast(offer.code, offer.name);
+                            }}
+                            className="w-6 h-6 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center transition-all cursor-pointer shrink-0"
+                            title="Copy Coupon Code"
+                          >
+                            <Copy className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons: Back, Deal Memo, and Use Now */}
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDealMemo(offer)}
+                          className="flex-1 py-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-blue-400 hover:text-blue-300 border border-blue-500/20 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                        >
+                          <FileText className="w-3 h-3" />
+                          <span>Memo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (offer.url) {
+                              handleAdClick(offer.id);
+                              window.open(offer.url, '_blank');
+                            }
+                            copyCodeWithToast(offer.code, offer.name);
+                          }}
+                          className="flex-1 py-2 rounded-xl bg-white hover:bg-slate-200 text-slate-950 text-xs font-black uppercase tracking-wider transition-all shadow-md active:scale-98 cursor-pointer flex items-center justify-center gap-1.5"
+                        >
+                          <span>Use Now</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 9. PROMOTIONAL CAMPAIGNS SECTION (With Back Buttons) */}
+              <div className="space-y-2.5 pt-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-purple-400" />
+                    <span className="text-xs font-black uppercase tracking-wider text-white">Promotional Campaigns</span>
+                    <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                      3 LIVE
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => addToast?.('Campaign Vault', 'All 3 campaigns are currently active for verified charter members.', 'info')}
+                    className="text-[9px] font-bold text-slate-400 hover:text-white transition-colors"
+                  >
+                    View all
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {promotionalCampaigns.map((camp) => (
+                    <div
+                      key={camp.id}
+                      className="rounded-2xl bg-slate-900/70 border border-slate-800/80 p-3 flex items-center gap-3 relative overflow-hidden shadow-md group hover:border-slate-700 transition-all"
+                    >
+                      <div 
+                        className="w-12 h-12 rounded-xl flex items-center justify-center font-black text-sm text-white border border-white/10 shrink-0 shadow-md"
+                        style={{ backgroundColor: camp.color }}
+                      >
+                        {camp.brand[0]}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[7.5px] font-black uppercase px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/5 tracking-wider">
+                            {camp.tag}
+                          </span>
+                          <span className="text-[8.5px] font-mono text-slate-400">• {camp.time}</span>
+                        </div>
+                        <div className="text-xs font-black text-white truncate mt-0.5">{camp.title}</div>
+                        <p className="text-[10px] text-slate-300/80 mt-0.5 line-clamp-1">{camp.desc}</p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {/* Back button on Card */}
+                        <button
+                          type="button"
+                          onClick={() => setMemberTab('dashboard')}
+                          className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-semibold flex items-center gap-1 cursor-pointer border border-white/5"
+                          title="Back to Dashboard"
+                        >
+                          <ArrowLeft className="w-2.5 h-2.5" /> Back
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyCodeWithToast(camp.code, camp.title)}
+                          className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-[10px] uppercase tracking-wider shrink-0 transition-all shadow-md active:scale-95 cursor-pointer"
+                        >
+                          {camp.cta}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 10. HOW IT WORKS 3-STEP FOOTER BAR */}
+              <div className="rounded-2xl bg-slate-900/40 border border-white/5 p-3 flex flex-col sm:flex-row items-center justify-between gap-2 text-center sm:text-left">
+                <div className="flex items-center gap-2 text-[9px] font-bold text-slate-400">
+                  <span className="font-mono text-amber-400">01</span>
+                  <span>Browse Deals</span>
+                  <span className="text-white/20">•</span>
+                  <span className="font-mono text-amber-400">02</span>
+                  <span>Copy Code</span>
+                  <span className="text-white/20">•</span>
+                  <span className="font-mono text-amber-400">03</span>
+                  <span>Earn Vault Credit</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-[8px] uppercase tracking-widest text-slate-500 font-bold">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>KYC Verified Merchant Gateway</span>
+                </div>
+              </div>
+
+              {/* OFFICIAL DEAL MEMO MODAL (Every Deal Has A Certified Memo with Back Buttons) */}
+              {selectedDealMemo && (
+                <Modal
+                  isOpen={!!selectedDealMemo}
+                  onClose={() => setSelectedDealMemo(null)}
+                  title={`Deal Memo: ${selectedDealMemo.name}`}
+                >
+                  <div className="space-y-4 text-left p-1 select-none">
+                    {/* Memo Top Navigation with Back Buttons */}
+                    <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDealMemo(null)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Back to Deals</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDealMemo(null);
+                          setMemberTab('dashboard');
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Back to Dashboard</span>
+                      </button>
+                    </div>
+
+                    {/* Certified Paper Memo Document Container */}
+                    <div className="relative bg-white text-slate-950 rounded-2xl p-5 shadow-xl border border-blue-100 overflow-hidden">
+                      {/* Watermark */}
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] rotate-[-25deg] select-none text-center">
+                        <span className="text-2xl font-black text-blue-900 tracking-widest leading-none">
+                          T.U.T. OFFICIAL DEAL VOUCHER
+                        </span>
+                      </div>
+
+                      {/* Header of Document */}
+                      <div className="relative border-b border-blue-100 pb-3 flex items-start justify-between">
+                        <div className="flex items-center gap-2.5">
+                          <div 
+                            className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-white text-base shadow"
+                            style={{ backgroundColor: selectedDealMemo.color || '#3B82F6' }}
+                          >
+                            {selectedDealMemo.logoLetter || selectedDealMemo.name[0]}
+                          </div>
+                          <div>
+                            <span className="text-[9px] font-black text-blue-900/50 uppercase tracking-[0.2em] block">
+                              OFFICIAL PARTNER VOUCHER MEMO
+                            </span>
+                            <h4 className="text-base font-black text-blue-950 leading-tight">
+                              {selectedDealMemo.name}
+                            </h4>
+                          </div>
+                        </div>
+
+                        <div className="text-right">
+                          <span className="text-[8px] font-black uppercase tracking-widest bg-emerald-600 text-white px-2 py-0.5 rounded shadow">
+                            Verified
+                          </span>
+                          <span className="text-[9px] font-mono font-bold text-slate-400 block mt-1">
+                            Ref: MEMO-{selectedDealMemo.id}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Memo Details Body */}
+                      <div className="py-3 space-y-3 font-sans text-xs">
+                        <div className="flex justify-between border-b border-slate-100 pb-1.5">
+                          <span className="font-bold text-slate-400 uppercase text-[9px]">Offer Title</span>
+                          <span className="font-bold text-blue-950">{selectedDealMemo.title}</span>
+                        </div>
+
+                        <div className="flex justify-between border-b border-slate-100 pb-1.5">
+                          <span className="font-bold text-slate-400 uppercase text-[9px]">Perk Discount</span>
+                          <span className="font-black text-emerald-600 font-mono text-sm">{selectedDealMemo.discount}</span>
+                        </div>
+
+                        <div className="flex justify-between border-b border-slate-100 pb-1.5">
+                          <span className="font-bold text-slate-400 uppercase text-[9px]">Potential Saving</span>
+                          <span className="font-black text-amber-600 font-mono text-xs">{selectedDealMemo.saving || '৳300+'}</span>
+                        </div>
+
+                        <div className="flex justify-between border-b border-slate-100 pb-1.5">
+                          <span className="font-bold text-slate-400 uppercase text-[9px]">Validity Expiration</span>
+                          <span className="font-mono text-slate-700">{selectedDealMemo.valid || 'Active'}</span>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                          <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Terms & Conditions</span>
+                          <p className="text-[11px] text-slate-600 leading-relaxed">
+                            {selectedDealMemo.desc || "Verified T.U.T. Authority member partnership benefit. Guaranteed usury-free zero interest savings."}
+                          </p>
+                        </div>
+
+                        {/* Voucher Code Box */}
+                        <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200 flex items-center justify-between gap-2">
+                          <div>
+                            <span className="text-[8px] font-black uppercase tracking-wider text-blue-800/70 block">
+                              EXCLUSIVE VOUCHER PROMO CODE
+                            </span>
+                            <span className="font-mono font-black text-sm tracking-wider text-blue-950">
+                              {selectedDealMemo.code}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => copyCodeWithToast(selectedDealMemo.code, selectedDealMemo.name)}
+                            className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1 cursor-pointer transition-all shadow-sm"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copy</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Footer Stamp & Chairman Signature */}
+                      <div className="pt-3 border-t border-dashed border-slate-200 flex justify-between items-end gap-3">
+                        <div className="p-1.5 bg-slate-950 rounded-lg">
+                          <CustomQRCode value={`TUT-DEAL-${selectedDealMemo.id}-${selectedDealMemo.code}`} />
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[8px] font-bold text-slate-400 uppercase block">Authorized Signatory</span>
+                          <span className="font-serif text-xs text-blue-950 font-medium italic block">Tahsin Ullah Tusher</span>
+                          <span className="text-[7px] font-black text-blue-900/40 uppercase tracking-widest block">T.U.T. Authority Chairman</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Memo Action Buttons */}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedDealMemo(null);
+                          setMemberTab('dashboard');
+                        }}
+                        className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer border border-white/10"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Dashboard</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedDealMemo.url) {
+                            handleAdClick(selectedDealMemo.id);
+                            window.open(selectedDealMemo.url, '_blank');
+                          }
+                          copyCodeWithToast(selectedDealMemo.code, selectedDealMemo.name);
+                        }}
+                        className="flex-1 py-2.5 px-3 rounded-xl bg-white hover:bg-slate-200 text-slate-950 font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer"
+                      >
+                        <span>Redeem on Site</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </Modal>
+              )}
+
+              {/* STORY HIGHLIGHTS DETAIL MODAL (With Back Buttons) */}
+              {activeStoryModal && (
+                <Modal
+                  isOpen={!!activeStoryModal}
+                  onClose={() => setActiveStoryModal(null)}
+                  title={`Story: ${activeStoryModal.label}`}
+                >
+                  <div className="space-y-4 text-center p-2">
+                    {/* Top Back Buttons */}
+                    <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                      <button
+                        type="button"
+                        onClick={() => setActiveStoryModal(null)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Back</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveStoryModal(null);
+                          setMemberTab('dashboard');
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Dashboard</span>
+                      </button>
+                    </div>
+
+                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center text-3xl mx-auto shadow-xl shadow-amber-500/20">
+                      {activeStoryModal.emoji}
+                    </div>
+                    <div>
+                      <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        {activeStoryModal.tag}
+                      </span>
+                      <h3 className="text-base font-black text-white mt-2">{activeStoryModal.label} Highlights</h3>
+                      <p className="text-xs text-slate-300 mt-1">{activeStoryModal.info}</p>
+                    </div>
+                    <div className="p-3 bg-slate-900 rounded-xl border border-white/10 text-xs font-mono text-amber-400">
+                      Active for verified T.U.T. Members • 100% Zero Usury Policy
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveStoryModal(null);
+                          setMemberTab('dashboard');
+                        }}
+                        className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer border border-white/10"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Dashboard</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveStoryModal(null)}
+                        className="flex-1 py-2.5 rounded-xl bg-white text-slate-950 font-black text-xs uppercase tracking-wider hover:bg-slate-200 transition-all cursor-pointer"
+                      >
+                        Close Story
+                      </button>
+                    </div>
+                  </div>
+                </Modal>
+              )}
+
+              {/* VIDEO CLIP PREVIEW MODAL (With Back Buttons) */}
+              {activePromoVideoModal && (
+                <Modal
+                  isOpen={!!activePromoVideoModal}
+                  onClose={() => setActivePromoVideoModal(null)}
+                  title={activePromoVideoModal.brand}
+                >
+                  <div className="space-y-4 text-center p-2">
+                    {/* Top Back Buttons */}
+                    <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                      <button
+                        type="button"
+                        onClick={() => setActivePromoVideoModal(null)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Back</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActivePromoVideoModal(null);
+                          setMemberTab('dashboard');
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Dashboard</span>
+                      </button>
+                    </div>
+
+                    <div className="w-14 h-14 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center mx-auto text-indigo-400">
+                      <Play className="w-6 h-6 fill-current" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-white">{activePromoVideoModal.title}</h3>
+                      <p className="text-xs text-slate-400 mt-1">Official broadcast partnership clip from T.U.T. Clearing Vault</p>
+                    </div>
+                    <div className="p-4 rounded-2xl bg-slate-950 border border-white/10 space-y-2">
+                      <div className="text-[10px] font-mono text-slate-400">VIDEO STREAMING PROTOCOL</div>
+                      <div className="text-xs text-emerald-400 font-bold">HD 1080p Encrypted Feed Active</div>
+                      <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                        <div className="h-full w-3/4 bg-emerald-500 rounded-full animate-pulse" />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActivePromoVideoModal(null);
+                          setMemberTab('dashboard');
+                        }}
+                        className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold text-xs flex items-center justify-center gap-1 cursor-pointer border border-white/10"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                        <span>Dashboard</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          copyCodeWithToast('BKASHZERO', 'Sponsored Deal');
+                          setActivePromoVideoModal(null);
+                        }}
+                        className="flex-1 py-2.5 rounded-xl bg-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider hover:bg-amber-300 transition-all cursor-pointer"
+                      >
+                        Claim Perk
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActivePromoVideoModal(null)}
+                        className="py-2.5 px-3 rounded-xl bg-slate-800 text-white font-bold text-xs uppercase tracking-wider hover:bg-slate-700 transition-all cursor-pointer"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                </Modal>
+              )}
+
+            </div>
+          );
+        })()}
+
+        {/* TAB: WALLETS & PAYMENT METHODS PROTOCOL */}
+        {memberTab === 'wallets' && (
+          <div className="space-y-6 text-left animate-fade-in select-none pb-24">
+            
+            {/* Header Workspace */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/40 border border-white/5 rounded-3xl p-5 relative overflow-hidden shadow-xl">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setMemberTab('profile')}
+                    className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-all cursor-pointer text-xs"
+                    title="Back to Profile"
+                  >
+                    ←
+                  </button>
+                  <span className="inline-flex items-center gap-1 text-[8px] font-black uppercase tracking-widest text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2.5 py-0.5 rounded-full">
+                    Financial Accounts
+                  </span>
+                </div>
+                <h2 className="text-lg sm:text-xl font-black text-white tracking-tight">Payment Methods Workspace</h2>
+                <p className="text-[10px] sm:text-xs text-slate-400 font-bold">Securely configure your payout networks, automate receipts, and manage beta products.</p>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <button
+                  onClick={() => setMemberTab('dashboard')}
+                  className="px-3.5 py-2 bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 font-black text-[9.5px] uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                >
+                  Home Console
+                </button>
+                <button
+                  onClick={() => setShowAddWalletModal(true)}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[9.5px] uppercase tracking-widest rounded-xl transition-all shadow-lg shadow-indigo-500/15 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Link Wallet
+                </button>
+              </div>
+            </div>
+
+            {/* Dynamic Local Alerts bar */}
+            {localToast && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className={cn(
+                  "p-3 rounded-2xl border text-xs font-black uppercase tracking-wide flex items-center gap-2 shadow-lg",
+                  localToast.type === 'success' ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" :
+                  localToast.type === 'danger' ? "bg-rose-500/10 border-rose-500/20 text-rose-400" :
+                  "bg-amber-500/10 border-amber-500/20 text-amber-400"
+                )}
+              >
+                <div className="w-1.5 h-1.5 rounded-full animate-ping shrink-0 bg-current" />
+                <span>{localToast.message}</span>
+              </motion.div>
             )}
+
+            {/* Dual Column Layout */}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 items-start">
+              
+              {/* LEFT COLUMN: ACTIVE DIGITAL WALLETS (bKash / Nagad only) */}
+              <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-6 space-y-5">
+                <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-pink-500/10 border border-pink-500/20 flex items-center justify-center text-pink-400 shadow-inner">
+                      <Wallet className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Active Payment Wallets</h3>
+                      <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest leading-none mt-0.5">Automated local remittance nodes</p>
+                    </div>
+                  </div>
+                  <span className="text-[8px] font-mono text-slate-400 uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded border border-white/5">BANGLADESH</span>
+                </div>
+
+                <div className="space-y-4">
+                  {walletLoading ? (
+                    <div className="space-y-3">
+                      {[1, 2].map((i) => (
+                        <div key={i} className="animate-pulse bg-slate-900/60 border border-white/5 rounded-2xl p-4.5 flex items-center justify-between gap-4">
+                          <div className="flex items-center gap-3.5 w-full">
+                            <div className="w-10 h-10 rounded-xl bg-slate-800/60 shrink-0" />
+                            <div className="space-y-2 w-full">
+                              <div className="h-3.5 bg-slate-800/60 rounded w-1/3" />
+                              <div className="h-3 bg-slate-800/40 rounded w-1/2" />
+                            </div>
+                          </div>
+                          <div className="w-8 h-8 rounded-lg bg-slate-800/40 shrink-0" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : wallets.length === 0 ? (
+                    <div className="py-16 text-center bg-slate-950/20 border border-dashed border-white/5 rounded-3xl space-y-4">
+                      <div className="w-12 h-12 rounded-full bg-slate-900 flex items-center justify-center text-slate-600 mx-auto text-lg border border-white/5">৳</div>
+                      <div className="space-y-1">
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-wider">No wallets linked yet</h4>
+                        <p className="text-[10.5px] text-slate-500 max-w-xs mx-auto leading-normal">Link your verified bKash or Nagad mobile personal wallets to authorize instant digital loans and deposits.</p>
+                      </div>
+                      <button
+                        onClick={() => setShowAddWalletModal(true)}
+                        className="px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/25 text-indigo-400 font-black text-[9px] uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                      >
+                        + Configure Wallet Now
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3.5">
+                      {wallets.map((w) => {
+                        const isbKash = w.provider === 'bKash';
+                        const colorClass = isbKash ? '#e2136e' : '#f64a1e';
+                        const maskNum = w.mobileNumber.slice(0, 3) + '***' + w.mobileNumber.slice(-4);
+                        return (
+                          <div 
+                            key={w.id} 
+                            className={cn(
+                              "relative overflow-hidden rounded-2xl border p-4.5 transition-all shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4",
+                              w.isDefault 
+                                ? "bg-slate-900/60 border-indigo-500/30 shadow-[0_4px_15px_rgba(99,102,241,0.08)]" 
+                                : "bg-slate-950/30 border-white/5 hover:border-white/15"
+                            )}
+                          >
+                            {/* Decorative ambient provider background highlight */}
+                            <div 
+                              className="absolute top-0 right-0 w-28 h-28 rounded-full blur-2xl opacity-[0.03] pointer-events-none"
+                              style={{ backgroundColor: colorClass }}
+                            />
+
+                            <div className="flex items-start gap-3.5 min-w-0">
+                              {/* Provider Badge Icon */}
+                              <div 
+                                className="w-10 h-10 rounded-xl flex flex-col items-center justify-center text-white font-black text-[11px] shrink-0 shadow-md"
+                                style={{ backgroundColor: colorClass }}
+                              >
+                                <span>{isbKash ? 'bK' : 'Ng'}</span>
+                                <span className="text-[6.5px] tracking-tighter opacity-80 uppercase leading-none">wallet</span>
+                              </div>
+
+                              <div className="min-w-0 space-y-1.5 text-left">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">{w.provider} Node</h4>
+                                  
+                                  {w.isDefault && (
+                                    <span className="text-[7.5px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
+                                      ★ Primary Receiving
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="space-y-0.5">
+                                  <p className="text-[10.5px] font-bold text-slate-300 truncate font-mono">{w.holderName.toUpperCase()}</p>
+                                  <p className="text-[10px] font-mono font-bold text-slate-400">Mobile: <strong className="text-white">{maskNum}</strong></p>
+                                  <p className="text-[8px] text-slate-500">Linked: {w.dateLinked ? format(w.dateLinked, 'MMMM dd, yyyy') : 'Recently'}</p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Verification & Action Suite */}
+                            <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-3 shrink-0 border-t md:border-t-0 border-white/5 pt-3.5 md:pt-0">
+                              <div className="flex items-center gap-1.5">
+                                {w.isVerified ? (
+                                  <span className="inline-flex items-center gap-1 text-[7.5px] font-black text-emerald-400 uppercase tracking-widest bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded">
+                                    ✓ Bonded & Verified
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => {
+                                      setOtpWallet(w);
+                                      setOtpTimer(120);
+                                      setOtpCode('');
+                                      setOtpError('');
+                                      setShowOtpModal(true);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-[7.5px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 px-2.5 py-1 rounded transition-colors cursor-pointer animate-pulse"
+                                    title="Verify ownership with secure OTP challenge"
+                                  >
+                                    ⚠ Pending Verification
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                {/* Set default receiving channel trigger */}
+                                {!w.isDefault && (
+                                  <button
+                                    onClick={() => handleSetDefaultWallet(w.id)}
+                                    className="text-[8px] font-black text-slate-400 hover:text-white uppercase tracking-widest bg-white/5 hover:bg-white/10 px-2 py-1 rounded border border-white/5 transition-all cursor-pointer"
+                                  >
+                                    Set Primary
+                                  </button>
+                                )}
+
+                                {/* Edit account details */}
+                                <button
+                                  onClick={() => {
+                                    setEditWalletId(w.id);
+                                    setEditWalletProvider(w.provider);
+                                    setEditWalletHolder(w.holderName);
+                                    setEditWalletMobile(w.mobileNumber);
+                                    setShowEditWalletModal(true);
+                                  }}
+                                  className="p-1 text-slate-500 hover:text-indigo-400 transition-colors cursor-pointer"
+                                  title="Edit account name & mobile node"
+                                >
+                                  ✎
+                                </button>
+
+                                {/* Unlink wallet */}
+                                <button
+                                  onClick={() => handleRemoveWallet(w.id)}
+                                  className="p-1 text-slate-500 hover:text-rose-400 transition-colors cursor-pointer font-black"
+                                  title="Unlink and disconnect node"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Add Wallet Dotted Entrypoint Card */}
+                  <button
+                    onClick={() => setShowAddWalletModal(true)}
+                    className="w-full py-5 border-2 border-dashed border-white/5 hover:border-indigo-500/20 hover:bg-indigo-500/[0.02] rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer select-none"
+                  >
+                    <Plus className="w-5 h-5 text-indigo-400/60" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Link New Mobile Wallet</span>
+                  </button>
+
+                </div>
+              </div>
+
+              {/* RIGHT COLUMN: BANK CARDS (BETA WAITLIST SECTION) */}
+              <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-6 space-y-5">
+                <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-orange-400 shadow-inner">
+                      <CreditCard className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Bank Cards Protocol</h3>
+                        <span className="text-[7.5px] font-black text-amber-400 uppercase tracking-widest bg-amber-500/15 px-1.5 py-0.5 rounded leading-none border border-amber-500/20">BETA</span>
+                      </div>
+                      <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest leading-none mt-0.5">International Visa/Mastercard Integration</p>
+                    </div>
+                  </div>
+                  <span className="text-[8px] font-mono text-amber-500 font-extrabold uppercase tracking-widest">COMING SOON</span>
+                </div>
+
+                {/* Professional Beta restriction notification banner */}
+                <div className="p-4 bg-amber-500/5 border border-amber-500/15 rounded-2xl flex gap-3 text-left">
+                  <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h4 className="text-[10.5px] font-black text-amber-400 uppercase tracking-wider leading-none">Security Beta Restriction</h4>
+                    <p className="text-[10px] text-slate-300 font-bold leading-normal">
+                      Card services are currently in Beta and are not yet available for financial transactions. Added cards act as securewaitlist registration for tier authorization.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {cards.length === 0 ? (
+                    <div className="py-12 text-center bg-slate-950/20 border border-dashed border-white/5 rounded-3xl space-y-3">
+                      <CreditCard className="w-8 h-8 text-slate-600 mx-auto" />
+                      <p className="text-[10.5px] text-slate-400 font-bold">No debit or credit cards linked</p>
+                      <button
+                        onClick={() => setShowAddCardModal(true)}
+                        className="px-4 py-2 bg-orange-500/10 border border-orange-500/20 hover:bg-orange-500/25 text-orange-400 font-black text-[9px] uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                      >
+                        Join Beta Waitlist
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {cards.map((c) => {
+                        const isVisa = c.cardType === 'Visa';
+                        return (
+                          <div 
+                            key={c.id}
+                            className="h-32 rounded-2xl p-4.5 flex flex-col justify-between relative overflow-hidden shadow-xl border border-white/10 group select-none"
+                            style={{
+                              background: isVisa 
+                                ? 'linear-gradient(135deg, #091a45 0%, #163c96 50%, #06102b 100%)' 
+                                : 'linear-gradient(135deg, #1f1406 0%, #3e2608 50%, #120b02 100%)'
+                            }}
+                          >
+                            {/* Card Chip decoration */}
+                            <div className="absolute top-4 left-4 w-7 h-5.5 rounded bg-amber-500/25 border border-amber-400/25 flex items-center justify-center overflow-hidden">
+                              <div className="grid grid-cols-3 gap-[1px] w-full h-full p-0.5 opacity-60">
+                                <div className="border-r border-amber-400/20"></div>
+                                <div className="border-r border-amber-400/20"></div>
+                                <div></div>
+                              </div>
+                            </div>
+
+                            {/* Watermark branding */}
+                            <div className="absolute -bottom-10 -right-10 w-28 h-28 bg-white/5 rounded-full blur-xl group-hover:scale-110 transition-transform pointer-events-none" />
+
+                            {/* Beta label on upper right */}
+                            <div className="flex justify-between items-start self-end leading-none">
+                              <span className="text-[8px] font-black text-amber-400 bg-amber-500/15 px-1.5 py-0.5 rounded border border-amber-500/20 select-none uppercase tracking-widest">BETA</span>
+                            </div>
+
+                            {/* Masked Card Number */}
+                            <div className="text-left font-mono font-black text-[13px] text-white tracking-widest my-2 drop-shadow-md select-none">
+                              {c.cardNumber}
+                            </div>
+
+                            {/* Holder & Expiry details */}
+                            <div className="flex justify-between items-end border-t border-white/5 pt-2 select-none">
+                              <div className="text-left min-w-0">
+                                <span className="text-[6.5px] font-black text-white/45 uppercase tracking-widest block leading-none">Cardholder</span>
+                                <span className="text-[9.5px] font-mono font-black text-white truncate block uppercase leading-none mt-1">{c.holderName}</span>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="text-[6.5px] font-black text-white/45 uppercase tracking-widest block leading-none">Expires</span>
+                                <span className="text-[9.5px] font-mono font-black text-white block leading-none mt-1">{c.expiryDate}</span>
+                              </div>
+                            </div>
+
+                            {/* Unlink Beta Waitlist trigger */}
+                            <button
+                              onClick={() => handleRemoveCard(c.id)}
+                              className="absolute top-2 right-2 w-5 h-5 rounded-full bg-slate-950/40 hover:bg-rose-500/20 border border-white/5 hover:border-rose-500/30 text-slate-400 hover:text-rose-400 flex items-center justify-center transition-colors cursor-pointer text-[9px] font-bold"
+                              title="Cancel waitlist status"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Join Beta Waitlist Dotted trigger */}
+                  <button
+                    onClick={() => setShowAddCardModal(true)}
+                    className="w-full py-5 border-2 border-dashed border-white/5 hover:border-orange-500/20 hover:bg-orange-500/[0.01] rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer select-none"
+                  >
+                    <Plus className="w-5 h-5 text-orange-400/60" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Join Bank Cards Waitlist</span>
+                  </button>
+
+                </div>
+              </div>
+
+            </div>
+
+            {/* OTP VERIFICATION FLOATING MODAL OVERLAY (UI ONLY VALIDATION) */}
+            <AnimatePresence>
+              {showOtpModal && otpWallet && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-5 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => {
+                        setShowOtpModal(false);
+                        setOtpWallet(null);
+                      }}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                        <Smartphone className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">{otpWallet.provider} OTP Verification</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Dual-Factor Ledger Handshake</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4 text-center">
+                      <div className="py-2.5 px-3 bg-slate-950 border border-white/5 rounded-2xl text-left space-y-1">
+                        <span className="text-[7px] text-slate-500 font-black uppercase tracking-widest leading-none block">Target Mobile Node</span>
+                        <span className="text-xs font-mono font-bold text-white block">{otpWallet.mobileNumber}</span>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 leading-normal text-left">
+                        A secure 6-digit authentication token has been generated. For testing validation, enter any 6 digits (e.g. <strong className="text-indigo-400">123456</strong>) to securely bond this node.
+                      </p>
+
+                      <form onSubmit={handleVerifyOtp} className="space-y-4">
+                        <div className="space-y-1 text-left">
+                          <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Authentication Token</label>
+                          <input
+                            type="text"
+                            maxLength={6}
+                            value={otpCode}
+                            onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                            placeholder="------"
+                            className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-3 text-center text-lg font-mono font-black text-white tracking-widest focus:outline-none focus:border-indigo-500 transition-all placeholder:text-slate-800"
+                            autoFocus
+                          />
+                          {otpError && (
+                            <p className="text-[9.5px] text-rose-400 font-black uppercase mt-1 text-center">⚠️ {otpError}</p>
+                          )}
+                        </div>
+
+                        {/* Countdown ticker & Resend Controls */}
+                        <div className="flex items-center justify-between text-[10px] uppercase font-black tracking-wider text-slate-500 border-t border-white/5 pt-3">
+                          <span>Expiry: <strong className="text-white font-mono">{Math.floor(otpTimer / 60)}:{(otpTimer % 60).toString().padStart(2, '0')}</strong></span>
+                          <button
+                            type="button"
+                            disabled={otpResendDisabled}
+                            onClick={handleResendOtp}
+                            className={cn(
+                              "text-[9px] uppercase tracking-widest cursor-pointer",
+                              otpResendDisabled ? "text-slate-700 cursor-not-allowed" : "text-sky-400 hover:underline"
+                            )}
+                          >
+                            Resend Token
+                          </button>
+                        </div>
+
+                        <button
+                          type="submit"
+                          className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-[10.5px] uppercase tracking-widest rounded-2xl transition-all shadow-lg shadow-emerald-500/10 cursor-pointer"
+                        >
+                          Bond & Verify Wallet
+                        </button>
+                      </form>
+                    </div>
+
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* ADD WALLET MODAL */}
+            <AnimatePresence>
+              {showAddWalletModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-4 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => setShowAddWalletModal(false)}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <Plus className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight font-sans">Link Payment Wallet</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Establish physical remittance gateway</p>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleAddWallet} className="space-y-4 font-sans">
+                      {/* Provider Select */}
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Wallet Operator</label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setAddWalletProvider('bKash')}
+                            className={cn(
+                              "py-2.5 rounded-xl border font-black text-[10.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer",
+                              addWalletProvider === 'bKash' 
+                                ? "bg-[#e2136e]/15 border-[#e2136e]/40 text-[#e2136e]" 
+                                : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10"
+                            )}
+                          >
+                            <span className="w-2 h-2 rounded-full bg-[#e2136e]" />
+                            bKash
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAddWalletProvider('Nagad')}
+                            className={cn(
+                              "py-2.5 rounded-xl border font-black text-[10.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer",
+                              addWalletProvider === 'Nagad' 
+                                ? "bg-[#f64a1e]/15 border-[#f64a1e]/40 text-[#f64a1e]" 
+                                : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10"
+                            )}
+                          >
+                            <span className="w-2 h-2 rounded-full bg-[#f64a1e]" />
+                            Nagad
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Holder Name */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Account Holder Name</label>
+                        <input
+                          type="text"
+                          required
+                          value={addWalletHolder}
+                          onChange={(e) => setAddWalletHolder(e.target.value)}
+                          placeholder="e.g. TASIN ULLAH TUSHER"
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-bold uppercase tracking-wide focus:outline-none focus:border-indigo-500 transition-all placeholder:text-slate-700"
+                        />
+                      </div>
+
+                      {/* Mobile Number */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">11-Digit Mobile Number</label>
+                        <input
+                          type="text"
+                          required
+                          maxLength={11}
+                          value={addWalletMobile}
+                          onChange={(e) => setAddWalletMobile(e.target.value.replace(/\D/g, ''))}
+                          placeholder="e.g. 01713710607"
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs font-mono font-black text-white focus:outline-none focus:border-indigo-500 transition-all placeholder:text-slate-700"
+                        />
+                      </div>
+
+                      {/* Default receiving toggle */}
+                      <label className="flex items-center gap-2.5 py-1 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={addWalletDefault}
+                          onChange={(e) => setAddWalletDefault(e.target.checked)}
+                          className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 w-4 h-4"
+                        />
+                        <span className="text-[9.5px] font-black uppercase tracking-wide text-slate-400">Designate as default receiving channel</span>
+                      </label>
+
+                      <button
+                        type="submit"
+                        className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[10px] uppercase tracking-widest rounded-2xl transition-all shadow-md active:scale-[0.98] cursor-pointer mt-2"
+                      >
+                        Add & Send SMS Verification
+                      </button>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* EDIT WALLET MODAL */}
+            <AnimatePresence>
+              {showEditWalletModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-4 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => setShowEditWalletModal(false)}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Edit Wallet Info</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Modify database node settings</p>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleEditWallet} className="space-y-4">
+                      {/* Operator text */}
+                      <div className="py-2 px-3 bg-slate-950 rounded-xl border border-white/5 text-[11px] font-black uppercase text-white/50">
+                        Operator: <strong className="text-white">{editWalletProvider}</strong>
+                      </div>
+
+                      {/* Holder Name */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Account Holder Name</label>
+                        <input
+                          type="text"
+                          required
+                          value={editWalletHolder}
+                          onChange={(e) => setEditWalletHolder(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-bold uppercase tracking-wide focus:outline-none focus:border-indigo-500 transition-all"
+                        />
+                      </div>
+
+                      {/* Mobile Number */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">11-Digit Mobile Number</label>
+                        <input
+                          type="text"
+                          required
+                          maxLength={11}
+                          value={editWalletMobile}
+                          onChange={(e) => setEditWalletMobile(e.target.value.replace(/\D/g, ''))}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs font-mono font-black text-white focus:outline-none focus:border-indigo-500 transition-all"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[10px] uppercase tracking-widest rounded-2xl transition-all shadow-md cursor-pointer mt-2"
+                      >
+                        Save Wallet Node
+                      </button>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* ADD BANK CARD (BETA) MODAL */}
+            <AnimatePresence>
+              {showAddCardModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-4 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => setShowAddCardModal(false)}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-orange-400">
+                        <CreditCard className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Join Bank Card Beta</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">International Gateway Waitlist Registration</p>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleAddCard} className="space-y-4 font-sans">
+                      {/* Card Type */}
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Card Issuer</label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setAddCardType('Visa')}
+                            className={cn(
+                              "py-2.5 rounded-xl border font-black text-[10.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer",
+                              addCardType === 'Visa' 
+                                ? "bg-sky-500/15 border-sky-500/40 text-sky-400" 
+                                : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10"
+                            )}
+                          >
+                            Visa
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAddCardType('Mastercard')}
+                            className={cn(
+                              "py-2.5 rounded-xl border font-black text-[10.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer",
+                              addCardType === 'Mastercard' 
+                                ? "bg-amber-500/15 border-amber-500/40 text-amber-500" 
+                                : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10"
+                            )}
+                          >
+                            Mastercard
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Cardholder Name */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Cardholder Name (Uppercase)</label>
+                        <input
+                          type="text"
+                          required
+                          value={addCardHolder}
+                          onChange={(e) => setAddCardHolder(e.target.value)}
+                          placeholder="TASIN ULLAH TUSHER"
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white font-mono font-black uppercase tracking-wide focus:outline-none focus:border-orange-500 transition-all placeholder:text-slate-700"
+                        />
+                      </div>
+
+                      {/* Card Number */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">16-Digit Card Number</label>
+                        <input
+                          type="text"
+                          required
+                          maxLength={19}
+                          value={addCardNumber}
+                          onChange={(e) => {
+                            // Automatically format card digits in clusters of 4
+                            let v = e.target.value.replace(/\D/g, '');
+                            let formatted = v.match(/.{1,4}/g)?.join(' ') || v;
+                            setAddCardNumber(formatted);
+                          }}
+                          placeholder="4111 2222 3333 4444"
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs font-mono font-black text-white focus:outline-none focus:border-orange-500 transition-all placeholder:text-slate-700"
+                        />
+                      </div>
+
+                      {/* Expiry MM/YY */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Expiry Date (MM/YY)</label>
+                        <input
+                          type="text"
+                          required
+                          maxLength={5}
+                          value={addCardExpiry}
+                          onChange={(e) => {
+                            let v = e.target.value.replace(/\D/g, '');
+                            if (v.length > 2) {
+                              v = v.slice(0, 2) + '/' + v.slice(2, 4);
+                            }
+                            setAddCardExpiry(v);
+                          }}
+                          placeholder="09/30"
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2.5 text-xs font-mono font-black text-white focus:outline-none focus:border-orange-500 transition-all placeholder:text-slate-700"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-3.5 bg-orange-600 hover:bg-orange-500 text-white font-black text-[10px] uppercase tracking-widest rounded-2xl transition-all shadow-md cursor-pointer mt-2"
+                      >
+                        Register Waitlist Position
+                      </button>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
           </div>
         )}
 
-        {/* TAB 5: PROFILE & SECURITY (NID details, address, admin portal gateway) */}
-        {memberTab === 'profile' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 text-left animate-fade-in">
-            {/* Main personal block */}
-            <div className="lg:col-span-2 space-y-6">
-              <Card title="Member Profile" icon={Shield} subtitle="Verified Identity Signature">
-                <div className="space-y-6">
-                  <div className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
-                    <div className="w-16 h-16 rounded-full border-2 border-amber-500/40 p-0.5 flex-shrink-0 overflow-hidden bg-blue-600/20 flex items-center justify-center">
-                      {profile.photoUrl ? (
-                        <img src={profile.photoUrl} alt={profile.name} className="w-full h-full object-cover rounded-full" />
-                      ) : (
-                        <span className="text-2xl font-black text-blue-400">{profile.name.charAt(0)}</span>
-                      )}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <p className="text-sm font-black tracking-tight">{profile.name}</p>
-                        <SubscriptionBadge tier={profile.subscriptionTier} status={profile.subscriptionStatus} expiresAtStr={profile.subscriptionExpiresAt} />
-                      </div>
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{profile.occupation}</p>
-                    </div>
-                  </div>
+        {/* TAB 5: PROFILE & SETTINGS (Redesigned with user reference layout) */}
+        {memberTab === 'profile' && (() => {
+          const limit = profile.borrowingLimit ?? (profile.subscriptionTier === 'gold' ? 2500 : profile.subscriptionTier === 'silver' ? 1500 : profile.subscriptionTier === 'bronze' ? 500 : 0);
+          const remainingDebt = remainingDebtVal;
+          const availableBorrow = Math.max(0, limit - remainingDebt);
+          const usagePercent = limit > 0 ? Math.min(100, Math.round((remainingDebt / limit) * 100)) : 0;
+          const joinedDate = profile.createdAt?.toDate ? format(profile.createdAt.toDate(), 'dd MMM yyyy') : '21 Sep 2026';
+          
+          const tierDisplayName = profile.subscriptionTier === 'gold' ? 'Gold Sovereign' : profile.subscriptionTier === 'silver' ? 'Silver Executive' : profile.subscriptionTier === 'bronze' ? 'Bronze Premier' : 'Standard Member';
+          const tierColor = profile.subscriptionTier === 'gold' ? '#F59E0B' : profile.subscriptionTier === 'silver' ? '#94A3B8' : profile.subscriptionTier === 'bronze' ? '#D97706' : '#64748B';
+          const tierEmoji = profile.subscriptionTier === 'gold' ? '🥇' : profile.subscriptionTier === 'silver' ? '🥈' : profile.subscriptionTier === 'bronze' ? '🥉' : '🛡️';
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 font-sans text-xs">
-                    <div className="flex justify-between items-center py-2.5 border-b border-white/5">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Member ID</span>
-                      <span className="text-xs font-mono font-bold text-amber-400 tracking-wider">{profile.memberId}</span>
-                    </div>
-                    <div className="flex justify-between items-center py-2.5 border-b border-white/5">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">NID Passport</span>
-                      <span className="text-xs font-bold text-blue-100">{profile.nid}</span>
-                    </div>
-                    <div className="flex justify-between items-center py-2.5 border-b border-white/5">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Phone Line</span>
-                      <span className="text-xs font-bold text-blue-100">{profile.phone}</span>
-                    </div>
-                    <div className="flex justify-between items-center py-2.5 border-b border-white/5">
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Registered Residence</span>
-                      <span className="text-xs font-bold text-blue-100 truncate max-w-[150px]" title={profile.address}>{profile.address}</span>
-                    </div>
-                  </div>
+          const fields = [profile.name, profile.nid, profile.address, profile.occupation, profile.phone, profile.email, profile.photoUrl, profile.fatherName, profile.motherName, profile.dob, profile.bloodGroup, profile.emergencyContact, profile.nomineeName, profile.nomineeRelation, profile.permanentAddress, profile.referenceContact];
+          const filled = fields.filter(Boolean).length;
+          const completeness = Math.round((filled / fields.length) * 100);
+          const healthScore = remainingDebt > 0 ? Math.max(60, 100 - Math.floor((remainingDebt / limit) * 40)) : 100;
 
-                  <div className="pt-6 border-t border-white/5 flex flex-col sm:flex-row gap-4">
-                    <Button variant="glass" className="flex-1 py-4 text-xs uppercase tracking-[0.2em] font-black" onClick={() => setShowProfileModal(true)}>
-                      <User className="w-3.5 h-3.5" />
-                      Edit Profile Info
-                    </Button>
-                    <Button variant="outline" className="flex-1 py-4 text-xs uppercase tracking-[0.2em] font-black" onClick={() => setShowAdminLogin(true)}>
-                      <Lock className="w-3.5 h-3.5" />
-                      Admin Security Portal
-                    </Button>
+          return (
+            <div className="space-y-3.5 text-left animate-fade-in select-none pb-24 max-w-md mx-auto">
+              
+              {/* TOPBAR */}
+              <div className="flex items-center justify-between pb-1 border-b border-white/5">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setMemberTab('dashboard')}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shadow-sm"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" /> Back
+                  </button>
+                  <div>
+                    <h1 className="text-sm font-black text-white tracking-tight leading-none">T.U.T.</h1>
+                    <p className="text-[8px] font-bold tracking-[0.14em] text-slate-400 uppercase mt-0.5">Money Lending Authority</p>
                   </div>
                 </div>
-              </Card>
-            </div>
 
-            {/* Side instructions block */}
-            <div className="space-y-6">
-              <div className="glass p-6 rounded-3xl border-blue-500/10">
-                <h4 className="text-xs font-black text-white uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-blue-400" />
-                  Security Guarantee
-                </h4>
-                <p className="text-[10px] text-slate-400 leading-relaxed font-medium">
-                  Your private ledger identity is sealed using digital cryptography keys. All loan distributions and reserves are backed by strategic institutional partnerships. Never share your credential profiles.
+                <div className="flex items-center gap-1.5">
+                  <a
+                    href="https://wa.me/8801713710607"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-1.5 rounded-xl bg-slate-900 border border-white/10 text-emerald-400 hover:bg-slate-800 transition-all cursor-pointer"
+                    title="Live Support"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                  </a>
+                  <button
+                    onClick={() => setMemberTab('dashboard')}
+                    className="p-1.5 rounded-xl bg-slate-900 border border-white/10 text-slate-400 hover:text-white transition-all cursor-pointer"
+                    title="Home"
+                  >
+                    <Home className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* HERO CARD */}
+              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-900/90 via-slate-900/60 to-slate-950 border border-white/10 p-3.5 sm:p-4 shadow-xl">
+                <div className="flex items-center gap-3">
+                  {/* Avatar */}
+                  <div className="relative w-13 h-13 rounded-full flex-shrink-0 flex items-center justify-center border-2" style={{ borderColor: tierColor }}>
+                    {profile.photoUrl ? (
+                      <img src={profile.photoUrl} alt={profile.name} className="w-full h-full object-cover rounded-full" />
+                    ) : (
+                      <div className="w-full h-full rounded-full bg-slate-900 flex items-center justify-center text-xl font-black text-blue-400">
+                        {profile.name.charAt(0)}
+                      </div>
+                    )}
+                    <span className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 rounded-full border-2 border-slate-950" />
+                  </div>
+
+                  {/* Name and Badges */}
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <h2 className="text-sm sm:text-base font-black text-white tracking-tight truncate leading-tight">
+                      {profile.name}
+                    </h2>
+                    
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="inline-flex items-center gap-0.5 text-[8.5px] font-bold tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded-md leading-none font-mono">
+                        <ShieldCheck className="w-2.5 h-2.5" /> VERIFIED KYC L3
+                      </span>
+                      <span 
+                        className="inline-flex items-center gap-0.5 text-[8.5px] font-bold tracking-wider px-1.5 py-0.5 rounded-md leading-none uppercase font-mono"
+                        style={{ color: tierColor, backgroundColor: `${tierColor}15`, border: `1px solid ${tierColor}35` }}
+                      >
+                        {tierEmoji} {tierDisplayName}
+                      </span>
+                      <button
+                        onClick={() => {
+                          if (profile.memberId) {
+                            navigator.clipboard.writeText(profile.memberId);
+                            alert('Member ID copied!');
+                          }
+                        }}
+                        className="inline-flex items-center gap-0.5 text-[8.5px] font-mono text-slate-400 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded-md hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+                        title="Click to copy ID"
+                      >
+                        <span>{profile.memberId || 'TUT-MBR-PENDING'}</span>
+                        <Copy className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[9.5px] text-slate-400 font-medium mt-2.5 pt-2 border-t border-white/5">
+                  {profile.occupation || 'Member'} &nbsp;•&nbsp; Joined {joinedDate} &nbsp;•&nbsp; <span className="text-emerald-400 font-bold">Lifetime Active</span>
                 </p>
               </div>
 
-              <div className="p-6 rounded-3xl bg-blue-950/10 border border-blue-500/10 text-center">
-                <HelpCircle className="w-8 h-8 text-blue-400/40 mx-auto mb-2" />
-                <h5 className="text-[10px] font-black text-white uppercase tracking-widest">Need Direct Support?</h5>
-                <p className="text-[9px] text-slate-400 mt-1">Our authority officers are active 24/7. Reach support inside the nearest physical reserve.</p>
+              {/* LEDGER STATS CARD */}
+              <div className="rounded-2xl bg-gradient-to-br from-slate-900/80 to-slate-950/80 border border-white/10 p-3 sm:p-3.5 shadow-lg space-y-2.5">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <span className="block text-[8px] font-bold uppercase tracking-wider text-slate-400 leading-tight">
+                      TOTAL<br />DEPOSITS
+                    </span>
+                    <span className="text-xs sm:text-sm font-black font-mono text-emerald-400 mt-1 block">
+                      ৳{(profile.totalDeposit || 0).toLocaleString()}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="block text-[8px] font-bold uppercase tracking-wider text-slate-400 leading-tight">
+                      OUTSTANDING<br />DEBT
+                    </span>
+                    <span className={cn("text-xs sm:text-sm font-black font-mono mt-1 block", remainingDebt > 0 ? "text-rose-400" : "text-white")}>
+                      ৳{remainingDebt.toLocaleString()}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="block text-[8px] font-bold uppercase tracking-wider text-slate-400 leading-tight">
+                      BORROW<br />CAPACITY
+                    </span>
+                    <span className="text-xs sm:text-sm font-black font-mono text-blue-400 mt-1 block">
+                      ৳{availableBorrow.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="h-[1px] bg-white/5" />
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[8.5px] font-bold uppercase text-slate-400 tracking-wider">
+                    <span>RESERVE LIMIT USED</span>
+                    <span className="font-mono text-emerald-400">{usagePercent}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-slate-950/80 rounded-full overflow-hidden border border-white/5">
+                    <div 
+                      className={cn(
+                        "h-full rounded-full transition-all duration-500",
+                        usagePercent > 75 ? "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]" : "bg-gradient-to-r from-blue-500 to-sky-400 shadow-[0_0_6px_rgba(59,130,246,0.4)]"
+                      )}
+                      style={{ width: `${usagePercent}%` }}
+                    />
+                  </div>
+                </div>
               </div>
-            </div>
+
+              {/* QUICK ACTIONS */}
+              <div className="space-y-1.5 pt-0.5">
+                <h3 className="text-[9.5px] font-black uppercase tracking-[0.18em] text-slate-400 ml-1">
+                  QUICK ACTIONS
+                </h3>
+                
+                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                  {/* Action 1: Edit Profile */}
+                  <button
+                    onClick={() => setShowProfileModal(true)}
+                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-blue-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-blue-600/15 border border-blue-500/30 flex items-center justify-center text-blue-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                      <User className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Edit<br />Profile</span>
+                  </button>
+
+                  {/* Action 2: QR Verify */}
+                  <button
+                    onClick={() => setShowQrModal(true)}
+                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-indigo-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-indigo-600/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                      <Fingerprint className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">QR<br />Verify</span>
+                  </button>
+
+                  {/* Action 3: Admin Entrance */}
+                  <button
+                    onClick={() => setShowAdminLogin(true)}
+                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-amber-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-amber-600/15 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                      <Cpu className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Admin<br />Entrance</span>
+                  </button>
+
+                  {/* Action 4: Download Card */}
+                  <button
+                    onClick={() => {
+                      setSelectedDoc({
+                        id: 'CERT-MEMB-2026',
+                        type: 'certificate',
+                        amount: 0,
+                        method: 'Cash',
+                        status: 'confirmed',
+                        memoId: `CERT-${profile.memberId}`
+                      });
+                    }}
+                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-teal-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-teal-600/15 border border-teal-500/30 flex items-center justify-center text-teal-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                      <Download className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Download<br />Card</span>
+                  </button>
+
+                  {/* Action 5: Change PIN */}
+                  <button
+                    onClick={() => setShowPinModal(true)}
+                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-purple-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-purple-600/15 border border-purple-500/30 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                      <Lock className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Change<br />PIN</span>
+                  </button>
+
+                  {/* Action 6: Manage Wallets */}
+                  <button
+                    onClick={() => setMemberTab('wallets')}
+                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-pink-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-pink-600/15 border border-pink-500/30 flex items-center justify-center text-pink-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                      <CreditCard className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Manage<br />Accounts</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* ACCOUNT SETTINGS GROUPS */}
+              <div className="space-y-2 pt-1">
+                <h3 className="text-[9.5px] font-black uppercase tracking-[0.18em] text-slate-400 ml-1">
+                  ACCOUNT SETTINGS
+                </h3>
+
+                {/* Group 1: Personal Information */}
+                <details open className="group rounded-2xl bg-slate-900/40 border border-white/10 hover:border-slate-700/80 transition-all overflow-hidden">
+                  <summary className="list-none cursor-pointer p-3 sm:p-3.5 flex items-center gap-2.5 select-none transition-colors hover:bg-white/[0.02]">
+                    <div className="w-8 h-8 rounded-xl bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400 shrink-0">
+                      <User className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white tracking-tight">Personal Information</div>
+                      <div className="text-[9px] text-slate-400 font-medium">Demographics · Contact · Address</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-open:rotate-90 transition-transform duration-200 shrink-0" />
+                  </summary>
+                  <div className="px-3 sm:px-3.5 pb-3 pt-1 border-t border-white/5 space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Father's Name</span>
+                      <span className="font-semibold text-white text-[11px]">{profile.fatherName || 'Not Specified'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Mother's Name</span>
+                      <span className="font-semibold text-white text-[11px]">{profile.motherName || 'Not Specified'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Date of Birth</span>
+                      <span className="font-semibold font-mono text-white text-[11px]">{profile.dob || 'Not Specified'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Blood Group</span>
+                      <span className={cn("font-semibold font-mono text-[11px]", profile.bloodGroup ? "text-rose-400" : "text-slate-400")}>
+                        {profile.bloodGroup || 'Not Specified'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Occupation</span>
+                      <span className="font-semibold text-white text-[11px]">{profile.occupation || 'Chief Admin'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Phone Line</span>
+                      <span className="font-semibold font-mono text-white text-[11px]">{profile.phone}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Email</span>
+                      <span className="font-semibold text-white text-[11px] truncate max-w-[170px]">{profile.email || 'Not Specified'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Registered Address</span>
+                      <span className="font-semibold text-slate-200 text-[11px] truncate max-w-[170px]">{profile.address}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Permanent Address</span>
+                      <span className="font-semibold text-slate-300 text-[11px] truncate max-w-[170px]">{profile.permanentAddress || 'Same as Registered'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Emergency Contact</span>
+                      <span className="font-semibold font-mono text-white text-[11px]">{profile.emergencyContact || 'Not Specified'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Reference Contact</span>
+                      <span className="font-semibold font-mono text-white text-[11px]">{profile.referenceContact || 'Not Specified'}</span>
+                    </div>
+
+                    <button 
+                      onClick={() => setShowProfileModal(true)}
+                      className="w-full flex items-center justify-between pt-2 pb-0.5 border-t border-white/5 text-blue-400 hover:text-blue-300 font-bold text-[11px] cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <User className="w-3.5 h-3.5" /> Edit Profile Info
+                      </span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                    </button>
+                  </div>
+                </details>
+
+                {/* Group 2: Government ID Verification */}
+                <details className="group rounded-2xl bg-slate-900/40 border border-white/10 hover:border-slate-700/80 transition-all overflow-hidden">
+                  <summary className="list-none cursor-pointer p-3 sm:p-3.5 flex items-center gap-2.5 select-none transition-colors hover:bg-white/[0.02]">
+                    <div className="w-8 h-8 rounded-xl bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
+                      <ShieldCheck className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white tracking-tight">Government ID Verification</div>
+                      <div className="text-[9px] text-slate-400 font-medium">KYC Approved · Level 3</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-open:rotate-90 transition-transform duration-200 shrink-0" />
+                  </summary>
+                  <div className="px-3 sm:px-3.5 pb-3 pt-1 border-t border-white/5 space-y-2 text-xs">
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">National ID / Passport</span>
+                      <span className="font-bold font-mono text-white text-[11px]">{profile.nid}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">KYC Status</span>
+                      <span className="text-[8.5px] font-bold uppercase text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 rounded-full font-mono">
+                        Approved Level 3
+                      </span>
+                    </div>
+
+                    {/* Government ID Visual Representation */}
+                    <div className="rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 border border-blue-500/20 p-2.5 space-y-1.5">
+                      <p className="text-[7px] font-bold text-slate-400 tracking-wider uppercase">
+                        GOVERNMENT IDENTIFICATION · PEOPLE'S REPUBLIC OF BANGLADESH
+                      </p>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-lg bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-[9px] font-black text-blue-400 shrink-0">
+                          NID
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-black text-white truncate">{profile.name}</p>
+                          <p className="text-[8.5px] font-mono text-slate-400">No: {profile.nid}</p>
+                          <p className="text-[7.5px] font-bold text-emerald-400 mt-0.5">● System Compliant</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+
+                {/* Group 3: Membership & Limits */}
+                <details className="group rounded-2xl bg-slate-900/40 border border-white/10 hover:border-slate-700/80 transition-all overflow-hidden">
+                  <summary className="list-none cursor-pointer p-3 sm:p-3.5 flex items-center gap-2.5 select-none transition-colors hover:bg-white/[0.02]">
+                    <div className="w-8 h-8 rounded-xl bg-amber-600/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+                      <TrendingUp className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white tracking-tight">Membership & Limits</div>
+                      <div className="text-[9px] text-slate-400 font-medium">{tierDisplayName} · Lifetime Active</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-open:rotate-90 transition-transform duration-200 shrink-0" />
+                  </summary>
+                  <div className="px-3 sm:px-3.5 pb-3 pt-1 border-t border-white/5 space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Active Tier Level</span>
+                      <span className="font-bold flex items-center gap-1.5 text-[11px]" style={{ color: tierColor }}>
+                        <span>{tierEmoji}</span>
+                        <span>{tierDisplayName}</span>
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Reserve Credit Limit</span>
+                      <span className="font-bold font-mono text-white text-[11px]">৳{limit.toLocaleString()} BDT</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Membership Validity</span>
+                      <span className="font-bold text-purple-400 text-[11px]">
+                        {profile.subscriptionStatus === 'active' && profile.subscriptionExpiresAt 
+                          ? `Valid till ${format(new Date(profile.subscriptionExpiresAt), 'dd MMM yyyy')}`
+                          : 'Lifetime Active'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Interest Concession</span>
+                      <span className="font-bold text-emerald-400 text-[11px]">
+                        {profile.subscriptionTier === 'gold' ? '-5.0% Reduced' :
+                         profile.subscriptionTier === 'silver' ? '-3.0% Reduced' :
+                         profile.subscriptionTier === 'bronze' ? '-1.5% Reduced' : 'Base Rate'}
+                      </span>
+                    </div>
+
+                    <div className="pt-1 space-y-0.5">
+                      <button
+                        onClick={() => {
+                          setMemberTab('memos');
+                          setDocFilter('loans');
+                        }}
+                        className="w-full flex items-center justify-between py-1 text-slate-300 hover:text-white font-semibold text-[10.5px] cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <TrendingUp className="w-3.5 h-3.5 text-blue-400" /> Loan History
+                        </span>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setMemberTab('memos');
+                          setDocFilter('all');
+                        }}
+                        className="w-full flex items-center justify-between py-1 text-slate-300 hover:text-white font-semibold text-[10.5px] cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <FileText className="w-3.5 h-3.5 text-blue-400" /> Ledger Statements
+                        </span>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                      </button>
+                    </div>
+                  </div>
+                </details>
+
+                {/* Group 4: Security & Sessions */}
+                <details className="group rounded-2xl bg-slate-900/40 border border-white/10 hover:border-slate-700/80 transition-all overflow-hidden">
+                  <summary className="list-none cursor-pointer p-3 sm:p-3.5 flex items-center gap-2.5 select-none transition-colors hover:bg-white/[0.02]">
+                    <div className="w-8 h-8 rounded-xl bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                      <Lock className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white tracking-tight">Security & Sessions</div>
+                      <div className="text-[9px] text-slate-400 font-medium">Health {healthScore}% · Device Bonded</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-open:rotate-90 transition-transform duration-200 shrink-0" />
+                  </summary>
+                  <div className="px-3 sm:px-3.5 pb-3 pt-1 border-t border-white/5 space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Account Health Score</span>
+                      <span className="font-bold text-emerald-400 text-[11px]">{healthScore}% {healthScore >= 90 ? 'Excellent' : 'Good'}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Profile Completion</span>
+                      <span className="font-bold font-mono text-blue-400 text-[11px]">{completeness}%</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Device Enclave Shield</span>
+                      <span className="font-bold text-emerald-400 uppercase tracking-wider text-[10px]">Active & Bonded</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1 border-b border-white/5">
+                      <span className="text-[9.5px] font-bold uppercase text-slate-400">Device IP Node</span>
+                      <span className="font-bold font-mono text-slate-400 text-[11px]">103.14.24.72</span>
+                    </div>
+
+                    <div className="pt-1 space-y-0.5">
+                      <button
+                        onClick={() => setShowSecuritySettingsModal(true)}
+                        className="w-full flex items-center justify-between py-1 text-slate-300 hover:text-white font-semibold text-[10.5px] cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Shield className="w-3.5 h-3.5 text-blue-400" /> Security Settings
+                        </span>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                      </button>
+                      <button
+                        onClick={() => setShowPinModal(true)}
+                        className="w-full flex items-center justify-between py-1 text-slate-300 hover:text-white font-semibold text-[10.5px] cursor-pointer"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Lock className="w-3.5 h-3.5 text-blue-400" /> Change PIN
+                        </span>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                      </button>
+                    </div>
+
+                    {/* Timeline */}
+                    <div className="pt-2 border-t border-white/5 space-y-1.5">
+                      <div className="flex gap-2 items-start">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1 shrink-0" />
+                        <div>
+                          <p className="text-[9.5px] font-bold text-white leading-tight">Authentication Successful</p>
+                          <p className="text-[8px] text-slate-400">Chrome session verified via secure key exchange · Just now</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 items-start">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-1 shrink-0" />
+                        <div>
+                          <p className="text-[9.5px] font-bold text-white leading-tight">Identity Keys Signed</p>
+                          <p className="text-[8px] text-slate-400">Authority handshake validated · 3 hours ago</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 items-start">
+                        <span className="w-1.5 h-1.5 rounded-full bg-slate-500 mt-1 shrink-0" />
+                        <div>
+                          <p className="text-[9.5px] font-bold text-slate-400 leading-tight">Session Key Refreshed</p>
+                          <p className="text-[8px] text-slate-500">Ledger session auto-rolled for privacy · 24 hours ago</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+
+                {/* Group 5: Linked Payment Wallets */}
+                <details className="group rounded-2xl bg-slate-900/40 border border-white/10 hover:border-slate-700/80 transition-all overflow-hidden">
+                  <summary className="list-none cursor-pointer p-3 sm:p-3.5 flex items-center gap-2.5 select-none transition-colors hover:bg-white/[0.02]">
+                    <div className="w-8 h-8 rounded-xl bg-pink-600/10 border border-pink-500/20 flex items-center justify-center text-pink-400 shrink-0">
+                      <Wallet className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white tracking-tight">Linked Payment Wallets</div>
+                      <div className="text-[9px] text-slate-400 font-medium">3 gateways · Nagad, bKash, Cash</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-open:rotate-90 transition-transform duration-200 shrink-0" />
+                  </summary>
+                  <div className="px-3 sm:px-3.5 pb-3 pt-1 border-t border-white/5 space-y-2 text-xs">
+                    {/* Wallets list */}
+                    {wallets.length === 0 ? (
+                      <div className="py-2 text-center text-slate-400 text-[10px]">
+                        No external digital wallets linked yet.
+                      </div>
+                    ) : (
+                      wallets.map((w) => {
+                        const isbKash = w.provider === 'bKash';
+                        const colorClass = isbKash ? '#e2136e' : '#f64a1e';
+                        const maskNum = w.mobileNumber.slice(0, 3) + '***' + w.mobileNumber.slice(-4);
+                        return (
+                          <div key={w.id} className="flex items-center justify-between py-1 border-b border-white/5">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div className="w-6 h-6 rounded-md flex items-center justify-center text-white font-black text-[9px] shrink-0" style={{ backgroundColor: colorClass }}>
+                                {isbKash ? 'bK' : 'Ng'}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold text-white truncate text-[10.5px]">
+                                  {w.provider} Wallet Node {w.isDefault && <span className="text-amber-400">★</span>}
+                                </div>
+                                <div className="text-[8.5px] font-mono text-slate-400">{maskNum}</div>
+                              </div>
+                            </div>
+                            <span className="text-[7.5px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded uppercase font-mono">
+                              {w.isVerified ? 'Bonded' : 'Pending'}
+                            </span>
+                          </div>
+                        );
+                      })
+                    )}
+
+                    {/* Physical Reserve Cash */}
+                    <div className="flex items-center justify-between py-1 border-b border-white/5">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded-md bg-emerald-700/80 flex items-center justify-center text-white font-black text-[11px] shrink-0">
+                          ৳
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-white text-[10.5px]">Physical Reserve Ledger</div>
+                          <div className="text-[8.5px] text-slate-400">Over-the-counter handover</div>
+                        </div>
+                      </div>
+                      <span className="text-[7.5px] font-bold text-slate-400 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded font-mono">
+                        Always Active
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => setMemberTab('wallets')}
+                      className="w-full mt-1.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-200 font-bold text-[9.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      <span>MANAGE PAYMENT METHODS</span>
+                      <ChevronRight className="w-3 h-3 text-slate-400" />
+                    </button>
+                  </div>
+                </details>
+
+                {/* Group 6: Manage Accounts */}
+                <details className="group rounded-2xl bg-slate-900/40 border border-white/10 hover:border-slate-700/80 transition-all overflow-hidden">
+                  <summary className="list-none cursor-pointer p-3 sm:p-3.5 flex items-center gap-2.5 select-none transition-colors hover:bg-white/[0.02]">
+                    <div className="w-8 h-8 rounded-xl bg-sky-600/10 border border-sky-500/20 flex items-center justify-center text-sky-400 shrink-0">
+                      <CreditCard className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs sm:text-sm font-bold text-white tracking-tight">Manage Accounts & Documents</div>
+                      <div className="text-[9px] text-slate-400 font-medium">Cards · Linked bank accounts</div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-open:rotate-90 transition-transform duration-200 shrink-0" />
+                  </summary>
+                  <div className="px-3 sm:px-3.5 pb-3 pt-1 border-t border-white/5 space-y-1 text-xs">
+                    <button
+                      onClick={() => setMemberTab('wallets')}
+                      className="w-full flex items-center justify-between py-1.5 text-slate-300 hover:text-white font-semibold text-[10.5px] cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <CreditCard className="w-3.5 h-3.5 text-blue-400" /> Manage Accounts
+                      </span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedDoc({
+                          id: 'CERT-MEMB-2026',
+                          type: 'certificate',
+                          amount: 0,
+                          method: 'Cash',
+                          status: 'confirmed',
+                          memoId: `CERT-${profile.memberId}`
+                        });
+                      }}
+                      className="w-full flex items-center justify-between py-1.5 text-slate-300 hover:text-white font-semibold text-[10.5px] cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Download className="w-3.5 h-3.5 text-teal-400" /> Download Card
+                      </span>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                    </button>
+                  </div>
+                </details>
+              </div>
+
+              {/* DANGER ZONE */}
+              <div className="pt-2.5 space-y-1.5">
+                <div className="text-[9px] font-black uppercase tracking-[0.18em] text-rose-400/90 ml-1">
+                  DANGER ZONE
+                </div>
+                <button
+                  onClick={() => signOut(auth)}
+                  className="w-full py-3 rounded-2xl bg-rose-950/20 border border-rose-500/30 hover:bg-rose-500/10 text-rose-400 text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm active:scale-[0.99]"
+                >
+                  <LogOut className="w-4 h-4 text-rose-400" />
+                  <span>Secure Ledger Log Out</span>
+                </button>
+              </div>
+
+              {/* QR Modal Overlay */}
+            <AnimatePresence>
+              {showQrModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 text-center space-y-5 shadow-2xl"
+                  >
+                    <button
+                      onClick={() => setShowQrModal(false)}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                    
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-black text-white uppercase tracking-widest">Digital Identity Pass</h4>
+                      <p className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">T.U.T Money Authority Ledger</p>
+                    </div>
+
+                    {/* QR Code Graphic Container */}
+                    <div className="relative mx-auto w-48 h-48 bg-white p-4 rounded-2xl flex items-center justify-center shadow-lg overflow-hidden">
+                      {/* Active scanning bar animation */}
+                      <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-blue-500 to-indigo-500 opacity-60 shadow-[0_0_8px_rgba(59,130,246,0.8)] animate-bounce" style={{ animationDuration: '3s' }} />
+                      
+                      {/* High resolution simulated vector QR Code using custom SVG */}
+                      <svg className="w-full h-full text-slate-900" viewBox="0 0 100 100" fill="currentColor">
+                        {/* Position detection patterns (Three corners) */}
+                        <path d="M0,0 h25 v25 h-25 z M5,5 h15 v15 h-15 z M8,8 h9 v9 h-9 z" />
+                        <path d="M75,0 h25 v25 h-25 z M80,5 h15 v15 h-15 z M83,8 h9 v9 h-9 z" />
+                        <path d="M0,75 h25 v25 h-25 z M5,80 h15 v15 h-15 z M8,83 h9 v9 h-9 z" />
+                        {/* Alignment pattern (bottom-right) */}
+                        <path d="M72,72 h12 v12 h-12 z M75,75 h6 v6 h-6 z" />
+                        {/* Random pseudo-QR dots */}
+                        <path d="M30,2 h4 v4 h-4 z M38,0 h6 v2 h-6 z M48,4 h4 v4 h-4 z M32,10 h2 v6 h-2 z M40,12 h6 v2 h-6 z M30,20 h6 v4 h-6 z M44,22 h8 v2 h-8 z" />
+                        <path d="M2,30 h4 v4 h-4 z M10,32 h6 v2 h-6 z M2,40 h4 v4 h-4 z M12,42 h4 v2 h-4 z M22,30 h4 v6 h-4 z M20,44 h6 v2 h-6 z" />
+                        <path d="M30,30 h8 v8 h-8 z M32,32 h4 v4 h-4 z M42,32 h8 v4 h-8 z M34,42 h6 v6 h-6 z M44,40 h4 v8 h-4 z" />
+                        <path d="M55,2 h4 v10 h-4 z M62,0 h8 v4 h-8 z M55,16 h12 v4 h-12 z M60,22 h4 v4 h-4 z" />
+                        <path d="M2,55 h4 v12 h-4 z M12,58 h6 v4 h-6 z M22,55 h4 v10 h-4 z M10,64 h10 v4 h-10 z" />
+                        <path d="M30,55 h12 v4 h-12 z M34,62 h6 v4 h-6 z M30,70 h8 v4 h-8 z M42,66 h6 v8 h-6 z" />
+                        <path d="M55,55 h8 v8 h-8 z M57,57 h4 v4 h-4 z M68,55 h6 v4 h-6 z M55,66 h10 v4 h-10 z M68,68 h4 v6 h-4 z" />
+                        <path d="M55,30 h8 v4 h-8 z M66,32 h6 v6 h-6 z M58,40 h12 v4 h-12 z M55,46 h4 v4 h-4 z" />
+                        <path d="M78,30 h10 v4 h-10 z M80,38 h6 v4 h-6 z M76,44 h12 v4 h-12 z M88,48 h4 v4 h-4 z" />
+                        <path d="M78,55 h10 v4 h-10 z M82,62 h6 v4 h-6 z M88,60 h4 v4 h-4 z" />
+                      </svg>
+                    </div>
+
+                    <div className="space-y-1.5 bg-slate-950/50 p-3.5 rounded-2xl border border-white/5">
+                      <p className="text-xs font-black text-white">{profile.name.toUpperCase()}</p>
+                      <p className="text-[10px] font-mono font-bold text-amber-400">{profile.memberId}</p>
+                      <div className="text-[7px] font-mono text-slate-500 uppercase tracking-widest break-all">
+                        SIGN: {profile.uid.substring(0, 16).toUpperCase()}...
+                      </div>
+                    </div>
+
+                    <div className="text-[9px] text-slate-400 font-medium leading-relaxed">
+                      Present this secure pass at physical T.U.T Money Lending Authority reserves to verify identity signature instantly.
+                    </div>
+
+                    <Button
+                      onClick={() => setShowQrModal(false)}
+                      variant="outline"
+                      className="w-full py-3 text-[10px] uppercase tracking-widest font-black"
+                    >
+                      Close Identity Pass
+                    </Button>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* PIN Change Modal Overlay */}
+            <AnimatePresence>
+              {showPinModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-5 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => {
+                        setShowPinModal(false);
+                        setPinChangeSuccess(false);
+                        setNewPin('');
+                        setConfirmNewPin('');
+                      }}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Security PIN Update</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Change digital signature PIN</p>
+                      </div>
+                    </div>
+
+                    {pinChangeSuccess ? (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-center space-y-2.5"
+                      >
+                        <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto animate-bounce" />
+                        <h5 className="text-xs font-black text-white uppercase tracking-wider">PIN Code Updated</h5>
+                        <p className="text-[9px] text-slate-400 leading-relaxed">
+                          Your ledger security PIN has been encrypted and rotated successfully. Future withdrawals and transfers will require this new signature.
+                        </p>
+                        <Button
+                          onClick={() => {
+                            setShowPinModal(false);
+                            setPinChangeSuccess(false);
+                          }}
+                          className="w-full text-[10px] uppercase font-black tracking-widest mt-2"
+                        >
+                          Acknowledge & Close
+                        </Button>
+                      </motion.div>
+                    ) : (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (newPin.length !== 4 || isNaN(Number(newPin))) {
+                            alert('PIN must be exactly 4 numeric digits.');
+                            return;
+                          }
+                          if (newPin !== confirmNewPin) {
+                            alert('PINs do not match!');
+                            return;
+                          }
+                          setPinChangeSuccess(true);
+                        }}
+                        className="space-y-4"
+                      >
+                        <p className="text-[9.5px] text-slate-400 leading-normal">
+                          Rotates your 4-digit ledger authorization code. Keep this PIN private to secure your outstanding deposits and reserve balances.
+                        </p>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[8px] font-black uppercase text-slate-400 tracking-widest">New 4-Digit Security PIN</label>
+                          <input
+                            type="password"
+                            maxLength={4}
+                            pattern="[0-9]*"
+                            inputMode="numeric"
+                            value={newPin}
+                            onChange={(e) => setNewPin(e.target.value)}
+                            placeholder="••••"
+                            className="w-full bg-slate-950 border border-white/5 focus:border-indigo-500/40 rounded-xl px-3 py-2.5 text-center text-lg font-mono font-black text-white outline-none transition-colors"
+                            required
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[8px] font-black uppercase text-slate-400 tracking-widest">Confirm Security PIN</label>
+                          <input
+                            type="password"
+                            maxLength={4}
+                            pattern="[0-9]*"
+                            inputMode="numeric"
+                            value={confirmNewPin}
+                            onChange={(e) => setConfirmNewPin(e.target.value)}
+                            placeholder="••••"
+                            className="w-full bg-slate-950 border border-white/5 focus:border-indigo-500/40 rounded-xl px-3 py-2.5 text-center text-lg font-mono font-black text-white outline-none transition-colors"
+                            required
+                          />
+                        </div>
+
+                        <Button
+                          type="submit"
+                          className="w-full py-3.5 text-[10px] uppercase tracking-widest font-black bg-gradient-to-r from-indigo-600 to-blue-600"
+                        >
+                          Encrypt & Save New PIN
+                        </Button>
+                      </form>
+                    )}
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* Advanced Security Settings Modal */}
+            <AnimatePresence>
+              {showSecuritySettingsModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-5 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => setShowSecuritySettingsModal(false)}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
+                        <Shield className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Advanced Security Settings</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Configure hardware & ledger guards</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <p className="text-[9.5px] text-slate-400 leading-normal">
+                        Toggle advanced cryptographical safeguards. Enabling these layers ensures strict compliance with physical reserve policies.
+                      </p>
+
+                      {/* Toggle 1 */}
+                      <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-950/50 border border-white/5">
+                        <div className="space-y-0.5">
+                          <p className="text-[10px] font-black text-white uppercase tracking-tight">Two-Factor (2FA) Logs</p>
+                          <p className="text-[8px] text-slate-500">Require email tokens for withdrawals</p>
+                        </div>
+                        <button
+                          onClick={() => setTwoFactorEnabled(!twoFactorEnabled)}
+                          className={`w-10 h-5.5 rounded-full p-0.5 transition-colors duration-300 relative focus:outline-none ${twoFactorEnabled ? 'bg-blue-600' : 'bg-slate-800'}`}
+                        >
+                          <div className={`w-4.5 h-4.5 rounded-full bg-white shadow-md transform transition-transform duration-300 ${twoFactorEnabled ? 'translate-x-4.5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+
+                      {/* Toggle 2 */}
+                      <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-950/50 border border-white/5">
+                        <div className="space-y-0.5">
+                          <p className="text-[10px] font-black text-white uppercase tracking-tight">Biometric Device Bond</p>
+                          <p className="text-[8px] text-slate-500">Enforce Touch ID / Face ID hardware keys</p>
+                        </div>
+                        <button
+                          onClick={() => setBiometricsEnabled(!biometricsEnabled)}
+                          className={`w-10 h-5.5 rounded-full p-0.5 transition-colors duration-300 relative focus:outline-none ${biometricsEnabled ? 'bg-blue-600' : 'bg-slate-800'}`}
+                        >
+                          <div className={`w-4.5 h-4.5 rounded-full bg-white shadow-md transform transition-transform duration-300 ${biometricsEnabled ? 'translate-x-4.5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+
+                      {/* Toggle 3 */}
+                      <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-950/50 border border-white/5">
+                        <div className="space-y-0.5">
+                          <p className="text-[10px] font-black text-white uppercase tracking-tight">WhatsApp Audit Alerts</p>
+                          <p className="text-[8px] text-slate-500">Ping real-time transaction ledger updates</p>
+                        </div>
+                        <button
+                          onClick={() => setAlertLogsEnabled(!alertLogsEnabled)}
+                          className={`w-10 h-5.5 rounded-full p-0.5 transition-colors duration-300 relative focus:outline-none ${alertLogsEnabled ? 'bg-blue-600' : 'bg-slate-800'}`}
+                        >
+                          <div className={`w-4.5 h-4.5 rounded-full bg-white shadow-md transform transition-transform duration-300 ${alertLogsEnabled ? 'translate-x-4.5' : 'translate-x-0'}`} />
+                        </button>
+                      </div>
+
+                      <Button
+                        onClick={() => setShowSecuritySettingsModal(false)}
+                        className="w-full py-3.5 text-[10px] uppercase tracking-widest font-black mt-2"
+                      >
+                        Apply and Save Changes
+                      </Button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* Linked Payment Accounts Manager */}
+            <AnimatePresence>
+              {showLinkedAccountsModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md">
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="relative w-full max-w-sm bg-slate-900 border border-white/10 rounded-3xl p-6 space-y-5 shadow-2xl text-left"
+                  >
+                    <button
+                      onClick={() => setShowLinkedAccountsModal(false)}
+                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2 border-b border-white/5 pb-3">
+                      <div className="w-7 h-7 rounded-lg bg-pink-500/10 border border-pink-500/20 flex items-center justify-center text-pink-400">
+                        <CreditCard className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight">Linked Payment Accounts</h4>
+                        <p className="text-[8px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">Manage automated wallet nodes</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <p className="text-[9.5px] text-slate-400 leading-normal">
+                        Verify and link digital wallet numbers. Automated deposits and loan payoffs will deduct directly from these verified nodes.
+                      </p>
+
+                      <div className="space-y-3">
+                        {/* Option 1: bKash */}
+                        <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-white/5 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <span className="w-6 h-6 rounded bg-[#e2136e] flex items-center justify-center text-white text-[9px] font-black">bK</span>
+                            <div>
+                              <p className="text-[10px] font-black text-white leading-none">bKash Account Number</p>
+                              <p className="text-[8px] font-mono text-slate-400 mt-1">{profile.phone}</p>
+                            </div>
+                          </div>
+                          <span className="text-[7.5px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded leading-none">PRIMARY</span>
+                        </div>
+
+                        {/* Option 2: Nagad */}
+                        <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-white/5 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <span className="w-6 h-6 rounded bg-[#f64a1e] flex items-center justify-center text-white text-[9px] font-black">Ng</span>
+                            <div>
+                              <p className="text-[10px] font-black text-white leading-none">Nagad Account Number</p>
+                              <p className="text-[8px] font-mono text-slate-500 mt-1">Not Fully Bonded</p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => alert('Nagad linking has been initiated! Our verification department will complete the handshake within 30 minutes.')}
+                            className="text-[7.5px] font-black text-blue-400 bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 px-2 py-1 rounded leading-none cursor-pointer"
+                          >
+                            LINK WALLET
+                          </button>
+                        </div>
+
+                        {/* Option 3: Card */}
+                        <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-white/5 flex items-center justify-between">
+                          <div className="flex items-center gap-2.5 opacity-50">
+                            <span className="w-6 h-6 rounded bg-slate-800 flex items-center justify-center text-white text-[9px] font-black">💳</span>
+                            <div>
+                              <p className="text-[10px] font-black text-white leading-none">Visa / Mastercard Card</p>
+                              <p className="text-[8px] font-mono text-slate-500 mt-1">No Card Connected</p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => alert('Credit card gateway is currently restricted to T.U.T Gold Elite Tier members. Standard tier must use local wallets.')}
+                            className="text-[7.5px] font-black text-slate-400 bg-white/5 border border-white/5 hover:bg-white/10 px-2 py-1 rounded leading-none cursor-pointer"
+                          >
+                            RESTRICTED
+                          </button>
+                        </div>
+                      </div>
+
+                      <Button
+                        onClick={() => setShowLinkedAccountsModal(false)}
+                        className="w-full py-3.5 text-[10px] uppercase tracking-widest font-black mt-2"
+                      >
+                        Done & Close
+                      </Button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
           </div>
-        )}
+        );
+      })()}
 
       </div>
 
-      {/* Premium Floating Bottom Navigation Dock - Mimics Image #1 layout completely */}
-      <div className="fixed bottom-0 inset-x-0 z-40 bg-slate-950/90 backdrop-blur-lg border-t border-white/5 py-2.5 px-4 flex justify-around md:max-w-md md:mx-auto md:rounded-t-3xl md:border-x shadow-[0_-10px_35px_rgba(0,0,0,0.8)]">
+      {/* Premium Floating Bottom Navigation Dock - Native App Style */}
+      <nav 
+        aria-label="User Dashboard Primary Navigation"
+        className="fixed bottom-0 inset-x-0 z-40 bg-slate-950/95 backdrop-blur-2xl border-t border-slate-800/80 py-2 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex justify-around max-w-md sm:max-w-lg md:max-w-xl mx-auto sm:rounded-t-3xl sm:border-x shadow-[0_-12px_40px_rgba(0,0,0,0.9)] select-none transition-all duration-300"
+      >
         {[
           { id: 'dashboard', label: 'Home', icon: Home },
-          { id: 'memos', label: 'Vault', icon: FileText, badge: transactions.filter(t => t.status === 'pending').length },
+          { id: 'memos', label: 'Vault', icon: FileText, badge: pendingTransactions.length },
           { id: 'subscription', label: 'Premium', icon: Award },
           { id: 'partners', label: 'Deals', icon: Briefcase },
           { id: 'profile', label: 'Profile', icon: User }
         ].map(item => {
           const Icon = item.icon;
-          const isSelected = memberTab === item.id;
+          const isSelected = memberTab === item.id || (item.id === 'profile' && memberTab === 'wallets');
           return (
             <button
               key={item.id}
-              onClick={() => setMemberTab(item.id as any)}
+              type="button"
+              onClick={() => navigateTab(item.id as any)}
               className={cn(
-                "flex flex-col items-center gap-1.5 py-1 px-3 transition-all duration-300 relative cursor-pointer text-center min-w-[60px]",
-                isSelected ? "text-blue-400" : "text-slate-400 hover:text-white"
+                "flex flex-col items-center gap-1 py-1.5 px-3 transition-all duration-200 relative cursor-pointer text-center min-w-[58px] active:scale-95 tap-interactive rounded-2xl",
+                isSelected ? "text-blue-400 bg-blue-500/10 shadow-[inset_0_0_12px_rgba(59,130,246,0.15)]" : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]"
               )}
             >
               {isSelected && (
                 <motion.div 
                   layoutId="activeTabIndicator" 
-                  className="absolute bottom-0 inset-x-3.5 h-[2.5px] bg-blue-500 rounded-full shadow-[0_-2px_10px_rgba(59,130,246,0.5)]" 
-                  transition={{ type: "spring", stiffness: 380, damping: 30 }}
+                  className="absolute bottom-0 inset-x-3 h-[2.5px] bg-gradient-to-r from-blue-400 to-indigo-500 rounded-full shadow-[0_-2px_10px_rgba(59,130,246,0.8)]" 
+                  transition={{ type: "spring", stiffness: 480, damping: 35 }}
                 />
               )}
               <div className="relative flex items-center justify-center">
-                <Icon className={cn("w-4.5 h-4.5 transition-transform", isSelected ? "text-blue-400 scale-105" : "text-current")} />
+                <Icon className={cn("w-4.5 h-4.5 transition-transform duration-200", isSelected ? "text-blue-400 scale-110" : "text-current")} />
                 {item.badge !== undefined && item.badge > 0 && (
-                  <span className="absolute -top-1.5 -right-2 bg-rose-600 text-white font-mono text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center border border-slate-950 animate-pulse">
+                  <span className="absolute -top-1.5 -right-2.5 bg-rose-600 text-white font-mono text-[8px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-slate-950 animate-pulse shadow-sm">
                     {item.badge}
                   </span>
                 )}
               </div>
-              <span className="text-[8px] font-black uppercase tracking-widest">{item.label}</span>
+              <span className={cn("text-[9px] font-bold tracking-wider uppercase transition-colors", isSelected ? "text-blue-400 font-black" : "text-slate-400")}>
+                {item.label}
+              </span>
             </button>
           );
         })}
-      </div>
+      </nav>
 
       {/* Real-Life Bank Style Transfer Modal */}
       <Modal isOpen={showTransferModal} onClose={handleCloseTransferModal} title="T.U.T. Funds Transfer">
@@ -2477,6 +6494,12 @@ export function MemberDashboard({
                 <span className="text-slate-500 font-bold">Transaction Reference</span>
                 <span className="text-blue-400 font-mono font-bold">{transferSuccess.memoId}</span>
               </div>
+              {transferSuccess.reference && (
+                <div className="flex justify-between items-center py-1.5 border-b border-white/5">
+                  <span className="text-slate-500 font-bold">Transfer Memo</span>
+                  <span className="text-blue-300 font-bold max-w-[180px] truncate text-right">{transferSuccess.reference}</span>
+                </div>
+              )}
               <div className="flex justify-between items-center py-1.5">
                 <span className="text-slate-500 font-bold">Settlement Date</span>
                 <span className="text-white font-medium">{format(transferSuccess.date, 'dd MMM yyyy, HH:mm')}</span>
@@ -2590,6 +6613,18 @@ export function MemberDashboard({
               />
             </div>
 
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Reference (Optional)</label>
+              <input
+                type="text"
+                disabled={!verifiedRecipient || transferLoading}
+                value={transferReference}
+                onChange={(e) => setTransferReference(e.target.value.slice(0, 100))}
+                placeholder="Enter transfer reference or memo note"
+                className="w-full bg-slate-950/60 border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 disabled:opacity-50 font-medium"
+              />
+            </div>
+
             {/* Account Password Field */}
             <div className="space-y-2">
               <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Account Password</label>
@@ -2656,6 +6691,118 @@ export function MemberDashboard({
           </form>
         )}
       </Modal>
+
+      {/* Locked Tier Sheen Upgrade Prompt Modal */}
+      <AnimatePresence>
+        {lockedSheenTier && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="w-full max-w-sm rounded-2xl bg-slate-950 border border-white/10 p-5 shadow-2xl space-y-4 text-center"
+            >
+              <div className="w-12 h-12 rounded-xl bg-slate-900 border border-white/10 mx-auto flex items-center justify-center">
+                <TierEmblem tier={lockedSheenTier} size={28} />
+              </div>
+              <div className="space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-widest text-amber-400 font-mono">
+                  Tier Upgrade Required
+                </span>
+                <h3 className="text-base font-black text-white uppercase">
+                  Unlock {lockedSheenTier === 'gold' ? 'Gold Sovereign' : lockedSheenTier === 'silver' ? 'Silver Executive' : 'Bronze Basic'} Sheen
+                </h3>
+                <p className="text-xs text-slate-300">
+                  This card finish and its authorized credit limit of <strong className="text-emerald-400 font-mono">৳{lockedSheenTier === 'gold' ? '2,500' : lockedSheenTier === 'silver' ? '1,500' : '500'} BDT</strong> require an active {lockedSheenTier.toUpperCase()} membership plan.
+                </p>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTargetSubscriptionTier(lockedSheenTier);
+                    setLockedSheenTier(null);
+                    setMemberTab('subscription');
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all shadow-[0_4px_16px_rgba(37,99,235,0.3)] cursor-pointer"
+                >
+                  <span>Upgrade to {lockedSheenTier.toUpperCase()}</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLockedSheenTier(null)}
+                  className="w-full py-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white font-bold text-xs uppercase transition-colors cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showCancelConfirmModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-fade-in">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-md bg-slate-900 border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4 text-left"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 flex-shrink-0">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-white uppercase tracking-wider">
+                    Cancel Subscription Plan?
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                    Are you sure you want to cancel your <strong className="text-white uppercase">{profile.subscriptionTier || 'active'} tier</strong>?
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-950 rounded-xl border border-white/5 space-y-2 text-xs text-slate-300">
+                <p>• Your plan will remain active until: <strong className="text-white">{profile.subscriptionExpiresAt ? format(new Date(profile.subscriptionExpiresAt), 'dd MMMM yyyy') : 'end of billing cycle'}</strong></p>
+                <p>• Auto-renewal from wallet will be switched off immediately.</p>
+                <p>• Your borrowing limit will reset to baseline after expiration.</p>
+              </div>
+
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCancelConfirmModal(false)}
+                  className="w-1/2 py-2.5 rounded-xl border border-white/10 hover:border-white/20 text-white font-bold text-xs uppercase tracking-wider transition-all cursor-pointer"
+                >
+                  Keep My Plan
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancelSubscription}
+                  className="w-1/2 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer"
+                >
+                  Confirm Cancel
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Unified Institutional Credit Score & Risk Analysis Modal */}
+      <CreditScoreModal
+        isOpen={showCreditModal || vaultModalType === 'credit_score'}
+        onClose={() => {
+          setShowCreditModal(false);
+          if (vaultModalType === 'credit_score') setVaultModalType(null);
+        }}
+        profile={profile}
+        transactions={transactions}
+        onRequestAction={onRequestAction}
+      />
 
     </div>
   );
