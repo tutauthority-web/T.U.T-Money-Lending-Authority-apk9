@@ -15,7 +15,9 @@ import {
   Edit3,
   Calendar,
   DollarSign,
-  FileText
+  FileText,
+  Download,
+  Award
 } from 'lucide-react';
 import { UserProfile, Transaction } from '../../App';
 import { calculateMemberLoanAllocations, AllocatedLoan } from '../../utils/loanAllocationEngine';
@@ -43,6 +45,7 @@ export const AdminMembersView: React.FC<AdminMembersViewProps> = ({
   const [activeProfileTab, setActiveProfileTab] = useState<'overview' | 'loans' | 'transactions' | 'details'>('overview');
   const [isSettlingId, setIsSettlingId] = useState<string | null>(null);
   const [selectedReceipt, setSelectedReceipt] = useState<OfficialReceiptData | null>(null);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
 
   // Filter members list
   const filteredMembers = allUsers.filter((u) => {
@@ -85,7 +88,7 @@ export const AdminMembersView: React.FC<AdminMembersViewProps> = ({
       });
 
     return (
-      <div className="space-y-4 max-w-4xl mx-auto animate-fadeIn pb-8">
+      <div className="space-y-4 w-full max-w-7xl mx-auto animate-fadeIn pb-8">
         {/* Top Back Navigation */}
         <div className="flex items-center justify-between">
           <button
@@ -526,20 +529,65 @@ export const AdminMembersView: React.FC<AdminMembersViewProps> = ({
   // -------------------------------------------------------------
   // LIST VIEW (Screen 4: Members Section)
   // -------------------------------------------------------------
+
+  const handleExportMembersCSV = () => {
+    try {
+      const headers = ['Member ID', 'Name', 'Email', 'Phone', 'NID', 'Status', 'Charter Tier', 'Total Deposit (BDT)', 'Remaining Debt (BDT)', 'Borrow Limit (BDT)', 'Address', 'Registered Date'];
+      const rows = filteredMembers.map(m => [
+        `"${m.memberId || m.uid}"`,
+        `"${(m.name || '').replace(/"/g, '""')}"`,
+        `"${m.email || ''}"`,
+        `"${m.phone || ''}"`,
+        `"${m.nid || ''}"`,
+        `"${m.status || 'approved'}"`,
+        `"${m.subscriptionTier || 'standard'}"`,
+        m.totalDeposit || 0,
+        m.remainingDebt || 0,
+        (m as any).borrowLimit ?? m.borrowingLimit ?? 0,
+        `"${(m.address || '').replace(/"/g, '""')}"`,
+        `"${m.registeredAt || (m as any).createdAt || ''}"`
+      ]);
+
+      const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `TUT_Member_Roster_${filterType}_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+    } catch (err) {
+      console.error('Failed to export members CSV:', err);
+    }
+  };
+
   return (
     <div className="space-y-3.5 animate-fadeIn">
       {/* Search & Filter Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        {/* Search */}
-        <div className="relative flex-1 max-w-xs">
-          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by name, ID or phone..."
-            className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-[#0C152E] border border-[#16274E]/80 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-amber-500/60"
-          />
+        {/* Search & Export Button */}
+        <div className="flex items-center gap-2 flex-1 max-w-md">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by name, ID, phone, email..."
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-[#0C152E] border border-[#16274E]/80 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-amber-500/60"
+            />
+          </div>
+          <button
+            onClick={handleExportMembersCSV}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 flex items-center gap-1.5 transition-colors shrink-0 cursor-pointer shadow-xs active:scale-95"
+            title="Download member roster as CSV"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{downloadSuccess ? 'Downloaded!' : 'Export CSV'}</span>
+          </button>
         </div>
 
         {/* Filters */}
@@ -561,7 +609,7 @@ export const AdminMembersView: React.FC<AdminMembersViewProps> = ({
       </div>
 
       {/* Member Cards List */}
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         {filteredMembers.length === 0 ? (
           <div className="bg-[#0C152E]/95 border border-[#16274E]/90 rounded-xl p-8 text-center text-slate-500 text-xs">
             No members found matching current criteria.
@@ -570,27 +618,40 @@ export const AdminMembersView: React.FC<AdminMembersViewProps> = ({
           filteredMembers.map((member) => {
             const memberIdStr = member.memberId || `TUT-${member.uid.substring(0, 5).toUpperCase()}`;
             const isActive = member.status === 'approved';
+            const tierLabel = (member.subscriptionTier || 'Standard').toUpperCase();
+            const hasDebt = (member.remainingDebt || 0) > 0;
 
             return (
               <div
                 key={member.uid}
-                className="bg-[#0C152E]/95 border border-[#16274E]/90 hover:border-amber-500/40 rounded-xl p-3 sm:p-3.5 transition-all shadow-xs flex items-center justify-between gap-3 group"
+                className="bg-[#0C152E]/95 border border-[#16274E]/90 hover:border-amber-500/40 rounded-xl p-3.5 sm:p-4 transition-all shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
               >
-                {/* Left: Avatar, Name, Member ID, Status, Phone */}
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-amber-500/20 to-blue-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-xs shrink-0">
+                {/* Left: Avatar, Name, Member ID, Status, Phone, Tier */}
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500/20 to-blue-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 font-bold text-sm shrink-0">
                     {member.photoUrl ? (
-                      <img src={member.photoUrl} alt={member.name} className="w-full h-full object-cover rounded-lg" />
+                      <img src={member.photoUrl} alt={member.name} className="w-full h-full object-cover rounded-xl" />
                     ) : (
                       member.name.charAt(0)
                     )}
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-white truncate group-hover:text-amber-300 transition-colors">
-                      {member.name}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs sm:text-sm font-semibold text-white truncate group-hover:text-amber-300 transition-colors">
+                        {member.name}
+                      </span>
+                      <span className={`px-1.5 py-0.2 rounded text-[8.5px] font-bold uppercase tracking-wider ${
+                        member.subscriptionTier === 'gold' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                        member.subscriptionTier === 'silver' ? 'bg-slate-300/20 text-slate-200 border border-slate-300/30' :
+                        member.subscriptionTier === 'bronze' ? 'bg-amber-700/20 text-amber-400 border border-amber-700/30' :
+                        'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                      }`}>
+                        {tierLabel}
+                      </span>
                     </div>
-                    <div className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
-                      <span className="font-mono text-slate-300">#{memberIdStr}</span>
+
+                    <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-1.5 mt-0.5">
+                      <span className="font-mono text-amber-400/90 font-medium">#{memberIdStr}</span>
                       <span>•</span>
                       <span className="flex items-center gap-1">
                         <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-400' : 'bg-amber-400'}`} />
@@ -598,21 +659,37 @@ export const AdminMembersView: React.FC<AdminMembersViewProps> = ({
                       </span>
                       {member.phone && (
                         <>
-                          <span className="hidden sm:inline">•</span>
-                          <span className="hidden sm:inline text-slate-400">{member.phone}</span>
+                          <span>•</span>
+                          <span className="font-mono text-slate-300">{member.phone}</span>
                         </>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Right: View Button */}
-                <button
-                  onClick={() => onSelectMember(member)}
-                  className="px-2.5 py-1 rounded-md text-[11px] font-medium text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors shrink-0 cursor-pointer"
-                >
-                  View
-                </button>
+                {/* Center / Right: Live Financial Snapshot (Deposit, Debt) & View button */}
+                <div className="flex items-center justify-between sm:justify-end gap-3.5 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#16274E]/60 shrink-0">
+                  <div className="text-left sm:text-right">
+                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Deposit</div>
+                    <div className="text-xs sm:text-sm font-bold font-mono text-emerald-400">
+                      ৳ {(member.totalDeposit || 0).toLocaleString()}
+                    </div>
+                  </div>
+
+                  <div className="text-left sm:text-right">
+                    <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Active Debt</div>
+                    <div className={`text-xs sm:text-sm font-bold font-mono ${hasDebt ? 'text-rose-400' : 'text-slate-400'}`}>
+                      ৳ {(member.remainingDebt || 0).toLocaleString()}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => onSelectMember(member)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/25 transition-all shrink-0 cursor-pointer shadow-xs active:scale-95"
+                  >
+                    View Dossier →
+                  </button>
+                </div>
               </div>
             );
           })

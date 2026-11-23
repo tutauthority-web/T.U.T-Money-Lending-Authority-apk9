@@ -78,6 +78,7 @@ export const LoginPage: React.FC<LoginProps> = ({
   });
 
   const [showBiometricScan, setShowBiometricScan] = useState(false);
+  const [passwordCopied, setPasswordCopied] = useState(false);
   const [biometricStatus, setBiometricStatus] = useState<'idle' | 'scanning' | 'success' | 'failed'>('idle');
   const [biometricProgress, setBiometricProgress] = useState(0);
   const [showSuccessSplash, setShowSuccessSplash] = useState(false);
@@ -247,7 +248,6 @@ export const LoginPage: React.FC<LoginProps> = ({
         setTimeout(() => {
           setShowBiometricScan(false);
           setBiometricStatus('idle');
-          alert("সাফল্য! এই ডিভাইসটির বায়োমেট্রিক সেন্সর (ফিঙ্গারপ্রিন্ট/Face ID) সফলভাবে নিবন্ধিত হয়েছে।");
         }, 1200);
       }
     } catch (err: any) {
@@ -781,11 +781,21 @@ export const LoginPage: React.FC<LoginProps> = ({
                       type="button"
                       onClick={() => {
                         navigator.clipboard.writeText(password);
-                        alert("পাসওয়ার্ড কপি করা হয়েছে!");
+                        setPasswordCopied(true);
+                        setTimeout(() => setPasswordCopied(false), 2500);
                       }}
                       className="inline-flex items-center gap-1.5 mt-2 text-[9px] text-amber-500 font-black uppercase tracking-widest hover:text-amber-400 transition-colors cursor-pointer"
                     >
-                      <Copy className="w-3 h-3" /> Copy Password
+                      {passwordCopied ? (
+                        <>
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                          <span className="text-emerald-400">পাসওয়ার্ড কপি করা হয়েছে!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" /> Copy Password
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>

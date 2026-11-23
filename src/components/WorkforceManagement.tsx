@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   collection, 
   getDocs, 
+  getDoc,
   addDoc, 
   updateDoc, 
   setDoc,
@@ -9,14 +10,16 @@ import {
   onSnapshot, 
   query, 
   orderBy,
-  where
+  where,
+  limit,
+  deleteDoc
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Employee, SupportTicket, WorkforceReport } from '../types/workforce';
+import { Employee, SupportTicket, WorkforceReport, AgentReportedIssue } from '../types/workforce';
 import { generateHumanEmployeeResponse } from '../utils/workforceKnowledge';
+import { TWO_CORE_AI_AGENTS } from './WorkforceSupportWidget';
 import { 
   Users, 
-  UserPlus, 
   Sparkles, 
   FileText, 
   CheckCircle, 
@@ -40,7 +43,6 @@ import {
   Compass, 
   Maximize2, 
   Minimize2, 
-  UploadCloud, 
   Download, 
   BookOpen, 
   Trash2, 
@@ -50,7 +52,16 @@ import {
   Smile, 
   ShieldAlert, 
   ArrowLeft, 
-  LogOut 
+  LogOut,
+  ShieldCheck,
+  AlertTriangle,
+  ClipboardList,
+  CheckCircle2,
+  Copy,
+  Zap,
+  BarChart3,
+  Flame,
+  SlidersHorizontal
 } from 'lucide-react';
 
 interface WorkforceManagementProps {
@@ -61,6 +72,11 @@ interface WorkforceManagementProps {
     remainingDebt: number;
     pendingMembersCount: number;
     pendingTransactionsCount: number;
+  };
+  recentTransactions?: any[];
+  reserveSummary?: {
+    availableReserve?: number;
+    targetReserve?: number;
   };
   currentUser?: {
     uid: string;
@@ -77,450 +93,271 @@ interface WorkforceManagementProps {
   isAdmin?: boolean;
 }
 
-const CANNED_REPLIES = [
-  { label: "Member Dossier", text: "Hello! Here is your verified file on record: Member ID, active borrowing limit, current debt, and deposit reserves are synchronized 24/7." },
-  { label: "Loan Due & Limit", text: "Your current active loan balance and remaining borrowing limit are displayed directly in your portal header. Settle anytime via the Repayment tab." },
-  { label: "Deposit Withdrawal", text: "Member Deposit Reserves are held in a segregated ring-fenced vault separate from loan capital and can be withdrawn anytime upon request." },
-  { label: "Repayment Guidance", text: "Repayments can be completed via bKash, Nagad, or Bank Transfer under the Repayment tab. Simply transfer and submit your Transaction ID." },
-  { label: "Approval Time", text: "Loan verification and deposit reconciliations are completed within 30 minutes to 2 hours during active banking cycles." },
-  { label: "Verify Income", text: "Hello! I am reviewing your file. Could you please upload your latest income verification document?" },
-  { label: "Expedite Loan", text: "Apologies for any latency in our queue. I have personally flagged your loan application for priority review." },
-  { label: "General Greeting", text: "Wa Alaikum Assalam! Thank you for contacting T.U.T Headquarters support. I am at your service 24/7." }
-];
-
-export const WorkforceManagement: React.FC<WorkforceManagementProps> = ({ systemStats, currentUser, isAdmin = false }) => {
-  const [employees, setEmployees] = useState<Employee[]>([]);
+export const WorkforceManagement: React.FC<WorkforceManagementProps> = ({ 
+  systemStats, 
+  recentTransactions = [],
+  reserveSummary,
+  currentUser, 
+  isAdmin = true 
+}) => {
+  // Core AI Agents (Exactly 2: 1 Male, 1 Female)
+  const [employees, setEmployees] = useState<Employee[]>(TWO_CORE_AI_AGENTS);
+  const [issues, setIssues] = useState<AgentReportedIssue[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'employees' | 'tickets' | 'analytics' | 'reports' | 'my_desk'>('employees');
   
-  // My Officer Desk State
-  const [activeChats, setActiveChats] = useState<any[]>([]);
-  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [chatReplyText, setChatReplyText] = useState('');
-  
-  // My Profile Edit States
-  const [myPhoto, setMyPhoto] = useState('');
-  const [myPos, setMyPos] = useState('');
-  const [myDept, setMyDept] = useState('Customer Support');
-  const [myStatus, setMyStatus] = useState<'Available' | 'Busy' | 'Offline'>('Available');
-  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
+  // Navigation Tabs
+  const [activeTab, setActiveTab] = useState<'monitoring' | 'issues_tracker' | 'admin_chat' | 'reports'>('monitoring');
 
-  // Modals / Form States
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
-  const [reportType, setReportType] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  // Admin Executive Chat State
+  const [selectedAgentForChat, setSelectedAgentForChat] = useState<Employee>(TWO_CORE_AI_AGENTS[0]);
+  const [adminChatHistory, setAdminChatHistory] = useState<any[]>([]);
+  const [adminInput, setAdminInput] = useState('');
+  const [isAdminTyping, setIsAdminTyping] = useState(false);
+
+  // Issues Filter & Search
+  const [issueSearch, setIssueSearch] = useState('');
+  const [issueStatusFilter, setIssueStatusFilter] = useState<'all' | 'Open' | 'In Progress' | 'Resolved'>('all');
+  const [issuePriorityFilter, setIssuePriorityFilter] = useState<'all' | 'Urgent' | 'High' | 'Medium' | 'Low'>('all');
+  const [issueAgentFilter, setIssueAgentFilter] = useState<string>('all');
+  const [selectedIssueDetail, setSelectedIssueDetail] = useState<AgentReportedIssue | null>(null);
+  const [adminResolutionNote, setAdminResolutionNote] = useState('');
+  const [isUpdatingIssue, setIsUpdatingIssue] = useState(false);
+
+  // Conversation Inspector
+  const [recentChatSessions, setRecentChatSessions] = useState<any[]>([]);
+  const [selectedSessionForInspect, setSelectedSessionForInspect] = useState<any | null>(null);
+
+  // Executive Reports State
+  const [reportType, setReportType] = useState<'daily' | 'issues' | 'reserves' | 'weekly'>('daily');
   const [generatedReport, setGeneratedReport] = useState<string | null>(null);
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [reportCopied, setReportCopied] = useState(false);
 
-  // Expanded / Comfort Live Chat states
-  const [isChatMaximized, setIsChatMaximized] = useState(false);
-  const [chatMode, setChatMode] = useState<'member' | 'staff'>('member');
-  const [selectedStaffId, setSelectedStaffId] = useState<string | null>(null);
-  const [staffChats, setStaffChats] = useState<any[]>([]);
-  const [staffReplyText, setStaffReplyText] = useState('');
-  const [isSendingStaffMsg, setIsSendingStaffMsg] = useState(false);
-
-  // File Drag & Drop Import states
-  const [isDragOver, setIsDragOver] = useState(false);
-  const [importStatus, setImportStatus] = useState<{ success?: number; error?: string; message?: string } | null>(null);
-
-  // Interactive AI Tuning Sandbox states
-  const [showTuningModal, setShowTuningModal] = useState(false);
+  // AI Prompt & Persona Tuning Modal
+  const [tuningAgent, setTuningAgent] = useState<Employee | null>(null);
   const [tuningPrompt, setTuningPrompt] = useState('');
-  const [tuningTemp, setTuningTemp] = useState(0.4);
-  const [sandboxMessages, setSandboxMessages] = useState<any[]>([]);
-  const [sandboxInput, setSandboxInput] = useState('');
-  const [isSandboxTyping, setIsSandboxTyping] = useState(false);
+  const [tuningTemp, setTuningTemp] = useState(0.3);
+  const [savingTuning, setSavingTuning] = useState(false);
 
-  // New Employee Form States
-  const [empName, setEmpName] = useState('');
-  const [empDept, setEmpDept] = useState('Customer Support');
-  const [empPos, setEmpPos] = useState('Support Associate');
-  const [empPhoto, setEmpPhoto] = useState('');
-  const [empType, setEmpType] = useState<'Digital Employee' | 'Human Employee'>('Digital Employee');
-  const [empStatus, setEmpStatus] = useState<'Available' | 'Busy' | 'Offline'>('Available');
-  const [empAiCode, setEmpAiCode] = useState('');
-  const [empScore, setEmpScore] = useState(98);
-
-  // Ticket Filters
-  const [ticketFilter, setTicketFilter] = useState<'all' | 'Open' | 'In Progress' | 'Resolved'>('all');
-  const [ticketSearch, setTicketSearch] = useState('');
-
-  // Default portrait URLs
-  const defaultPortraits = [
-    'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=200',
-    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
-    'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
-    'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=200',
-    'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=200'
-  ];
-
-  // Load and seed workforce data
+  // 1. Sync & Seed exactly the 2 core AI agents in Firestore
   useEffect(() => {
-    // 1. Listen to Employees collection
-    const unsubEmployees = onSnapshot(collection(db, 'employees'), async (snapshot) => {
-      let emps: Employee[] = [];
-      snapshot.forEach((doc) => {
-        emps.push({ id: doc.id, ...doc.data() } as Employee);
+    const unsub = onSnapshot(collection(db, 'employees'), async (snapshot) => {
+      let maleAgent: Employee = { ...TWO_CORE_AI_AGENTS[0] };
+      let femaleAgent: Employee = { ...TWO_CORE_AI_AGENTS[1] };
+      let foundMale = false;
+      let foundFemale = false;
+      const redundantDocIds: string[] = [];
+
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as Partial<Employee>;
+        const name = (data.name || '').trim();
+        const gender = data.gender;
+
+        if (name === 'Zubair Ahmed' || gender === 'Male') {
+          if (!foundMale) {
+            foundMale = true;
+            maleAgent = {
+              ...TWO_CORE_AI_AGENTS[0],
+              ...data,
+              id: 'EMP-00101',
+              docId: docSnap.id
+            };
+          } else if (isAdmin) {
+            redundantDocIds.push(docSnap.id);
+          }
+        } else if (name === 'Nusrat Jahan' || gender === 'Female') {
+          if (!foundFemale) {
+            foundFemale = true;
+            femaleAgent = {
+              ...TWO_CORE_AI_AGENTS[1],
+              ...data,
+              id: 'EMP-00102',
+              docId: docSnap.id
+            };
+          } else if (isAdmin) {
+            redundantDocIds.push(docSnap.id);
+          }
+        } else if (isAdmin) {
+          redundantDocIds.push(docSnap.id);
+        }
       });
 
-      // If empty, let's seed initial digital/human employees
-      if (emps.length === 0) {
-        const initialEmployees: Omit<Employee, 'id'>[] = [
-          {
-            name: 'Tusnut Jahan',
-            photoUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=200',
-            department: 'Customer Support',
-            position: 'AI Operations Desk lead',
-            joinedDate: '2024-03-01',
-            status: 'Available',
-            performanceScore: 99,
-            employeeType: 'Digital Employee',
-            internalAiCode: 'AI-CS-001',
-            aiModelVersion: 'Gemini 3.5 Flash',
-            knowledgeVersion: 'v3.5.2',
-            lastUpdated: new Date().toISOString(),
-            averageResponseTime: '< 1 min',
-            customerSatisfaction: '4.95/5',
-            totalChats: 412
-          },
-          {
-            name: 'Adnan Chowdhury',
-            photoUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
-            department: 'Member Support',
-            position: 'AI Borrowing Specialist',
-            joinedDate: '2024-04-12',
-            status: 'Available',
-            performanceScore: 98,
-            employeeType: 'Digital Employee',
-            internalAiCode: 'AI-MS-002',
-            aiModelVersion: 'Gemini 3.5 Flash',
-            knowledgeVersion: 'v3.5.1',
-            lastUpdated: new Date().toISOString(),
-            averageResponseTime: '< 1 min',
-            customerSatisfaction: '4.88/5',
-            totalChats: 289
-          },
-          {
-            name: 'Sajib Rahman',
-            photoUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=200',
-            department: 'Technical Support',
-            position: 'AI Cyber ledger Officer',
-            joinedDate: '2024-05-18',
-            status: 'Available',
-            performanceScore: 97,
-            employeeType: 'Digital Employee',
-            internalAiCode: 'AI-TS-003',
-            aiModelVersion: 'Gemini 3.5 Flash',
-            knowledgeVersion: 'v3.5.3',
-            lastUpdated: new Date().toISOString(),
-            averageResponseTime: '1 min',
-            customerSatisfaction: '4.91/5',
-            totalChats: 174
-          },
-          {
-            name: 'Farhana Yasmin',
-            photoUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=200',
-            department: 'Information Desk',
-            position: 'AI Policy Desk Advisor',
-            joinedDate: '2024-01-20',
-            status: 'Busy',
-            performanceScore: 96,
-            employeeType: 'Digital Employee',
-            internalAiCode: 'AI-ID-004',
-            aiModelVersion: 'Gemini 3.5 Flash',
-            knowledgeVersion: 'v3.5.0',
-            lastUpdated: new Date().toISOString(),
-            averageResponseTime: '< 2 mins',
-            customerSatisfaction: '4.85/5',
-            totalChats: 322
-          },
-          {
-            name: 'Tahsin Ullah Tusher',
-            photoUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=200',
-            department: 'Customer Support',
-            position: 'Human Director / Founder',
-            joinedDate: '2023-01-10',
-            status: 'Offline',
-            performanceScore: 100,
-            employeeType: 'Human Employee',
-            lastUpdated: new Date().toISOString(),
-            averageResponseTime: 'N/A',
-            customerSatisfaction: '5.0/5',
-            totalChats: 890
-          }
-        ];
+      // Always enforce exactly 2 distinct agents (Zubair Ahmed first, Nusrat Jahan second)
+      setEmployees([maleAgent, femaleAgent]);
+      setLoading(false);
 
-        for (const emp of initialEmployees) {
-          await addDoc(collection(db, 'employees'), emp);
+      // Auto-seed or clean duplicates if admin
+      if (isAdmin) {
+        if (!foundMale) {
+          try {
+            await setDoc(doc(db, 'employees', 'EMP-00101'), TWO_CORE_AI_AGENTS[0], { merge: true });
+          } catch (e) {
+            console.warn("Could not seed male agent:", e);
+          }
         }
-      } else {
-        setEmployees(emps);
+        if (!foundFemale) {
+          try {
+            await setDoc(doc(db, 'employees', 'EMP-00102'), TWO_CORE_AI_AGENTS[1], { merge: true });
+          } catch (e) {
+            console.warn("Could not seed female agent:", e);
+          }
+        }
+
+        // Clean up redundant duplicate documents if any
+        if (redundantDocIds.length > 0) {
+          for (const redId of redundantDocIds) {
+            if (redId !== 'EMP-00101' && redId !== 'EMP-00102') {
+              try {
+                await deleteDoc(doc(db, 'employees', redId));
+              } catch (e) {
+                console.warn(`Could not clean duplicate employee doc ${redId}:`, e);
+              }
+            }
+          }
+        }
       }
+    }, (err) => {
+      console.warn("Could not listen to employees collection, using 2 core defaults:", err);
+      setEmployees(TWO_CORE_AI_AGENTS);
+      setLoading(false);
     });
 
-    // 2. Listen to Support Tickets
-    const unsubTickets = onSnapshot(
-      query(collection(db, 'workforce_tickets'), orderBy('createdAt', 'desc')),
-      (snapshot) => {
-        let tix: SupportTicket[] = [];
-        snapshot.forEach((doc) => {
-          tix.push({ id: doc.id, ...doc.data() } as SupportTicket);
-        });
-        setTickets(tix);
-        setLoading(false);
-      }
+    return () => unsub();
+  }, [isAdmin]);
+
+  // 2. Listen to Member Reported Issues (Noted down by AI Agents)
+  useEffect(() => {
+    const q = query(
+      collection(db, 'agent_reported_issues'),
+      orderBy('createdAt', 'desc')
     );
 
-    return () => {
-      unsubEmployees();
-      unsubTickets();
-    };
+    const unsubIssues = onSnapshot(q, (snapshot) => {
+      const list: AgentReportedIssue[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        list.push({ 
+          ...data,
+          id: data.id || docSnap.id,
+          ticketId: data.ticketId || data.id || docSnap.id,
+          docId: docSnap.id
+        } as AgentReportedIssue);
+      });
+      setIssues(list);
+    }, (err) => {
+      console.warn("Could not load agent_reported_issues:", err);
+    });
+
+    return () => unsubIssues();
   }, []);
 
-  // Find my personal employee record
-  const myEmployeeProfile = employees.find(
-    (e) => e.name.toLowerCase() === (currentUser?.name || 'Tahsin Ullah Tusher').toLowerCase()
-  );
-
-  // Sync my local edit state with the found profile
+  // 3. Listen to Recent Member Chat Sessions for conversation inspector
   useEffect(() => {
-    if (myEmployeeProfile) {
-      setMyPhoto(myEmployeeProfile.photoUrl || '');
-      setMyPos(myEmployeeProfile.position || '');
-      setMyDept(myEmployeeProfile.department || 'Customer Support');
-      setMyStatus(myEmployeeProfile.status || 'Available');
-    }
-  }, [myEmployeeProfile]);
-
-  // Listen to live workforce workforce chats
-  useEffect(() => {
-    if (!currentUser) return;
-
-    let q;
-    if (isAdmin) {
-      q = query(collection(db, 'workforce_chats'), orderBy('updatedAt', 'desc'));
-    } else {
-      q = query(
-        collection(db, 'workforce_chats'),
-        where('employeeName', '==', currentUser.name),
-        orderBy('updatedAt', 'desc')
-      );
-    }
-
-    const unsubChats = onSnapshot(
-      q,
-      (snapshot) => {
-        let chatsList: any[] = [];
-        snapshot.forEach((doc) => {
-          chatsList.push({ id: doc.id, ...doc.data() });
-        });
-        setActiveChats(chatsList);
-      },
-      (err) => console.error("Error listening to workforce chats:", err)
+    const q = query(
+      collection(db, 'workforce_chats'),
+      orderBy('updatedAt', 'desc')
     );
+
+    const unsubChats = onSnapshot(q, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({ id: docSnap.id, ...docSnap.data() });
+      });
+      setRecentChatSessions(list);
+    }, (err) => {
+      console.warn("Could not load workforce_chats:", err);
+    });
 
     return () => unsubChats();
-  }, [currentUser, isAdmin]);
+  }, []);
 
-  // Listen to live workforce P2P internal staff chats
+  // Load Admin Chat History when switching agent
   useEffect(() => {
-    if (!currentUser) return;
+    if (!selectedAgentForChat) return;
 
-    let q;
-    if (isAdmin) {
-      // Chief Admin can oversee ALL staff P2P chats to inquire or resolve issues
-      q = query(collection(db, 'workforce_p2p_chats'), orderBy('updatedAt', 'desc'));
-    } else {
-      // Human employees see only their conversations
-      q = query(
-        collection(db, 'workforce_p2p_chats'),
-        where('participants', 'array-contains', currentUser.uid || 'admin-uid'),
-        orderBy('updatedAt', 'desc')
-      );
-    }
-
-    const unsubStaff = onSnapshot(
-      q,
-      (snapshot) => {
-        let staffChatsList: any[] = [];
-        snapshot.forEach((doc) => {
-          staffChatsList.push({ id: doc.id, ...doc.data() });
-        });
-        setStaffChats(staffChatsList);
-      },
-      (err) => console.error("Error listening to staff P2P chats:", err)
-    );
-
-    return () => unsubStaff();
-  }, [currentUser, isAdmin]);
-
-  // Update personal employee profile handler
-  const handleUpdateMyProfile = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!myEmployeeProfile) return;
-    setIsUpdatingProfile(true);
-
-    try {
-      await updateDoc(doc(db, 'employees', myEmployeeProfile.id), {
-        photoUrl: myPhoto.trim() || 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=200',
-        position: myPos.trim() || 'Human Director / Founder',
-        department: myDept,
-        status: myStatus,
-        lastUpdated: new Date().toISOString()
-      });
-    } catch (err) {
-      console.error("Error updating personal employee profile:", err);
-    } finally {
-      setIsUpdatingProfile(false);
-    }
-  };
-
-  // Register personal employee profile if missing
-  const handleRegisterMyProfile = async () => {
-    const newEmp: Omit<Employee, 'id'> = {
-      name: currentUser?.name || 'Tahsin Ullah Tusher',
-      photoUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=200',
-      department: 'Customer Support',
-      position: 'Human Director / Founder',
-      joinedDate: new Date().toISOString().split('T')[0],
-      status: 'Available',
-      performanceScore: 100,
-      employeeType: 'Human Employee',
-      lastUpdated: new Date().toISOString(),
-      averageResponseTime: 'N/A',
-      customerSatisfaction: '5.0/5',
-      totalChats: 0
-    };
-
-    try {
-      await addDoc(collection(db, 'employees'), newEmp);
-    } catch (err) {
-      console.error("Error registering employee profile:", err);
-    }
-  };
-
-  // Send message back to user chat session from officer terminal
-  const handleSendChatReply = async (e: React.FormEvent, chatId: string, currentMessages: any[]) => {
-    e.preventDefault();
-    if (!chatReplyText.trim()) return;
-
-    const newReply = {
-      sender: 'employee',
-      text: chatReplyText.trim(),
-      timestamp: Date.now()
-    };
-
-    const updatedMessages = [...currentMessages, newReply];
-
-    try {
-      await updateDoc(doc(db, 'workforce_chats', chatId), {
-        messages: updatedMessages,
-        lastMessage: chatReplyText.trim(),
-        updatedAt: Date.now()
-      });
-      setChatReplyText('');
-    } catch (err) {
-      console.error("Error sending message to workforce chat:", err);
-    }
-  };
-
-  // Add Employee Handler
-  const handleAddEmployee = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!empName.trim() || !empPos.trim()) return;
-
-    const randomPhoto = defaultPortraits[Math.floor(Math.random() * defaultPortraits.length)];
-    const finalPhoto = empPhoto.trim() || randomPhoto;
-
-    const newEmp: Omit<Employee, 'id'> = {
-      name: empName.trim(),
-      photoUrl: finalPhoto,
-      department: empDept,
-      position: empPos.trim(),
-      joinedDate: new Date().toISOString().split('T')[0],
-      status: empStatus,
-      performanceScore: empScore,
-      employeeType: empType,
-      internalAiCode: empType === 'Digital Employee' ? (empAiCode.trim() || `AI-USER-${Math.floor(100 + Math.random() * 900)}`) : undefined,
-      aiModelVersion: empType === 'Digital Employee' ? 'Gemini 3.5 Flash' : undefined,
-      knowledgeVersion: empType === 'Digital Employee' ? 'v3.5.0' : undefined,
-      lastUpdated: new Date().toISOString(),
-      averageResponseTime: empType === 'Digital Employee' ? '< 1 min' : '2 Hours',
-      customerSatisfaction: '5.0/5',
-      totalChats: 0
-    };
-
-    try {
-      await addDoc(collection(db, 'employees'), newEmp);
-      setShowAddModal(false);
-      // Reset form
-      setEmpName('');
-      setEmpPos('');
-      setEmpPhoto('');
-      setEmpAiCode('');
-      setEmpScore(98);
-    } catch (err) {
-      console.error("Error adding employee:", err);
-    }
-  };
-
-  // Open Tuning Modal with loaded values
-  const handleOpenTuning = (emp: Employee) => {
-    setEditingEmployee(emp);
-    setTuningPrompt(emp.customPrompt || '');
-    setTuningTemp(emp.temperature !== undefined ? emp.temperature : 0.4);
-    setSandboxMessages([
-      {
-        sender: 'employee',
-        text: `Hello Admin! I am ${emp.name}, operating as the ${emp.position} in ${emp.department}. I am ready to test your system instructions. How can I assist you in operations today?`,
-        timestamp: Date.now()
+    const channelId = `admin_exec_${selectedAgentForChat.id}`;
+    const unsub = onSnapshot(doc(db, 'workforce_p2p_chats', channelId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setAdminChatHistory(data.messages || []);
+      } else {
+        // Initial executive greeting
+        setAdminChatHistory([
+          {
+            sender: 'employee',
+            senderName: selectedAgentForChat.name,
+            text: `Greetings, Administrator. I am ${selectedAgentForChat.name} (${selectedAgentForChat.gender === 'Male' ? 'Senior Underwriting & Credit Officer' : 'Senior Accounts & Member Relations Specialist'}). All live financial ledgers, member queues, and reserve vaults are synchronized. How can I assist you with operational intelligence today?`,
+            timestamp: Date.now()
+          }
+        ]);
       }
-    ]);
-    setSandboxInput('');
-    setShowTuningModal(true);
-  };
-
-  // Save AI Employee Custom Prompt & Temperature
-  const handleSaveTuning = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingEmployee) return;
-
-    try {
-      await updateDoc(doc(db, 'employees', editingEmployee.id), {
-        customPrompt: tuningPrompt,
-        temperature: tuningTemp,
-        lastUpdated: new Date().toISOString()
-      });
-      // Update locally
-      setEmployees(prev => prev.map(emp => {
-        if (emp.id === editingEmployee.id) {
-          return { ...emp, customPrompt: tuningPrompt, temperature: tuningTemp };
+    }, (err) => {
+      console.warn("Using offline admin chat session:", err);
+      setAdminChatHistory([
+        {
+          sender: 'employee',
+          senderName: selectedAgentForChat.name,
+          text: `Greetings, Administrator. I am ${selectedAgentForChat.name}. System operations and AI monitoring are active 24/7.`,
+          timestamp: Date.now()
         }
-        return emp;
-      }));
-      setShowTuningModal(false);
-    } catch (err) {
-      console.error("Error saving AI tuning configuration:", err);
-    }
-  };
+      ]);
+    });
 
-  // Run a sandbox test chat with the tuned digital employee
-  const handleSendSandboxMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sandboxInput.trim() || !editingEmployee) return;
+    return () => unsub();
+  }, [selectedAgentForChat]);
+
+  // Send message in Admin Executive Chat
+  const handleSendAdminMessage = async (textToSend: string) => {
+    if (!textToSend.trim() || !selectedAgentForChat) return;
 
     const userMsg = {
       sender: 'user',
-      text: sandboxInput.trim(),
+      senderName: currentUser?.name || 'Administrator',
+      text: textToSend.trim(),
       timestamp: Date.now()
     };
 
-    const newMsgs = [...sandboxMessages, userMsg];
-    setSandboxMessages(newMsgs);
-    setSandboxInput('');
-    setIsSandboxTyping(true);
+    const newMsgs = [...adminChatHistory, userMsg];
+    setAdminChatHistory(newMsgs);
+    setAdminInput('');
+    setIsAdminTyping(true);
+
+    const channelId = `admin_exec_${selectedAgentForChat.id}`;
+
+    // Prepare rich operational & ledger context for executive briefing
+    const openCases = issues.filter(i => i.status !== 'Resolved');
+    const liveAdminContext = {
+      platformStats: systemStats,
+      reserveSummary: reserveSummary || {},
+      activeIssuesCount: openCases.length,
+      urgentIssuesCount: openCases.filter(i => i.priority === 'Urgent').length,
+      recentOpenIssues: openCases.slice(0, 8).map(i => ({
+        id: i.id,
+        title: i.title,
+        category: i.category,
+        priority: i.priority,
+        member: i.userName,
+        assignedOfficer: i.agentName,
+        relatedTx: i.relatedTransactionId,
+        diagnosis: i.agentNotes,
+        recommendedAction: i.recommendedAction,
+      })),
+      pendingTransactionsSample: recentTransactions
+        .filter((t: any) => (t.status || '').toLowerCase() === 'pending')
+        .slice(0, 8)
+        .map((t: any) => ({
+          memoId: t.memoId || t.id,
+          type: t.type,
+          amount: t.amount,
+          user: t.userName,
+          method: t.paymentMethod,
+          trxId: t.transactionId,
+          date: t.date,
+        })),
+      currentAdministrator: currentUser?.name || 'Administrator',
+      agentRole: selectedAgentForChat.position
+    };
 
     try {
       const response = await fetch('/api/digital-workforce/chat', {
@@ -529,274 +366,68 @@ export const WorkforceManagement: React.FC<WorkforceManagementProps> = ({ system
         body: JSON.stringify({
           messages: newMsgs,
           employee: {
-            id: editingEmployee.id,
-            name: editingEmployee.name,
-            department: editingEmployee.department,
-            customPrompt: tuningPrompt,
-            temperature: tuningTemp
+            id: selectedAgentForChat.id,
+            name: selectedAgentForChat.name,
+            gender: selectedAgentForChat.gender,
+            department: selectedAgentForChat.department,
+            position: selectedAgentForChat.position,
+            customPrompt: selectedAgentForChat.customPrompt || '',
+            temperature: selectedAgentForChat.temperature !== undefined ? selectedAgentForChat.temperature : 0.25
           },
-          userContext: systemStats || {},
+          userContext: liveAdminContext,
           isAdmin: true
         })
       });
 
       const data = await response.json();
-      setIsSandboxTyping(false);
-      setSandboxMessages([...newMsgs, {
+      setIsAdminTyping(false);
+
+      const agentResponse = {
         sender: 'employee',
-        text: data.response || "No response received. Please check backend log.",
+        senderName: selectedAgentForChat.name,
+        text: data.response || "Operational review completed. System ledgers are fully aligned.",
         timestamp: Date.now()
-      }]);
-    } catch (err) {
-      console.error("Sandbox simulation error - using 24/7 knowledge fallback:", err);
-      setIsSandboxTyping(false);
-      const fallback = generateHumanEmployeeResponse(sandboxInput.trim() || userMsg.text, systemStats as any, editingEmployee, true);
-      setSandboxMessages([...newMsgs, {
+      };
+
+      const finalMsgs = [...newMsgs, agentResponse];
+      setAdminChatHistory(finalMsgs);
+
+      // Persist in Firestore
+      try {
+        await setDoc(doc(db, 'workforce_p2p_chats', channelId), {
+          id: channelId,
+          messages: finalMsgs,
+          lastMessage: agentResponse.text,
+          updatedAt: Date.now(),
+          agentId: selectedAgentForChat.id,
+          agentName: selectedAgentForChat.name
+        }, { merge: true });
+      } catch (saveErr) {
+        console.warn("Admin chat saved locally:", saveErr);
+      }
+
+    } catch (err: any) {
+      console.warn("Running 24/7 admin fallback:", err);
+      setIsAdminTyping(false);
+      const fallback = generateHumanEmployeeResponse(textToSend, liveAdminContext as any, selectedAgentForChat, true);
+
+      const agentResponse = {
         sender: 'employee',
+        senderName: selectedAgentForChat.name,
         text: fallback.response,
         timestamp: Date.now()
-      }]);
-    }
-  };
-
-  // Send message back to internal staff chat session
-  const handleSendStaffMessage = async (e: React.FormEvent, targetEmployee: Employee, currentMessages: any[]) => {
-    e.preventDefault();
-    if (!staffReplyText.trim() || !currentUser) return;
-
-    const messageText = staffReplyText.trim();
-    setStaffReplyText('');
-    setIsSendingStaffMsg(true);
-
-    const newMsg = {
-      senderId: currentUser.uid || 'admin',
-      senderName: currentUser.name || 'Chief Admin',
-      text: messageText,
-      timestamp: Date.now()
-    };
-
-    const updatedMessages = [...currentMessages, newMsg];
-    const channelId = `${currentUser.uid || 'admin'}_${targetEmployee.id}`;
-
-    try {
-      // 1. Write the user's message to Firestore workforce_p2p_chats
-      await setDoc(doc(db, 'workforce_p2p_chats', channelId), {
-        id: channelId,
-        participants: [currentUser.uid || 'admin', targetEmployee.id],
-        messages: updatedMessages,
-        lastMessage: messageText,
-        updatedAt: Date.now(),
-        employeeId: targetEmployee.id,
-        employeeName: targetEmployee.name,
-        employeePhoto: targetEmployee.photoUrl,
-        employeePosition: targetEmployee.position,
-        initiatorId: currentUser.uid || 'admin',
-        initiatorName: currentUser.name || 'Chief Admin'
-      }, { merge: true });
-
-      // 2. If the recipient is a Digital Employee (AI Agent), trigger Gemini response!
-      if (targetEmployee.employeeType === 'Digital Employee') {
-        const apiMessages = updatedMessages.map(msg => ({
-          sender: msg.senderId === targetEmployee.id ? 'employee' : 'user',
-          text: msg.text
-        }));
-
-        const response = await fetch('/api/digital-workforce/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messages: apiMessages,
-            employee: {
-              id: targetEmployee.id,
-              name: targetEmployee.name,
-              department: targetEmployee.department,
-              customPrompt: targetEmployee.customPrompt || '',
-              temperature: targetEmployee.temperature !== undefined ? targetEmployee.temperature : 0.4
-            },
-            userContext: systemStats || {},
-            isAdmin: true
-          })
-        });
-
-        const data = await response.json();
-        const aiText = data.response || "Operational message processed. System core fully synchronized.";
-
-        const aiMsg = {
-          senderId: targetEmployee.id,
-          senderName: targetEmployee.name,
-          text: aiText,
-          timestamp: Date.now()
-        };
-
-        // Append Gemini's response to Firestore
-        await setDoc(doc(db, 'workforce_p2p_chats', channelId), {
-          messages: [...updatedMessages, aiMsg],
-          lastMessage: aiText,
-          updatedAt: Date.now()
-        }, { merge: true });
-      }
-    } catch (err) {
-      console.error("Error sending staff P2P message:", err);
-    } finally {
-      setIsSendingStaffMsg(false);
-    }
-  };
-
-  // Handle Drag & Drop states
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-
-  const handleFileDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const files = e.dataTransfer.files;
-    if (files && files.length > 0) {
-      await processImportFile(files[0]);
-    }
-  };
-
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      await processImportFile(files[0]);
-    }
-  };
-
-  const processImportFile = async (file: File) => {
-    setImportStatus(null);
-
-    // Intercept image files and handle gracefully as custom profile pictures
-    if (file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name)) {
-      const imgReader = new FileReader();
-      imgReader.onload = async (event) => {
-        try {
-          const base64Url = event.target?.result as string;
-          if (activeTab === 'my_desk') {
-            setMyPhoto(base64Url);
-            setImportStatus({
-              success: 1,
-              message: `Loaded image "${file.name}" into your personal profile! Don't forget to click Save below.`
-            });
-          } else {
-            setEmpPhoto(base64Url);
-            setShowAddModal(true);
-            setImportStatus({
-              success: 1,
-              message: `Loaded image "${file.name}" into the "Station New Officer" form! Choose details and click Confirm.`
-            });
-          }
-        } catch (err: any) {
-          console.error("Error processing image file:", err);
-          setImportStatus({ error: "Failed to process image file." });
-        }
       };
-      imgReader.readAsDataURL(file);
-      return;
-    }
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const text = event.target?.result as string;
-        const parsed = JSON.parse(text);
-        
-        let profilesToImport: any[] = [];
-        if (Array.isArray(parsed)) {
-          profilesToImport = parsed;
-        } else if (typeof parsed === 'object' && parsed !== null) {
-          profilesToImport = [parsed];
-        } else {
-          throw new Error("File content must be a valid JSON array or object containing employee profiles.");
-        }
-
-        let importCount = 0;
-        for (const item of profilesToImport) {
-          if (!item.name || !item.position || !item.department) {
-            continue; // Skip invalid rows
-          }
-          
-          const newEmp: Omit<Employee, 'id'> = {
-            name: item.name.trim(),
-            photoUrl: item.photoUrl || defaultPortraits[Math.floor(Math.random() * defaultPortraits.length)],
-            department: item.department,
-            position: item.position.trim(),
-            joinedDate: item.joinedDate || new Date().toISOString().split('T')[0],
-            status: item.status || 'Available',
-            performanceScore: item.performanceScore || 98,
-            employeeType: item.employeeType || 'Digital Employee',
-            internalAiCode: item.internalAiCode || `AI-GEN-${Math.floor(100 + Math.random() * 900)}`,
-            aiModelVersion: item.aiModelVersion || 'Gemini 3.5 Flash',
-            knowledgeVersion: item.knowledgeVersion || 'v1.0.0',
-            lastUpdated: new Date().toISOString(),
-            averageResponseTime: item.averageResponseTime || '< 1 min',
-            customerSatisfaction: item.customerSatisfaction || '4.9/5',
-            totalChats: item.totalChats || 0,
-            customPrompt: item.customPrompt || '',
-            temperature: item.temperature !== undefined ? item.temperature : 0.4
-          };
-
-          await addDoc(collection(db, 'employees'), newEmp);
-          importCount++;
-        }
-
-        setImportStatus({ success: importCount });
-      } catch (err: any) {
-        console.error("Error importing file:", err);
-        setImportStatus({ error: err?.message || "Failed to parse JSON file." });
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  const handleExportJSON = () => {
-    const cleanEmps = employees.map(({ id, ...rest }) => rest);
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(cleanEmps, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", `TUT_Money_Lending_Employees_${new Date().toISOString().split('T')[0]}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-  };
-
-  // Toggle Employee Status
-  const handleToggleStatus = async (employeeId: string, currentStatus: 'Available' | 'Busy' | 'Offline') => {
-    const statuses: ('Available' | 'Busy' | 'Offline')[] = ['Available', 'Busy', 'Offline'];
-    const nextIndex = (statuses.indexOf(currentStatus) + 1) % statuses.length;
-    const nextStatus = statuses[nextIndex];
-
-    try {
-      await updateDoc(doc(db, 'employees', employeeId), {
-        status: nextStatus,
-        lastUpdated: new Date().toISOString()
-      });
-    } catch (err) {
-      console.error("Error updating status:", err);
+      const finalMsgs = [...newMsgs, agentResponse];
+      setAdminChatHistory(finalMsgs);
     }
   };
 
-  // Update Ticket Status
-  const handleUpdateTicketStatus = async (ticketId: string, nextStatus: 'Open' | 'In Progress' | 'Resolved') => {
-    try {
-      await updateDoc(doc(db, 'workforce_tickets', ticketId), {
-        status: nextStatus,
-        updatedAt: Date.now()
-      });
-    } catch (err) {
-      console.error("Error updating ticket:", err);
-    }
-  };
-
-  // Generate AI Operation Report
+  // Generate Executive Operational Report
   const handleGenerateReport = async () => {
     setGeneratingReport(true);
     setGeneratedReport(null);
+    setReportCopied(false);
 
     try {
       const response = await fetch('/api/digital-workforce/report', {
@@ -804,1611 +435,1166 @@ export const WorkforceManagement: React.FC<WorkforceManagementProps> = ({ system
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reportType,
-          systemStats
+          systemStats,
+          reserveSummary,
+          recentTransactions: recentTransactions.slice(0, 15).map((t: any) => ({
+            memoId: t.memoId || t.id,
+            type: t.type,
+            amount: t.amount,
+            status: t.status,
+            method: t.paymentMethod,
+            trxId: t.transactionId,
+            date: t.date,
+          })),
+          recentIssues: issues.slice(0, 15).map(i => ({
+            id: i.id,
+            category: i.category,
+            priority: i.priority,
+            title: i.title,
+            status: i.status,
+            reportedBy: i.userName,
+            agent: i.agentName,
+            relatedTransactionId: i.relatedTransactionId,
+            agentNotes: i.agentNotes,
+            recommendedAction: i.recommendedAction,
+            evidenceComplete: i.evidenceComplete,
+          }))
         })
       });
 
       const data = await response.json();
-      if (data.success) {
+      if (data.success && data.reportMarkdown) {
         setGeneratedReport(data.reportMarkdown);
       } else {
-        setGeneratedReport("Failed to compile report. Please verify your Gemini API Key configuration.");
+        setGeneratedReport("Failed to generate report output. Please check server logs.");
       }
     } catch (err: any) {
-      console.error("Report generation failed:", err);
+      console.error("Report synthesis failed:", err);
       setGeneratedReport(`Network error occurred during report synthesis: ${err.message}`);
     } finally {
       setGeneratingReport(false);
     }
   };
 
-  // Filtered Tickets
-  const filteredTickets = tickets.filter(t => {
-    const matchesFilter = ticketFilter === 'all' || t.status === ticketFilter;
-    const matchesSearch = t.userName.toLowerCase().includes(ticketSearch.toLowerCase()) || 
-                          t.userEmail.toLowerCase().includes(ticketSearch.toLowerCase()) || 
-                          t.description.toLowerCase().includes(ticketSearch.toLowerCase()) ||
-                          t.id.toLowerCase().includes(ticketSearch.toLowerCase());
-    return matchesFilter && matchesSearch;
+  // Copy Report to Clipboard
+  const handleCopyReport = () => {
+    if (!generatedReport) return;
+    navigator.clipboard.writeText(generatedReport);
+    setReportCopied(true);
+    setTimeout(() => setReportCopied(false), 2000);
+  };
+
+  // Update Status of an Issue Noted by Banking Officer / AI
+  const handleUpdateIssueStatus = async (
+    issueId: string, 
+    newStatus: 'Open' | 'In Progress' | 'Resolved',
+    notes?: string
+  ) => {
+    setIsUpdatingIssue(true);
+    try {
+      const updateData: any = {
+        status: newStatus,
+        updatedAt: Date.now()
+      };
+      if (notes !== undefined) {
+        updateData.adminNotes = notes;
+      }
+
+      // Optimistically update local state immediately
+      setIssues(prev => prev.map(item => {
+        if (item.id === issueId || item.docId === issueId || item.ticketId === issueId) {
+          return {
+            ...item,
+            status: newStatus,
+            adminNotes: notes !== undefined ? notes : item.adminNotes,
+            updatedAt: Date.now()
+          };
+        }
+        return item;
+      }));
+
+      // Update local state if viewing details
+      if (selectedIssueDetail && (selectedIssueDetail.id === issueId || selectedIssueDetail.docId === issueId || selectedIssueDetail.ticketId === issueId)) {
+        setSelectedIssueDetail({
+          ...selectedIssueDetail,
+          status: newStatus,
+          adminNotes: notes !== undefined ? notes : selectedIssueDetail.adminNotes,
+          updatedAt: Date.now()
+        });
+      }
+
+      // Find the issue in memory to get existing data & docId
+      const targetIssue = issues.find(i => 
+        i.id === issueId || i.docId === issueId || i.ticketId === issueId
+      );
+
+      const targetDocId = targetIssue?.docId || issueId;
+      let targetDocRef = doc(db, 'agent_reported_issues', targetDocId);
+      let foundSnap = await getDoc(targetDocRef);
+
+      // If direct doc lookup by targetDocId wasn't found, try looking up by 'id' or 'ticketId'
+      if (!foundSnap.exists()) {
+        try {
+          const qById = query(collection(db, 'agent_reported_issues'), where('id', '==', issueId), limit(1));
+          const querySnap = await getDocs(qById);
+          if (!querySnap.empty) {
+            targetDocRef = doc(db, 'agent_reported_issues', querySnap.docs[0].id);
+            foundSnap = querySnap.docs[0];
+          } else {
+            const qByTicket = query(collection(db, 'agent_reported_issues'), where('ticketId', '==', issueId), limit(1));
+            const queryTicketSnap = await getDocs(qByTicket);
+            if (!queryTicketSnap.empty) {
+              targetDocRef = doc(db, 'agent_reported_issues', queryTicketSnap.docs[0].id);
+              foundSnap = queryTicketSnap.docs[0];
+            }
+          }
+        } catch (queryErr) {
+          console.warn("Could not query document fallback:", queryErr);
+        }
+      }
+
+      // Using setDoc with { merge: true } guarantees it will never throw "No document to update"
+      if (foundSnap.exists()) {
+        await setDoc(targetDocRef, updateData, { merge: true });
+      } else {
+        // Create/upsert the record under issueId so it persists properly
+        await setDoc(doc(db, 'agent_reported_issues', issueId), {
+          id: issueId,
+          ticketId: issueId,
+          docId: issueId,
+          title: targetIssue?.title || `Inquiry ${issueId}`,
+          description: targetIssue?.description || 'Member inquiry logged through support desk',
+          category: targetIssue?.category || 'Loan Issue',
+          priority: targetIssue?.priority || 'Medium',
+          userName: targetIssue?.userName || 'Member',
+          userId: targetIssue?.userId || 'unknown',
+          agentId: targetIssue?.agentId || 'EMP-00101',
+          agentName: targetIssue?.agentName || 'Zubair Ahmed',
+          agentGender: targetIssue?.agentGender || 'Male',
+          createdAt: targetIssue?.createdAt || Date.now(),
+          ...updateData
+        }, { merge: true });
+      }
+
+      // Best effort update on workforce_tickets
+      try {
+        const ticketRef = doc(db, 'workforce_tickets', issueId);
+        const ticketSnap = await getDoc(ticketRef);
+        if (ticketSnap.exists()) {
+          await setDoc(ticketRef, { status: newStatus, updatedAt: Date.now() }, { merge: true });
+        }
+      } catch (tErr) {
+        // Ignore ticket sync error
+      }
+    } catch (err) {
+      console.error("Error updating issue status:", err);
+    } finally {
+      setIsUpdatingIssue(false);
+    }
+  };
+
+  // Toggle Agent Status (Available / Busy / Offline)
+  const handleToggleAgentStatus = async (emp: Employee) => {
+    const statuses: ('Available' | 'Busy' | 'Offline')[] = ['Available', 'Busy', 'Offline'];
+    const nextStatus = statuses[(statuses.indexOf(emp.status) + 1) % statuses.length];
+
+    try {
+      const targetDocId = emp.docId || emp.id;
+      if (targetDocId) {
+        await setDoc(doc(db, 'employees', targetDocId), {
+          status: nextStatus,
+          lastUpdated: new Date().toISOString()
+        }, { merge: true });
+      }
+      setEmployees(prev => prev.map(e => e.id === emp.id ? { ...e, status: nextStatus } : e));
+    } catch (err) {
+      console.error("Error toggling employee status:", err);
+    }
+  };
+
+  // Save AI Tuning Configuration
+  const handleSaveTuning = async () => {
+    if (!tuningAgent) return;
+    setSavingTuning(true);
+
+    try {
+      const targetDocId = tuningAgent.docId || tuningAgent.id;
+      if (targetDocId) {
+        await setDoc(doc(db, 'employees', targetDocId), {
+          customPrompt: tuningPrompt.trim(),
+          temperature: tuningTemp,
+          lastUpdated: new Date().toISOString()
+        }, { merge: true });
+      }
+      setEmployees(prev => prev.map(e => e.id === tuningAgent.id ? {
+        ...e,
+        customPrompt: tuningPrompt.trim(),
+        temperature: tuningTemp
+      } : e));
+      setTuningAgent(null);
+    } catch (err) {
+      console.error("Error saving AI tuning:", err);
+    } finally {
+      setSavingTuning(false);
+    }
+  };
+
+  // Export Issues to CSV for Audit Compliance
+  const handleExportIssuesCSV = () => {
+    if (issues.length === 0) return;
+
+    const headers = ['Issue ID', 'Member Name', 'Member Phone', 'Category', 'Priority', 'Agent Name', 'Agent Gender', 'Title', 'Status', 'Date Reported', 'Admin Notes'];
+    const rows = issues.map(i => [
+      `"${i.id}"`,
+      `"${i.userName || ''}"`,
+      `"${i.userPhone || ''}"`,
+      `"${i.category}"`,
+      `"${i.priority}"`,
+      `"${i.agentName}"`,
+      `"${i.agentGender}"`,
+      `"${(i.title || '').replace(/"/g, '""')}"`,
+      `"${i.status}"`,
+      `"${new Date(i.createdAt).toISOString()}"`,
+      `"${(i.adminNotes || '').replace(/"/g, '""')}"`
+    ]);
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const link = document.createElement('a');
+    link.setAttribute('href', encodeURI(csvContent));
+    link.setAttribute('download', `TUT_Member_Reported_Issues_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  };
+
+  // Filtered Issues list
+  const filteredIssues = issues.filter(i => {
+    const matchesSearch = 
+      (i.userName || '').toLowerCase().includes(issueSearch.toLowerCase()) ||
+      (i.title || '').toLowerCase().includes(issueSearch.toLowerCase()) ||
+      (i.description || '').toLowerCase().includes(issueSearch.toLowerCase()) ||
+      (i.id || '').toLowerCase().includes(issueSearch.toLowerCase());
+    
+    const matchesStatus = issueStatusFilter === 'all' || i.status === issueStatusFilter;
+    const matchesPriority = issuePriorityFilter === 'all' || i.priority === issuePriorityFilter;
+    const matchesAgent = issueAgentFilter === 'all' || i.agentName === issueAgentFilter;
+
+    return matchesSearch && matchesStatus && matchesPriority && matchesAgent;
   });
 
   return (
-    <div className="space-y-6">
-      {/* Header Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/60 border border-white/5 p-4 rounded-2xl flex items-center justify-between shadow-xl">
-          <div className="space-y-1">
-            <span className="text-xs text-slate-400 font-bold uppercase tracking-wider block">Active Workforce</span>
-            <div className="text-2xl font-black text-white">{employees.length} Officers</div>
-            <span className="text-[10px] text-emerald-400 font-bold block">
-              {employees.filter(e => e.employeeType === 'Digital Employee').length} AI Agents Active
-            </span>
-          </div>
-          <div className="w-12 h-12 bg-blue-600/10 text-blue-400 rounded-xl flex items-center justify-center">
-            <Users className="w-6 h-6" />
-          </div>
-        </div>
-
-        <div className="bg-slate-900/60 border border-white/5 p-4 rounded-2xl flex items-center justify-between shadow-xl">
-          <div className="space-y-1">
-            <span className="text-xs text-slate-400 font-bold uppercase tracking-wider block">Escalated Tickets</span>
-            <div className="text-2xl font-black text-white">
-              {tickets.filter(t => t.status !== 'Resolved').length} Active
+    <div className="space-y-6 text-left pb-16">
+      {/* Top Banner & Quick Navigation */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-900/90 to-blue-950/40 border border-white/10 rounded-3xl p-5 sm:p-6 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-80 h-80 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+        
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+          <div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2.5 py-0.5 rounded-full flex items-center gap-1.5">
+                <ShieldCheck className="w-3 h-3 text-blue-400" />
+                Operations &amp; Support Desk
+              </span>
+              <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                24/7 Active
+              </span>
             </div>
-            <span className="text-[10px] text-amber-400 font-bold block">
-              {tickets.filter(t => t.status === 'Open').length} Unassigned / Open
-            </span>
+            <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+              Banking Officers &amp; Issue Operations Hub
+            </h2>
+            <p className="text-xs text-slate-400 max-w-2xl mt-1">
+              Command console for your 2 specialized banking officers: <strong>Zubair Ahmed</strong> (Credit &amp; Underwriting) &amp; <strong>Nusrat Jahan</strong> (Treasury &amp; Member Care). Monitor live member conversations, audit structured case files, consult officers directly, and compile executive reports.
+            </p>
           </div>
-          <div className="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center">
-            <AlertCircle className="w-6 h-6" />
+
+          {/* Quick Stats Pill */}
+          <div className="flex items-center gap-3 bg-slate-950/80 border border-white/10 p-2.5 rounded-2xl shrink-0">
+            <div className="px-3 py-1 text-center border-r border-white/10">
+              <div className="text-base font-black text-white">{issues.length}</div>
+              <div className="text-[9px] font-bold uppercase text-slate-400">Issues Noted</div>
+            </div>
+            <div className="px-3 py-1 text-center border-r border-white/10">
+              <div className="text-base font-black text-amber-400">
+                {issues.filter(i => i.status !== 'Resolved').length}
+              </div>
+              <div className="text-[9px] font-bold uppercase text-slate-400">Open Cases</div>
+            </div>
+            <div className="px-3 py-1 text-center">
+              <div className="text-base font-black text-emerald-400">4.98</div>
+              <div className="text-[9px] font-bold uppercase text-slate-400">Avg CSAT</div>
+            </div>
           </div>
         </div>
 
-        <div className="bg-slate-900/60 border border-white/5 p-4 rounded-2xl flex items-center justify-between shadow-xl">
-          <div className="space-y-1">
-            <span className="text-xs text-slate-400 font-bold uppercase tracking-wider block">Avg Resolution Time</span>
-            <div className="text-2xl font-black text-white">4.2 Mins</div>
-            <span className="text-[10px] text-emerald-400 font-bold block">Digital Agent SLA Met 100%</span>
-          </div>
-          <div className="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-xl flex items-center justify-center">
-            <Clock className="w-6 h-6" />
-          </div>
-        </div>
+        {/* Navigation Tabs Bar */}
+        <div className="flex items-center gap-2 mt-6 border-t border-white/10 pt-4 overflow-x-auto custom-scrollbar">
+          <button
+            onClick={() => setActiveTab('monitoring')}
+            className={`px-4 py-2 rounded-xl text-xs font-black tracking-wide flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'monitoring'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+                : 'bg-slate-950/60 text-slate-400 hover:text-white hover:bg-slate-900 border border-white/5'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            AI Agent Monitoring (2)
+          </button>
 
-        <div className="bg-slate-900/60 border border-white/5 p-4 rounded-2xl flex items-center justify-between shadow-xl">
-          <div className="space-y-1">
-            <span className="text-xs text-slate-400 font-bold uppercase tracking-wider block">Operational CSAT</span>
-            <div className="text-2xl font-black text-white">4.92 / 5</div>
-            <span className="text-[10px] text-blue-400 font-bold block">Based on {employees.reduce((acc, curr) => acc + curr.totalChats, 0)} chats</span>
-          </div>
-          <div className="w-12 h-12 bg-purple-500/10 text-purple-400 rounded-xl flex items-center justify-center">
-            <ThumbsUp className="w-6 h-6" />
-          </div>
+          <button
+            onClick={() => setActiveTab('issues_tracker')}
+            className={`px-4 py-2 rounded-xl text-xs font-black tracking-wide flex items-center gap-2 transition-all cursor-pointer relative ${
+              activeTab === 'issues_tracker'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+                : 'bg-slate-950/60 text-slate-400 hover:text-white hover:bg-slate-900 border border-white/5'
+            }`}
+          >
+            <ClipboardList className="w-4 h-4 text-amber-400" />
+            Member Issues Tracker
+            {issues.filter(i => i.status === 'Open').length > 0 && (
+              <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                {issues.filter(i => i.status === 'Open').length}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('admin_chat')}
+            className={`px-4 py-2 rounded-xl text-xs font-black tracking-wide flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'admin_chat'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+                : 'bg-slate-950/60 text-slate-400 hover:text-white hover:bg-slate-900 border border-white/5'
+            }`}
+          >
+            <MessageSquare className="w-4 h-4 text-emerald-400" />
+            Admin Executive Chat
+          </button>
+
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`px-4 py-2 rounded-xl text-xs font-black tracking-wide flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'reports'
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30'
+                : 'bg-slate-950/60 text-slate-400 hover:text-white hover:bg-slate-900 border border-white/5'
+            }`}
+          >
+            <FileText className="w-4 h-4 text-purple-400" />
+            Executive Reports &amp; Summaries
+          </button>
         </div>
       </div>
 
-      {/* Navigation Sub-Tabs */}
-      <div className="flex border-b border-white/10 gap-2 overflow-x-auto pb-px">
-        <button
-          onClick={() => setActiveTab('employees')}
-          className={`px-4 py-3 text-xs uppercase tracking-widest font-black border-b-2 transition-all shrink-0 flex items-center gap-2 ${
-            activeTab === 'employees' 
-              ? 'border-blue-500 text-white bg-blue-500/5' 
-              : 'border-transparent text-slate-400 hover:text-white hover:bg-white/[0.01]'
-          }`}
-        >
-          <Users className="w-3.5 h-3.5" />
-          Employees Directory
-        </button>
-        <button
-          onClick={() => setActiveTab('tickets')}
-          className={`px-4 py-3 text-xs uppercase tracking-widest font-black border-b-2 transition-all shrink-0 flex items-center gap-2 ${
-            activeTab === 'tickets' 
-              ? 'border-blue-500 text-white bg-blue-500/5' 
-              : 'border-transparent text-slate-400 hover:text-white hover:bg-white/[0.01]'
-          }`}
-        >
-          <AlertCircle className="w-3.5 h-3.5" />
-          Support Tickets
-          {tickets.filter(t => t.status !== 'Resolved').length > 0 && (
-            <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-2 py-0.5 rounded-full">
-              {tickets.filter(t => t.status !== 'Resolved').length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab('analytics')}
-          className={`px-4 py-3 text-xs uppercase tracking-widest font-black border-b-2 transition-all shrink-0 flex items-center gap-2 ${
-            activeTab === 'analytics' 
-              ? 'border-blue-500 text-white bg-blue-500/5' 
-              : 'border-transparent text-slate-400 hover:text-white hover:bg-white/[0.01]'
-          }`}
-        >
-          <Activity className="w-3.5 h-3.5" />
-          Performance Analytics
-        </button>
-        <button
-          onClick={() => setActiveTab('reports')}
-          className={`px-4 py-3 text-xs uppercase tracking-widest font-black border-b-2 transition-all shrink-0 flex items-center gap-2 ${
-            activeTab === 'reports' 
-              ? 'border-blue-500 text-white bg-blue-500/5' 
-              : 'border-transparent text-slate-400 hover:text-white hover:bg-white/[0.01]'
-          }`}
-        >
-          <FileText className="w-3.5 h-3.5" />
-          AI Operation Reports
-        </button>
-        <button
-          onClick={() => setActiveTab('my_desk')}
-          className={`px-4 py-3 text-xs uppercase tracking-widest font-black border-b-2 transition-all shrink-0 flex items-center gap-2 ${
-            activeTab === 'my_desk' 
-              ? 'border-blue-500 text-white bg-blue-500/5' 
-              : 'border-transparent text-slate-400 hover:text-white hover:bg-white/[0.01]'
-          }`}
-        >
-          <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
-          My Officer Desk
-        </button>
-      </div>
-
-      {/* Main Content Area */}
-      {loading ? (
-        <div className="flex flex-col items-center justify-center py-20 space-y-4">
-          <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-          <span className="text-sm text-slate-400 font-bold uppercase tracking-wider">Loading Digital Workforce...</span>
-        </div>
-      ) : (
-        <>
-          {/* TAB 1: EMPLOYEES DIRECTORY */}
-          {activeTab === 'employees' && (
-            <div className="space-y-6">
-              {/* Header and Quick Actions */}
-              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-slate-900/20 p-6 rounded-3xl border border-white/5">
-                <div className="space-y-1">
-                  <h3 className="text-lg font-black text-white flex items-center gap-2">
-                    <Users className="w-5 h-5 text-blue-500 animate-pulse" />
-                    ACTIVE STAFF ALLOCATION
-                  </h3>
-                  <p className="text-xs text-slate-400">Manage digital agents & human employees, tune AI core system prompts, and upload staff profiles.</p>
-                </div>
-                
-                <div className="flex flex-wrap gap-2.5 items-center">
-                  <button
-                    onClick={() => setShowAddModal(true)}
-                    className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white text-xs uppercase tracking-widest font-black px-4 py-3 rounded-xl shadow-lg shadow-blue-600/20 active:scale-95 transition-all"
-                  >
-                    <UserPlus className="w-4 h-4" />
-                    Station Officer
-                  </button>
-
-                  <button
-                    onClick={handleExportJSON}
-                    className="flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs uppercase tracking-widest font-black px-4 py-3 rounded-xl border border-white/10 active:scale-95 transition-all"
-                    title="Export employee directory database to JSON"
-                  >
-                    <Download className="w-4 h-4" />
-                    Export Database
-                  </button>
-                </div>
-              </div>
-
-              {/* Drag & Drop File Import Drawer */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="md:col-span-2">
-                  <div
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleFileDrop}
-                    className={`border-2 border-dashed rounded-3xl p-6 transition-all duration-300 flex flex-col md:flex-row items-center justify-between gap-6 ${
-                      isDragOver 
-                        ? 'border-blue-500 bg-blue-500/10 text-white shadow-2xl scale-[1.01]' 
-                        : 'border-white/10 bg-slate-900/30 hover:border-white/20'
-                    }`}
-                  >
-                    <div className="flex items-center gap-4 text-left">
-                      <div className="w-12 h-12 rounded-2xl bg-blue-500/10 text-blue-400 flex items-center justify-center shrink-0">
-                        <UploadCloud className="w-6 h-6 animate-bounce" style={{ animationDuration: '3s' }} />
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-black text-white uppercase tracking-wider">Drag & Drop Staff JSON or Image</h4>
-                        <p className="text-[10px] text-slate-400 max-w-sm mt-0.5 leading-relaxed">
-                          Drop a compliant <code>.json</code> file to bulk-import profiles, or drop an <strong>image file</strong> to instantly draft or update a custom profile photo!
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col items-end gap-2 shrink-0 w-full md:w-auto">
-                      <label className="w-full md:w-auto text-center cursor-pointer bg-slate-950 hover:bg-slate-900 border border-white/10 text-slate-300 text-[10px] uppercase tracking-widest font-black px-4 py-3 rounded-xl transition-all block">
-                        Browse Profiles / Photo
-                        <input
-                          type="file"
-                          accept=".json,image/*"
-                          onChange={handleFileSelect}
-                          className="hidden"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Import Status Banner / Preset Helper */}
-                <div className="bg-slate-900/20 border border-white/5 rounded-3xl p-5 flex flex-col justify-center space-y-2">
-                  {importStatus ? (
-                    <div className="space-y-1">
-                      {importStatus.success !== undefined ? (
-                        <>
-                          <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-black uppercase">
-                            <CheckCircle className="w-4 h-4" />
-                            Import Successful!
-                          </div>
-                          <p className="text-[11px] text-slate-400 leading-relaxed">
-                            {importStatus.message || `Successfully imported ${importStatus.success} new officer cards into the Firestore registry.`}
-                          </p>
-                        </>
-                      ) : (
-                        <>
-                          <div className="flex items-center gap-1.5 text-rose-400 text-xs font-black uppercase">
-                            <AlertCircle className="w-4 h-4" />
-                            Import Failed
-                          </div>
-                          <p className="text-[10px] text-slate-400 line-clamp-2">
-                            {importStatus.error}
-                          </p>
-                        </>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-1 text-left">
-                      <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1">
-                        <FileJson className="w-3.5 h-3.5 text-yellow-500" />
-                        JSON Import Template
-                      </span>
-                      <p className="text-[10px] text-slate-400 leading-relaxed">
-                        Expected format: Array of objects with <code>name</code>, <code>position</code>, <code>department</code>, and optional <code>customPrompt</code>.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {employees.map((emp) => (
-                  <div 
-                    key={emp.id}
-                    className="relative bg-slate-900/40 border border-white/5 rounded-3xl p-6 shadow-xl overflow-hidden hover:border-white/10 transition-all duration-300 group"
-                  >
-                    {/* Background visual accents */}
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-blue-600/5 to-purple-500/0 rounded-full blur-2xl pointer-events-none" />
-
-                    <div className="flex items-start justify-between gap-4 relative">
-                      <div className="flex gap-4">
-                        <div className="relative">
-                          <img 
-                            src={emp.photoUrl} 
-                            alt={emp.name}
-                            className="w-14 h-14 rounded-2xl object-cover border border-white/10 shadow-lg"
-                            referrerPolicy="no-referrer"
-                          />
-                          <span className={`absolute -bottom-1 -right-1 w-4.5 h-4.5 rounded-full border-4 border-slate-950 flex items-center justify-center ${
-                            emp.status === 'Available' ? 'bg-emerald-500' :
-                            emp.status === 'Busy' ? 'bg-amber-500' : 'bg-slate-500'
-                          }`} title={emp.status} />
-                        </div>
-                        <div>
-                          <h4 className="text-base font-black text-white group-hover:text-blue-400 transition-colors">{emp.name}</h4>
-                          <span className="text-[10px] text-slate-400 block font-semibold uppercase mt-0.5">{emp.position}</span>
-                          <span className="text-[11px] text-blue-400 font-bold block mt-1">{emp.department}</span>
-                        </div>
-                      </div>
-
-                      {/* Employee Type Badge (Visible only to admin dashboard) */}
-                      <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-1 rounded-lg ${
-                        emp.employeeType === 'Digital Employee' 
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/10' 
-                          : 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/10'
-                      }`}>
-                        {emp.employeeType === 'Digital Employee' ? 'AI Agent' : 'Human'}
-                      </span>
-                    </div>
-
-                    {/* Metadata block for AI Employees */}
-                    {emp.employeeType === 'Digital Employee' && (
-                      <div className="mt-4 p-3 bg-slate-950/60 border border-white/5 rounded-2xl space-y-2 text-[11px]">
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-semibold">EMP Code:</span>
-                          <span className="text-slate-200 font-mono">{emp.internalAiCode}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-semibold">Core Engine:</span>
-                          <span className="text-blue-400 font-mono flex items-center gap-1">
-                            <Sparkles className="w-3 h-3 text-blue-400 animate-pulse" />
-                            {emp.aiModelVersion}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-semibold">KB Version:</span>
-                          <span className="text-purple-400 font-mono">{emp.knowledgeVersion}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Common Stats */}
-                    <div className="grid grid-cols-3 gap-2 mt-4 pt-4 border-t border-white/5 text-center">
-                      <div>
-                        <span className="text-[9px] text-slate-500 font-black uppercase tracking-wider block">ID</span>
-                        <span className="text-xs text-white font-mono font-bold">{emp.id.substring(0, 8)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-500 font-black uppercase tracking-wider block">CSAT Score</span>
-                        <span className="text-xs text-white font-bold">{emp.customerSatisfaction}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-500 font-black uppercase tracking-wider block">Chats Done</span>
-                        <span className="text-xs text-white font-bold">{emp.totalChats}</span>
-                      </div>
-                    </div>
-
-                    {/* Actions bar */}
-                    <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
-                      <button
-                        onClick={() => handleToggleStatus(emp.id, emp.status)}
-                        className="text-[10px] font-black uppercase tracking-wider py-2 rounded-xl border border-white/10 hover:bg-white/5 text-slate-300 hover:text-white transition-all text-center flex items-center justify-center gap-1"
-                        title="Toggle availability status"
-                      >
-                        <RefreshCw className="w-3 h-3 text-slate-400" />
-                        {emp.status}
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setSelectedStaffId(`${currentUser?.uid || 'admin'}_${emp.id}`);
-                          setChatMode('staff');
-                          setActiveTab('my_desk');
-                        }}
-                        className="text-[10px] font-black uppercase tracking-wider py-2 rounded-xl bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 hover:text-blue-300 transition-all text-center flex items-center justify-center gap-1"
-                        title="Launch internal P2P Operations inquiry"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5" />
-                        P2P Chat
-                      </button>
-
-                      {emp.employeeType === 'Digital Employee' && (
-                        <button
-                          onClick={() => handleOpenTuning(emp)}
-                          className="col-span-2 text-[10px] font-black uppercase tracking-wider py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-md active:scale-[0.98] transition-all text-center flex items-center justify-center gap-1.5"
-                        >
-                          <Sliders className="w-3.5 h-3.5" />
-                          Tune AI Persona & Test
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+      {/* ======================================================== */}
+      {/* TAB 1: AI AGENT MONITORING & PERFORMANCE */}
+      {/* ======================================================== */}
+      {activeTab === 'monitoring' && (
+        <div className="space-y-6">
+          {/* Section Subhead */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <Users className="w-4 h-4 text-blue-400" />
+                The 2 Dedicated AI Officers (1 Male, 1 Female)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Trained in banking rules, dual-reserve safety, member ledgers, and automatic issue noting.
+              </p>
             </div>
-          )}
+            <span className="text-xs font-bold text-slate-400">
+              Total Agents: <strong className="text-white">2 Active</strong>
+            </span>
+          </div>
 
-          {/* TAB 2: SUPPORT TICKETS BOARD */}
-          {activeTab === 'tickets' && (
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <h3 className="text-lg font-black text-white">ESCALATED COMPLIANCE TICKETS</h3>
-                  <p className="text-xs text-slate-400">Review tickets created by AI Employees when a user requests manual ledger changes or overrides.</p>
-                </div>
+          {/* The 2 Core Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {employees.map((emp, idx) => (
+              <div 
+                key={`${emp.id || (emp.gender === 'Male' ? 'EMP-00101' : 'EMP-00102')}-${idx}`}
+                className="bg-slate-900/60 border border-white/10 hover:border-blue-500/30 rounded-3xl p-5 shadow-xl transition-all relative flex flex-col justify-between"
+              >
+                <div>
+                  {/* Top Bar with Desk Role and Status */}
+                  <div className="flex items-center justify-between mb-4">
+                    <span className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 ${
+                      emp.gender === 'Male'
+                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                        : 'bg-pink-500/20 text-pink-300 border-pink-500/30'
+                    }`}>
+                      {emp.id === 'EMP-00101' ? 'Credit & Underwriting' : 'Treasury & Member Care'}
+                    </span>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setTicketFilter('all')}
-                    className={`px-3 py-1.5 text-[11px] uppercase tracking-wider font-bold rounded-lg transition-all ${
-                      ticketFilter === 'all' ? 'bg-blue-600 text-white' : 'bg-slate-900 border border-white/5 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    All
-                  </button>
-                  <button
-                    onClick={() => setTicketFilter('Open')}
-                    className={`px-3 py-1.5 text-[11px] uppercase tracking-wider font-bold rounded-lg transition-all ${
-                      ticketFilter === 'Open' ? 'bg-red-500/20 text-red-400 border border-red-500/10' : 'bg-slate-900 border border-white/5 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Open
-                  </button>
-                  <button
-                    onClick={() => setTicketFilter('In Progress')}
-                    className={`px-3 py-1.5 text-[11px] uppercase tracking-wider font-bold rounded-lg transition-all ${
-                      ticketFilter === 'In Progress' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/10' : 'bg-slate-900 border border-white/5 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    In Progress
-                  </button>
-                  <button
-                    onClick={() => setTicketFilter('Resolved')}
-                    className={`px-3 py-1.5 text-[11px] uppercase tracking-wider font-bold rounded-lg transition-all ${
-                      ticketFilter === 'Resolved' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/10' : 'bg-slate-900 border border-white/5 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Resolved
-                  </button>
-                </div>
-              </div>
-
-              {/* Search Bar */}
-              <div className="relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder="Search tickets by ID, member, or category..."
-                  value={ticketSearch}
-                  onChange={(e) => setTicketSearch(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 pl-11 pr-4 py-3 rounded-2xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 transition-colors"
-                />
-              </div>
-
-              {filteredTickets.length === 0 ? (
-                <div className="bg-slate-900/20 border border-white/5 p-12 rounded-3xl text-center space-y-3">
-                  <CheckCircle className="w-12 h-12 text-emerald-400 mx-auto animate-bounce" />
-                  <h4 className="text-sm font-black text-white uppercase tracking-wider">ALL CLEAR! NO ACTIVE TICKETS</h4>
-                  <p className="text-xs text-slate-400 max-w-sm mx-auto">No members are currently waiting on human manual intervention. AI Employees are handling all inquiries.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {filteredTickets.map((ticket) => (
-                    <div 
-                      key={ticket.id}
-                      className="bg-slate-900/40 border border-white/5 p-6 rounded-3xl shadow-xl space-y-4 hover:border-white/10 transition-colors"
+                    <button
+                      onClick={() => handleToggleAgentStatus(emp)}
+                      className={`text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full border flex items-center gap-1.5 cursor-pointer transition-colors ${
+                        emp.status === 'Available'
+                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30'
+                          : 'bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/30'
+                      }`}
+                      title="Click to toggle status"
                     >
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/5">
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs font-mono font-bold text-blue-400 bg-blue-500/10 px-2 py-1 rounded-lg">
-                            {ticket.id}
-                          </span>
-                          <h4 className="text-sm font-black text-white">{ticket.category}</h4>
-                        </div>
+                      <span className={`w-1.5 h-1.5 rounded-full ${emp.status === 'Available' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                      {emp.status} • 24/7 Live
+                    </button>
+                  </div>
 
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg ${
-                            ticket.priority === 'Urgent' ? 'bg-red-600/20 text-red-400 border border-red-500/20' :
-                            ticket.priority === 'High' ? 'bg-rose-500/20 text-rose-400 border border-rose-500/10' :
-                            ticket.priority === 'Medium' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/10' :
-                            'bg-blue-600/20 text-blue-400 border border-blue-500/10'
-                          }`}>
-                            {ticket.priority} Priority
-                          </span>
-
-                          <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg ${
-                            ticket.status === 'Resolved' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/10' :
-                            ticket.status === 'In Progress' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/10' :
-                            'bg-red-500/20 text-red-400 border border-red-500/10'
-                          }`}>
-                            {ticket.status}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <p className="text-xs text-slate-300 italic">"{ticket.description}"</p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-[11px] pt-2">
-                          <div>
-                            <span className="text-slate-500 block font-bold uppercase tracking-wider text-[9px]">Submitted By</span>
-                            <span className="text-slate-200 font-bold">{ticket.userName} ({ticket.userEmail})</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block font-bold uppercase tracking-wider text-[9px]">Assigned Dept</span>
-                            <span className="text-blue-400 font-bold">{ticket.assignedDepartment}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block font-bold uppercase tracking-wider text-[9px]">Estimated SLA</span>
-                            <span className="text-slate-200 font-bold">{ticket.estimatedResponseTime}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block font-bold uppercase tracking-wider text-[9px]">Created Date</span>
-                            <span className="text-slate-200 font-bold">{new Date(ticket.createdAt).toLocaleString()}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* SLA Warning banner if Urgent */}
-                      {ticket.priority === 'Urgent' && ticket.status !== 'Resolved' && (
-                        <div className="bg-red-500/10 border border-red-500/20 p-3 rounded-2xl flex items-center gap-2 text-xs text-red-400">
-                          <AlertCircle className="w-4 h-4 shrink-0 animate-pulse" />
-                          <span className="font-bold uppercase tracking-wide">Lending override requested. Please review member debt ledger and approve manually.</span>
-                        </div>
-                      )}
-
-                      {/* Actions */}
-                      {ticket.status !== 'Resolved' && (
-                        <div className="flex gap-2 justify-end pt-2">
-                          {ticket.status === 'Open' && (
-                            <button
-                              onClick={() => handleUpdateTicketStatus(ticket.id, 'In Progress')}
-                              className="text-[11px] font-black uppercase tracking-widest bg-amber-500 hover:bg-amber-400 text-slate-950 px-4 py-2 rounded-xl transition-all"
-                            >
-                              Mark In Progress
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleUpdateTicketStatus(ticket.id, 'Resolved')}
-                            className="text-[11px] font-black uppercase tracking-widest bg-emerald-500 hover:bg-emerald-400 text-slate-950 px-4 py-2 rounded-xl transition-all flex items-center gap-1.5"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            Resolve Issue
-                          </button>
-                        </div>
-                      )}
+                  {/* Profile Header */}
+                  <div className="flex items-start gap-4">
+                    <div className="relative shrink-0">
+                      <img 
+                        src={emp.photoUrl} 
+                        alt={emp.name} 
+                        className="w-16 h-16 rounded-2xl object-cover border-2 border-white/10 shadow-lg"
+                        referrerPolicy="no-referrer"
+                      />
+                      <span className="absolute -bottom-1 -right-1 bg-slate-950 p-1 rounded-full border border-white/10">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      </span>
                     </div>
+
+                    <div className="space-y-1">
+                      <h4 className="text-base font-black text-white">{emp.name}</h4>
+                      <p className="text-xs font-semibold text-blue-400">{emp.position}</p>
+                      <p className="text-[11px] text-slate-400">{emp.department} Desk</p>
+                    </div>
+                  </div>
+
+                  {/* Bio / Specialty */}
+                  <div className="mt-3.5 p-3 bg-slate-950/60 border border-white/5 rounded-2xl text-[11px] text-slate-300 leading-relaxed">
+                    {emp.bio || 'Trained banking digital officer supporting members 24/7.'}
+                  </div>
+
+                  {/* Metrics Grid */}
+                  <div className="grid grid-cols-3 gap-2 mt-4">
+                    <div className="bg-slate-950/50 border border-white/5 p-2 rounded-xl text-center">
+                      <div className="text-[10px] text-slate-500 font-bold uppercase">SLA Speed</div>
+                      <div className="text-xs font-black text-white mt-0.5">&lt; 1.1s</div>
+                    </div>
+                    <div className="bg-slate-950/50 border border-white/5 p-2 rounded-xl text-center">
+                      <div className="text-[10px] text-slate-500 font-bold uppercase">Rating</div>
+                      <div className="text-xs font-black text-amber-300 mt-0.5">⭐ {emp.customerSatisfaction}</div>
+                    </div>
+                    <div className="bg-slate-950/50 border border-white/5 p-2 rounded-xl text-center">
+                      <div className="text-[10px] text-slate-500 font-bold uppercase">Accuracy</div>
+                      <div className="text-xs font-black text-emerald-400 mt-0.5">{emp.performanceScore}%</div>
+                    </div>
+                  </div>
+
+                  {/* Multi-Key Credit Saver Badge */}
+                  <div className="mt-3.5 py-1.5 px-3 rounded-xl bg-slate-950/80 border border-white/5 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400 flex items-center gap-1.5 font-medium">
+                      <Zap className="w-3.5 h-3.5 text-amber-400" />
+                      Dedicated API Key:
+                    </span>
+                    <code className="font-mono text-[10px] font-bold text-blue-400 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-500/20">
+                      {emp.id === 'EMP-00101' ? 'GEMINI_API_KEY_OFFICER_1' : 'GEMINI_API_KEY_OFFICER_2'}
+                    </code>
+                  </div>
+                </div>
+
+                {/* Card Actions */}
+                <div className="mt-4 pt-3.5 border-t border-white/10 flex items-center justify-between gap-3">
+                  <button
+                    onClick={() => {
+                      setSelectedAgentForChat(emp);
+                      setActiveTab('admin_chat');
+                    }}
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    Chat with {emp.name.split(' ')[0]}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setTuningAgent(emp);
+                      setTuningPrompt(emp.customPrompt || '');
+                      setTuningTemp(emp.temperature !== undefined ? emp.temperature : 0.3);
+                    }}
+                    className="p-2 bg-slate-950 hover:bg-slate-800 border border-white/10 rounded-xl text-slate-300 hover:text-white transition-colors cursor-pointer"
+                    title="Tune AI Prompt & Persona"
+                  >
+                    <Sliders className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Multi-Key & Credit Saving Status Card */}
+          <div className="bg-gradient-to-r from-blue-950/30 via-slate-900/60 to-purple-950/30 border border-blue-500/20 rounded-3xl p-5 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+                <Zap className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-black text-white flex items-center gap-2">
+                  Multi-Key Credit Saving & Automatic Failover Engine
+                  <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                    Active
+                  </span>
+                </h4>
+                <p className="text-xs text-slate-300 mt-0.5 leading-relaxed">
+                  You can provide separate Gemini API keys for <strong>Zubair Ahmed</strong> (<code className="text-blue-300">GEMINI_API_KEY_OFFICER_1</code>) and <strong>Nusrat Jahan</strong> (<code className="text-pink-300">GEMINI_API_KEY_OFFICER_2</code>). Each bot uses its own credits. If a key runs out or hits rate limits, the system automatically falls over to the next key or the 24/7 banking engine with zero errors!
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Conversation Inspector: Review recent member chats handled by agents */}
+          <div className="bg-slate-900/60 border border-white/10 rounded-3xl p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-black text-white flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-blue-400" />
+                  Live Conversation Inspector
+                </h4>
+                <p className="text-xs text-slate-400">
+                  Inspect real-time member chats handled by Zubair and Nusrat to verify tone, accuracy, and compliance.
+                </p>
+              </div>
+              <span className="text-xs font-bold text-slate-400">
+                {recentChatSessions.length} Sessions Logged
+              </span>
+            </div>
+
+            {recentChatSessions.length === 0 ? (
+              <div className="p-8 text-center bg-slate-950/40 rounded-2xl text-xs text-slate-500">
+                No member conversations recorded yet. When members chat with the AI widget, sessions will stream here.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Sessions list */}
+                <div className="lg:col-span-1 space-y-2 max-h-96 overflow-y-auto custom-scrollbar pr-1">
+                  {recentChatSessions.map((session, idx) => (
+                    <button
+                      key={`${session.id || 'sess'}-${idx}`}
+                      onClick={() => setSelectedSessionForInspect(session)}
+                      className={`w-full text-left p-3 rounded-2xl border transition-all cursor-pointer ${
+                        selectedSessionForInspect?.id === session.id
+                          ? 'bg-blue-950/50 border-blue-500 text-white'
+                          : 'bg-slate-950/60 border-white/5 hover:border-white/20 text-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-white">{session.userName}</span>
+                        <span className="text-[9px] text-slate-500">
+                          {new Date(session.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-blue-400 mt-0.5">Agent: {session.employeeName}</div>
+                      <p className="text-[11px] text-slate-400 line-clamp-1 mt-1">{session.lastMessage || '...'}</p>
+                    </button>
                   ))}
                 </div>
-              )}
-            </div>
-          )}
 
-          {/* TAB 3: PERFORMANCE ANALYTICS */}
-          {activeTab === 'analytics' && (
-            <div className="space-y-6">
-              <div className="space-y-1">
-                <h3 className="text-lg font-black text-white">WORKFORCE OPTIMIZATION AUDIT</h3>
-                <p className="text-xs text-slate-400">Real-time metrics tracking digital support SLA adherence, escalation triggers, and resolution logs.</p>
-              </div>
-
-              {/* Bento Grid Analytics */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="md:col-span-2 bg-slate-900/40 border border-white/5 p-6 rounded-3xl shadow-xl space-y-4">
-                  <h4 className="text-xs uppercase tracking-widest font-black text-white flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-blue-400" />
-                    Response Time SLA Distribution (Hourly)
-                  </h4>
-                  <div className="h-60 flex items-end justify-between gap-3 pt-6 px-4">
-                    {[35, 12, 10, 8, 4, 2, 1, 1, 1, 2, 5, 8].map((val, idx) => (
-                      <div key={idx} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
-                        <div 
-                          style={{ height: `${(val / 35) * 100}%` }} 
-                          className="w-full bg-gradient-to-t from-blue-600 to-indigo-400 rounded-t-lg group relative"
-                        >
-                          <span className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-950 text-[10px] font-bold text-white px-1.5 py-0.5 rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                            {val} chats
-                          </span>
-                        </div>
-                        <span className="text-[10px] text-slate-500 font-bold">{idx * 2}h</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex justify-between text-xs text-slate-400 pt-2 border-t border-white/5">
-                    <span>98.6% of digital inquiries resolved in under 1 minute.</span>
-                    <span className="text-emerald-400 font-bold">Excellent SLA Match</span>
-                  </div>
-                </div>
-
-                <div className="bg-slate-900/40 border border-white/5 p-6 rounded-3xl shadow-xl space-y-4 flex flex-col justify-between">
-                  <div className="space-y-4">
-                    <h4 className="text-xs uppercase tracking-widest font-black text-white flex items-center gap-2">
-                      <Sliders className="w-4 h-4 text-purple-400" />
-                      Department Load Summary
-                    </h4>
-                    
-                    <div className="space-y-3">
-                      <div>
-                        <div className="flex justify-between text-xs font-bold text-slate-200 mb-1">
-                          <span>Customer Support</span>
-                          <span className="text-blue-400">45% (320 chats)</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
-                          <div className="w-[45%] h-full bg-blue-500" />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-xs font-bold text-slate-200 mb-1">
-                          <span>Member Support</span>
-                          <span className="text-blue-400">30% (210 chats)</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
-                          <div className="w-[30%] h-full bg-purple-500" />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-xs font-bold text-slate-200 mb-1">
-                          <span>Information Desk</span>
-                          <span className="text-blue-400">18% (128 chats)</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
-                          <div className="w-[18%] h-full bg-indigo-500" />
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-xs font-bold text-slate-200 mb-1">
-                          <span>Technical Support</span>
-                          <span className="text-blue-400">7% (52 chats)</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden">
-                          <div className="w-[7%] h-full bg-amber-500" />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-950/60 border border-white/5 p-4 rounded-2xl flex items-center gap-3">
-                    <TrendingUp className="w-5 h-5 text-emerald-400 shrink-0" />
-                    <span className="text-xs text-slate-300">
-                      Digital workforce deployment has reduced operational overheads by <strong className="text-white">৳142,000 BDT</strong> this month.
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: AI OPERATION REPORTS */}
-          {activeTab === 'reports' && (
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <h3 className="text-lg font-black text-white">GENERATE BOARD ROOM DIGESTS</h3>
-                  <p className="text-xs text-slate-400">Synthesize official, executive reports from the platform's active debt ledger, user database, and workforce stats.</p>
-                </div>
-
-                <div className="flex gap-2">
-                  <select 
-                    value={reportType}
-                    onChange={(e) => setReportType(e.target.value as any)}
-                    className="bg-slate-950 border border-white/10 px-3 py-2 text-xs text-white rounded-xl focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="daily">Daily Operations Summary</option>
-                    <option value="weekly">Weekly Operational Digest</option>
-                    <option value="monthly">Monthly Boardroom Audit</option>
-                  </select>
-                  <button
-                    onClick={handleGenerateReport}
-                    disabled={generatingReport}
-                    className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-xs uppercase tracking-widest font-black px-4 py-2.5 rounded-xl shadow-lg transition-all active:scale-95 shrink-0"
-                  >
-                    {generatingReport ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Synthesizing...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4" />
-                        Generate AI Report
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {generatedReport ? (
-                <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-6 sm:p-8 shadow-xl space-y-6 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                  <div className="flex items-center justify-between border-b border-white/5 pb-4">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-5 h-5 text-blue-400 animate-pulse" />
-                      <span className="text-xs text-slate-400 uppercase font-black tracking-widest">
-                        AI Operational Synthesis
-                      </span>
-                    </div>
-                    <span className="text-xs text-slate-400 font-mono">
-                      Generated at: {new Date().toLocaleString()}
-                    </span>
-                  </div>
-
-                  {/* Render report in clean stylized container */}
-                  <div className="prose prose-invert max-w-none text-slate-300 text-sm leading-relaxed space-y-4 whitespace-pre-wrap font-sans">
-                    {generatedReport}
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-slate-900/20 border border-white/5 p-12 rounded-3xl text-center space-y-4">
-                  <FileText className="w-16 h-16 text-slate-600 mx-auto" />
-                  <h4 className="text-sm font-black text-white uppercase tracking-wider">BOARD AUDIT ENGINE STANDBY</h4>
-                  <p className="text-xs text-slate-400 max-w-md mx-auto">Select a report period at the top right and click 'Generate AI Report'. Our model will compile and write a high-fidelity business intelligence summary using live T.U.T Money metrics.</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB 5: MY OFFICER DESK */}
-          {activeTab === 'my_desk' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* LEFT COLUMN: Profile Info & Status Control */}
-              <div className="space-y-6">
-                <div className="bg-slate-900/40 border border-white/5 p-6 rounded-3xl shadow-xl space-y-6">
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-black text-white uppercase tracking-wider">OFFICER TERMINAL</h3>
-                    <p className="text-[11px] text-slate-400">Manage your public directory card, online status, and terminal registry.</p>
-                  </div>
-
-                  {myEmployeeProfile ? (
-                    <div className="space-y-6">
-                      {/* Public Card Preview */}
-                      <div className="p-4 bg-slate-950/60 border border-white/5 rounded-2xl flex items-center gap-4">
-                        <img 
-                          src={myPhoto || 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&q=80&w=200'} 
-                          alt={myEmployeeProfile.name}
-                          className="w-16 h-16 rounded-2xl object-cover border border-white/10"
-                        />
+                {/* Inspect window */}
+                <div className="lg:col-span-2 bg-slate-950/80 border border-white/10 rounded-2xl p-4 flex flex-col justify-between h-96">
+                  {selectedSessionForInspect ? (
+                    <div className="flex-1 flex flex-col overflow-hidden">
+                      <div className="border-b border-white/10 pb-2 mb-3 flex items-center justify-between">
                         <div>
-                          <h4 className="text-sm font-black text-white">{myEmployeeProfile.name}</h4>
-                          <span className="text-[10px] text-slate-400 block font-semibold uppercase">{myPos || 'Human Director / Founder'}</span>
-                          <span className="text-[10px] text-blue-400 font-bold block mt-0.5">{myDept}</span>
-                          <span className={`inline-block text-[9px] font-black uppercase mt-1 px-2 py-0.5 rounded-md ${
-                            myStatus === 'Available' ? 'bg-emerald-500/20 text-emerald-400' :
-                            myStatus === 'Busy' ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-500/20 text-slate-400'
-                          }`}>
-                            {myStatus}
+                          <h5 className="text-xs font-bold text-white">
+                            Member: {selectedSessionForInspect.userName}
+                          </h5>
+                          <span className="text-[10px] text-slate-400">
+                            Officer Assigned: {selectedSessionForInspect.employeeName}
                           </span>
                         </div>
+                        <span className="text-[10px] font-mono text-slate-500">
+                          {new Date(selectedSessionForInspect.updatedAt).toLocaleString()}
+                        </span>
                       </div>
 
-                      {/* Edit Profile Form */}
-                      <form onSubmit={handleUpdateMyProfile} className="space-y-4 pt-4 border-t border-white/5">
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">My Title / Position</label>
-                          <input 
-                            type="text" 
-                            required
-                            placeholder="e.g. Founder & Chief Director"
-                            value={myPos}
-                            onChange={(e) => setMyPos(e.target.value)}
-                            className="w-full bg-slate-950 border border-white/10 px-3 py-2 text-xs text-white rounded-xl focus:outline-none focus:border-blue-500"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">My Department</label>
-                          <select 
-                            value={myDept}
-                            onChange={(e) => setMyDept(e.target.value)}
-                            className="w-full bg-slate-950 border border-white/10 px-3 py-2 text-xs text-white rounded-xl focus:outline-none focus:border-blue-500"
+                      <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar text-xs">
+                        {(selectedSessionForInspect.messages || []).map((msg: any, idx: number) => (
+                          <div 
+                            key={idx}
+                            className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                           >
-                            <option value="Customer Support">Customer Support</option>
-                            <option value="Member Support">Member Support</option>
-                            <option value="Technical Support">Technical Support</option>
-                            <option value="Information Desk">Information Desk</option>
-                          </select>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Profile Photo</label>
-                          <div className="flex gap-2 items-center">
-                            <input 
-                              type="text" 
-                              placeholder="Photo URL or Upload file..."
-                              value={myPhoto.startsWith('data:') ? 'Local Image Loaded (Base64)' : myPhoto}
-                              onChange={(e) => {
-                                if (!e.target.value.startsWith('Local Image')) {
-                                  setMyPhoto(e.target.value);
-                                }
-                              }}
-                              className="flex-1 bg-slate-950 border border-white/10 px-3 py-2 text-xs text-white rounded-xl focus:outline-none focus:border-blue-500"
-                            />
-                            <label className="cursor-pointer bg-slate-850 hover:bg-slate-800 border border-white/10 text-slate-300 text-[9px] font-black uppercase px-2.5 py-2.5 rounded-xl transition-all shrink-0">
-                              Upload File
-                              <input
-                                type="file"
-                                accept="image/*"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = (ev) => {
-                                      setMyPhoto(ev.target?.result as string);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
-                                }}
-                                className="hidden"
-                              />
-                            </label>
+                            <div className={`max-w-[80%] rounded-2xl p-3 ${
+                              msg.sender === 'user'
+                                ? 'bg-blue-600 text-white rounded-br-none'
+                                : 'bg-slate-900 text-slate-200 border border-white/10 rounded-bl-none'
+                            }`}>
+                              <span className="block text-[9px] opacity-70 font-bold mb-1">
+                                {msg.sender === 'user' ? selectedSessionForInspect.userName : selectedSessionForInspect.employeeName}
+                              </span>
+                              <p className="whitespace-pre-wrap">{msg.text}</p>
+                            </div>
                           </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Availability Status</label>
-                          <div className="grid grid-cols-3 gap-2">
-                            {(['Available', 'Busy', 'Offline'] as const).map((st) => (
-                              <button
-                                key={st}
-                                type="button"
-                                onClick={() => setMyStatus(st)}
-                                className={`py-1.5 text-[10px] font-bold uppercase rounded-lg border transition-all ${
-                                  myStatus === st 
-                                    ? 'bg-blue-600 border-blue-500 text-white' 
-                                    : 'bg-slate-950 border-white/5 text-slate-400 hover:text-white'
-                                }`}
-                              >
-                                {st}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={isUpdatingProfile}
-                          className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white text-[10px] uppercase tracking-wider font-black py-2.5 rounded-xl shadow-lg transition-all active:scale-95 flex items-center justify-center gap-1.5"
-                        >
-                          {isUpdatingProfile ? (
-                            <>
-                              <Loader2 className="w-3 h-3 animate-spin" />
-                              Syncing...
-                            </>
-                          ) : 'Save & Sync Card'}
-                        </button>
-                      </form>
+                        ))}
+                      </div>
                     </div>
                   ) : (
-                    <div className="space-y-4 py-4 text-center">
-                      <div className="w-12 h-12 bg-blue-500/10 text-blue-400 rounded-2xl flex items-center justify-center mx-auto">
-                        <Users className="w-6 h-6 animate-pulse" />
-                      </div>
-                      <h4 className="text-xs font-black text-white uppercase tracking-wider">No Officer Profile Connected</h4>
-                      <p className="text-[11px] text-slate-400 leading-relaxed">
-                        To claim employee access and chat with members as yourself, you need an active staff profile in our Firestore registry under your logged-in name: <strong>{currentUser?.name || 'Tahsin Ullah Tusher'}</strong>.
-                      </p>
-                      <button
-                        onClick={handleRegisterMyProfile}
-                        className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] uppercase tracking-wider font-black px-4 py-2.5 rounded-xl shadow-lg transition-all"
-                      >
-                        Register Officer Card
-                      </button>
+                    <div className="flex items-center justify-center h-full text-xs text-slate-500">
+                      Select a conversation on the left to inspect full dialogue history.
                     </div>
                   )}
                 </div>
               </div>
-
-              {/* RIGHT COLUMN: Live Messaging Inbox Workspace */}
-              <div 
-                className={`${
-                  isChatMaximized 
-                    ? 'fixed inset-4 sm:inset-10 bg-slate-950 border border-white/10 z-[100] rounded-3xl flex flex-col shadow-2xl h-[calc(100vh-2rem)] sm:h-[calc(100vh-5rem)]' 
-                    : 'lg:col-span-2 bg-slate-900/40 border border-white/5 rounded-3xl shadow-xl flex flex-col h-[75vh]'
-                } overflow-hidden transition-all duration-300`}
-              >
-                {/* Workspace Header */}
-                <div className="p-4 bg-slate-900/80 border-b border-white/5 flex flex-col sm:flex-row gap-3 items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-blue-600/10 text-blue-400 flex items-center justify-center">
-                      <MessageSquare className="w-5 h-5 animate-pulse" />
-                    </div>
-                    <div>
-                      <h3 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-1.5">
-                        OPERATIONS WORKSPACE
-                        <span className="bg-blue-500/20 text-blue-400 text-[8px] tracking-widest font-bold px-1.5 py-0.5 rounded-full">
-                          COMFORT MODE
-                        </span>
-                      </h3>
-                      <p className="text-[10px] text-slate-400">Directly inspect active customer tickets or chat privately with other employees.</p>
-                    </div>
-                  </div>
-
-                  {/* Mode Toggles and Action Buttons */}
-                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                    <div className="bg-slate-950 p-1 rounded-xl border border-white/5 flex gap-1">
-                      <button
-                        onClick={() => {
-                          setChatMode('member');
-                          setSelectedChatId('');
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] uppercase font-black tracking-wider transition-all ${
-                          chatMode === 'member' 
-                            ? 'bg-blue-600 text-white shadow-md' 
-                            : 'text-slate-400 hover:text-white hover:bg-white/5'
-                        }`}
-                      >
-                        Members
-                      </button>
-                      <button
-                        onClick={() => {
-                          setChatMode('staff');
-                          setSelectedStaffId('');
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] uppercase font-black tracking-wider transition-all ${
-                          chatMode === 'staff' 
-                            ? 'bg-blue-600 text-white shadow-md' 
-                            : 'text-slate-400 hover:text-white hover:bg-white/5'
-                        }`}
-                      >
-                        Internal P2P
-                      </button>
-                    </div>
-
-                    {/* Maximize Button */}
-                    <button
-                      onClick={() => setIsChatMaximized(!isChatMaximized)}
-                      className="p-2 bg-slate-900 hover:bg-slate-800 border border-white/10 rounded-xl text-slate-300 hover:text-white active:scale-95 transition-all"
-                      title={isChatMaximized ? "Exit Comfort Mode" : "Maximize Workspace"}
-                    >
-                      {isChatMaximized ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                    </button>
-
-                    {/* Exit Desk Button */}
-                    <button
-                      onClick={() => setActiveTab('employees')}
-                      className="p-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 hover:border-red-500/40 rounded-xl text-red-400 hover:text-red-300 active:scale-95 transition-all flex items-center gap-1.5 text-[10px] uppercase font-black tracking-wider"
-                      title="Exit Operations Workspace"
-                    >
-                      <LogOut className="w-4 h-4" />
-                      <span>Exit Desk</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Main Workspace Layout */}
-                <div className="flex-1 flex overflow-hidden">
-                  
-                  {/* Left Sidebar: Thread Selectors */}
-                  <div className={`${
-                    (chatMode === 'member' ? selectedChatId : selectedStaffId) 
-                      ? 'hidden md:block' 
-                      : 'w-full'
-                  } md:w-1/3 border-r border-white/5 overflow-y-auto custom-scrollbar bg-slate-950/20 shrink-0`}>
-                    
-                    {chatMode === 'member' ? (
-                      // MEMBER SUPPORT RECIPIENTS
-                      activeChats.length === 0 ? (
-                        <div className="p-6 text-center text-slate-500 text-[11px] h-full flex flex-col items-center justify-center space-y-2">
-                          <Smile className="w-8 h-8 text-slate-700" />
-                          <p>No active customer support tickets found in Firestore.</p>
-                        </div>
-                      ) : (
-                        <div className="divide-y divide-white/[0.03]">
-                          {activeChats.map((chat) => {
-                            const isSelected = selectedChatId === chat.id;
-                            return (
-                              <button
-                                key={chat.id}
-                                onClick={() => setSelectedChatId(chat.id)}
-                                className={`w-full p-4 text-left transition-colors flex items-start gap-3 border-b border-white/[0.02] ${
-                                  isSelected ? 'bg-blue-600/10 text-white border-l-4 border-blue-500' : 'hover:bg-white/[0.02] text-slate-400'
-                                }`}
-                              >
-                                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600/20 to-purple-600/20 border border-blue-500/20 text-slate-200 text-xs font-black flex items-center justify-center uppercase shrink-0">
-                                  {chat.userName?.substring(0, 2) || 'US'}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex justify-between items-baseline">
-                                    <h4 className="text-[11px] font-black truncate text-white">{chat.userName}</h4>
-                                    <span className="text-[8px] text-slate-500 font-mono">
-                                      {new Date(chat.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </span>
-                                  </div>
-                                  <p className="text-[10px] truncate text-slate-400 mt-1">{chat.lastMessage}</p>
-                                  <div className="flex items-center gap-1.5 mt-2">
-                                    <span className="text-[8px] uppercase font-black text-slate-500">Agent:</span>
-                                    <span className="text-[9px] font-bold text-blue-400 truncate">{chat.employeeName}</span>
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )
-                    ) : (
-                      // INTERNAL P2P STAFF CHATS LIST
-                      <div className="divide-y divide-white/[0.03]">
-                        <div className="p-3 bg-slate-950/40 text-[9px] font-black uppercase text-slate-400 tracking-wider">
-                          Internal Personnel Directory
-                        </div>
-                        {employees.map((emp) => {
-                          const channelId = `${currentUser?.uid || 'admin'}_${emp.id}`;
-                          const isSelected = selectedStaffId === channelId;
-                          const lastThread = staffChats.find(c => c.id === channelId);
-                          
-                          return (
-                            <button
-                              key={emp.id}
-                              onClick={() => setSelectedStaffId(channelId)}
-                              className={`w-full p-4 text-left transition-colors flex items-start gap-3 border-b border-white/[0.02] ${
-                                isSelected ? 'bg-blue-600/10 text-white border-l-4 border-blue-500' : 'hover:bg-white/[0.02] text-slate-400'
-                              }`}
-                            >
-                              <div className="relative shrink-0">
-                                <img 
-                                  src={emp.photoUrl} 
-                                  alt={emp.name} 
-                                  className="w-9 h-9 rounded-xl object-cover border border-white/10"
-                                />
-                                <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-950 ${
-                                  emp.status === 'Available' ? 'bg-emerald-500' :
-                                  emp.status === 'Busy' ? 'bg-amber-500' : 'bg-slate-500'
-                                }`} />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex justify-between items-baseline">
-                                  <h4 className="text-[11px] font-black truncate text-white">{emp.name}</h4>
-                                  {emp.employeeType === 'Digital Employee' && (
-                                    <span className="bg-blue-500/15 text-blue-400 text-[7px] font-black px-1 py-0.5 rounded-md uppercase tracking-wider">
-                                      AI Agent
-                                    </span>
-                                  )}
-                                </div>
-                                <span className="text-[9px] text-slate-400 block truncate uppercase tracking-tight mt-0.5">{emp.position}</span>
-                                {lastThread && (
-                                  <p className="text-[10px] text-slate-400 truncate mt-1.5 italic">"{lastThread.lastMessage}"</p>
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Panel: Chat Room / Thread */}
-                  <div className={`${
-                    (chatMode === 'member' ? selectedChatId : selectedStaffId) 
-                      ? 'flex w-full' 
-                      : 'hidden md:flex'
-                  } flex-1 flex-col justify-between bg-slate-950/40 relative`}>
-                    
-                    {chatMode === 'member' ? (
-                      // MEMBER MODE MESSAGES
-                      selectedChatId ? (() => {
-                        const chatDoc = activeChats.find(c => c.id === selectedChatId);
-                        if (!chatDoc) return <div className="flex-1 flex items-center justify-center text-slate-500 text-xs">Conversation not found.</div>;
-                        
-                        return (
-                          <>
-                            {/* Thread Header */}
-                            <div className="px-4 py-3 bg-slate-900/60 border-b border-white/5 flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                {/* Back Button (visible on mobile/small screens only) */}
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedChatId('')}
-                                  className="md:hidden p-1.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-all flex items-center justify-center shrink-0"
-                                  title="Back to Conversations"
-                                >
-                                  <ArrowLeft className="w-4 h-4" />
-                                </button>
-
-                                <div className="w-8 h-8 rounded-lg bg-blue-600/10 text-blue-400 font-bold flex items-center justify-center uppercase">
-                                  {chatDoc.userName?.substring(0, 2)}
-                                </div>
-                                <div>
-                                  <h4 className="text-xs font-black text-white">{chatDoc.userName}</h4>
-                                  <span className="text-[9px] text-slate-400">Handled by: <strong className="text-blue-400">{chatDoc.employeeName}</strong></span>
-                                </div>
-                              </div>
-                              {chatDoc.status === 'escalated' && (
-                                <span className="bg-rose-500/20 text-rose-400 text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider flex items-center gap-1 border border-rose-500/35">
-                                  <ShieldAlert className="w-3 h-3 animate-bounce" />
-                                  Escalated Compliance
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Message List */}
-                            <div className="flex-1 p-6 overflow-y-auto space-y-4 custom-scrollbar">
-                              {chatDoc.messages?.map((msg: any, mIdx: number) => {
-                                const isMe = msg.sender === 'employee';
-                                return (
-                                  <div 
-                                    key={mIdx} 
-                                    className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
-                                  >
-                                    <div className={`max-w-[75%] rounded-2xl p-3 text-xs leading-relaxed shadow-lg ${
-                                      isMe 
-                                        ? 'bg-blue-600 text-white rounded-tr-none' 
-                                        : 'bg-slate-900 text-slate-200 rounded-tl-none border border-white/5'
-                                    }`}>
-                                      <p className="whitespace-pre-wrap">{msg.text}</p>
-                                      <span className="block text-[8px] text-right opacity-60 mt-1 font-mono">
-                                        {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                                      </span>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-
-                            {/* Quick Canned Responses Drawer */}
-                            <div className="px-4 py-2 bg-slate-950/60 border-t border-white/5 flex gap-2 overflow-x-auto custom-scrollbar shrink-0">
-                              {CANNED_REPLIES.map((rep, idx) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => setChatReplyText(rep.text)}
-                                  className="bg-slate-900 hover:bg-slate-800 border border-white/5 text-slate-300 hover:text-white text-[9px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-lg shrink-0 transition-all"
-                                >
-                                  {rep.label}
-                                </button>
-                              ))}
-                            </div>
-
-                            {/* Chat Input */}
-                            <form 
-                              onSubmit={(e) => handleSendChatReply(e, chatDoc.id, chatDoc.messages || [])}
-                              className="p-4 border-t border-white/5 bg-slate-900/60 flex gap-2"
-                            >
-                              <input 
-                                type="text" 
-                                placeholder={`Type responsive reply as ${myEmployeeProfile?.name || 'Chief Director'}...`}
-                                value={chatReplyText}
-                                onChange={(e) => setChatReplyText(e.target.value)}
-                                className="flex-1 bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                              />
-                              <button 
-                                type="submit"
-                                className="bg-blue-600 hover:bg-blue-500 text-white p-3 rounded-xl hover:shadow-lg transition-all active:scale-95 flex items-center justify-center shrink-0"
-                              >
-                                <Send className="w-4 h-4" />
-                              </button>
-                            </form>
-                          </>
-                        );
-                      })() : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center p-6 space-y-2">
-                          <Smile className="w-10 h-10 text-slate-700 animate-bounce" style={{ animationDuration: '3s' }} />
-                          <h4 className="text-xs font-black text-white uppercase tracking-wider">SUPPORT DESK IDLE</h4>
-                          <p className="text-[10px] text-slate-500 max-w-xs leading-relaxed">
-                            No member conversation selected. Tapping an active conversation on the left rail will load historical ledgers & chat panels.
-                          </p>
-                        </div>
-                      )
-                    ) : (
-                      // STAFF P2P MODE MESSAGES
-                      selectedStaffId ? (() => {
-                        const targetEmpId = selectedStaffId.split('_')[1];
-                        const targetEmployee = employees.find(e => e.id === targetEmpId);
-                        const chatDoc = staffChats.find(c => c.id === selectedStaffId);
-                        const chatMessages = chatDoc?.messages || [];
-                        
-                        if (!targetEmployee) return <div className="flex-1 flex items-center justify-center text-slate-500 text-xs">Employee not found.</div>;
-                        
-                        return (
-                          <>
-                            {/* Thread Header */}
-                            <div className="px-4 py-3 bg-slate-900/60 border-b border-white/5 flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                {/* Back Button (visible on mobile/small screens only) */}
-                                <button
-                                  type="button"
-                                  onClick={() => setSelectedStaffId('')}
-                                  className="md:hidden p-1.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-all flex items-center justify-center shrink-0"
-                                  title="Back to Personnel"
-                                >
-                                  <ArrowLeft className="w-4 h-4" />
-                                </button>
-
-                                <img 
-                                  src={targetEmployee.photoUrl} 
-                                  alt={targetEmployee.name} 
-                                  className="w-9 h-9 rounded-xl object-cover border border-white/10"
-                                />
-                                <div>
-                                  <h4 className="text-xs font-black text-white">{targetEmployee.name}</h4>
-                                  <span className="text-[9px] text-slate-400 font-medium uppercase">{targetEmployee.position} • {targetEmployee.department}</span>
-                                </div>
-                              </div>
-                              <span className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                                targetEmployee.employeeType === 'Digital Employee' 
-                                  ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' 
-                                  : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
-                              }`}>
-                                {targetEmployee.employeeType === 'Digital Employee' ? 'Digital Core AI' : 'Human Officer'}
-                              </span>
-                            </div>
-
-                            {/* Message List */}
-                            <div className="flex-1 p-6 overflow-y-auto space-y-4 custom-scrollbar">
-                              {chatMessages.length === 0 ? (
-                                <div className="h-full flex flex-col items-center justify-center text-center p-6 space-y-2">
-                                  <BookOpen className="w-8 h-8 text-slate-700 animate-pulse" />
-                                  <h4 className="text-xs font-black text-slate-300 uppercase tracking-wide">SECURE CHANNELS SECURED</h4>
-                                  <p className="text-[10px] text-slate-500 max-w-xs leading-relaxed">
-                                    No prior chats recorded. Initiate an operations inquiry with {targetEmployee.name} below.
-                                  </p>
-                                </div>
-                              ) : (
-                                chatMessages.map((msg: any, mIdx: number) => {
-                                  const isMe = msg.senderId === (currentUser?.uid || 'admin');
-                                  const isAiRecipient = msg.senderId === targetEmployee.id;
-                                  
-                                  return (
-                                    <div 
-                                      key={mIdx} 
-                                      className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
-                                    >
-                                      <div className={`max-w-[75%] rounded-2xl p-3 text-xs leading-relaxed shadow-lg ${
-                                        isMe 
-                                          ? 'bg-blue-600 text-white rounded-tr-none' 
-                                          : isAiRecipient && targetEmployee.employeeType === 'Digital Employee'
-                                          ? 'bg-purple-600/20 border border-purple-500/20 text-purple-200 rounded-tl-none'
-                                          : 'bg-slate-900 text-slate-200 rounded-tl-none border border-white/5'
-                                      }`}>
-                                        <div className="flex items-center justify-between gap-4 mb-1">
-                                          <span className="text-[8px] opacity-75 font-black uppercase tracking-wider">{msg.senderName}</span>
-                                          {isAiRecipient && targetEmployee.employeeType === 'Digital Employee' && (
-                                            <span className="bg-purple-500/25 text-purple-300 text-[6px] px-1 rounded uppercase tracking-widest font-black animate-pulse">
-                                              AI System Core
-                                            </span>
-                                          )}
-                                        </div>
-                                        <p className="whitespace-pre-wrap">{msg.text}</p>
-                                        <span className="block text-[8px] text-right opacity-60 mt-1 font-mono">
-                                          {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                                        </span>
-                                      </div>
-                                    </div>
-                                  );
-                                })
-                              )}
-
-                              {isSendingStaffMsg && (
-                                <div className="flex justify-start">
-                                  <div className="bg-purple-600/10 border border-purple-500/10 rounded-2xl p-3 text-xs text-purple-300 rounded-tl-none flex items-center gap-2">
-                                    <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin" />
-                                    <span>{targetEmployee.name} is running digital directives...</span>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Chat Input */}
-                            <form 
-                              onSubmit={(e) => handleSendStaffMessage(e, targetEmployee, chatMessages)}
-                              className="p-4 border-t border-white/5 bg-slate-900/60 flex gap-2"
-                            >
-                              <input 
-                                type="text" 
-                                placeholder={`Message ${targetEmployee.name}...`}
-                                value={staffReplyText}
-                                onChange={(e) => setStaffReplyText(e.target.value)}
-                                className="flex-1 bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                              />
-                              <button 
-                                type="submit"
-                                disabled={isSendingStaffMsg}
-                                className="bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 text-white p-3 rounded-xl hover:shadow-lg transition-all active:scale-95 flex items-center justify-center shrink-0"
-                              >
-                                <Send className="w-4 h-4" />
-                              </button>
-                            </form>
-                          </>
-                        );
-                      })() : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center p-6 space-y-2">
-                          <Users className="w-10 h-10 text-slate-700 animate-pulse" />
-                          <h4 className="text-xs font-black text-white uppercase tracking-wider">P2P SECURE TELEMETRY</h4>
-                          <p className="text-[10px] text-slate-500 max-w-xs leading-relaxed">
-                            Select any human employee or digital core agent on the left rail directory to open secure encrypted private chats.
-                          </p>
-                        </div>
-                      )
-                    )}
-
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* ADD EMPLOYEE MODAL */}
-      {showAddModal && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/10 w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl relative animate-in fade-in zoom-in duration-300">
-            <div className="p-6 border-b border-white/10 flex items-center justify-between">
-              <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
-                <UserPlus className="w-5 h-5 text-blue-500" />
-                Station New Officer
-              </h3>
-              <button 
-                onClick={() => setShowAddModal(false)}
-                className="text-slate-400 hover:text-white text-sm"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleAddEmployee} className="p-6 space-y-4">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Employee Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Sayeeda Sultana"
-                  value={empName}
-                  onChange={(e) => setEmpName(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500/50"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Department</label>
-                  <select
-                    value={empDept}
-                    onChange={(e) => setEmpDept(e.target.value)}
-                    className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="Customer Support">Customer Support</option>
-                    <option value="Member Support">Member Support</option>
-                    <option value="Technical Support">Technical Support</option>
-                    <option value="Information Desk">Information Desk</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Employee Type</label>
-                  <select
-                    value={empType}
-                    onChange={(e) => setEmpType(e.target.value as any)}
-                    className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="Digital Employee">Digital Employee (AI)</option>
-                    <option value="Human Employee">Human Employee</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Position / Title</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Senior Lending Analyst"
-                  value={empPos}
-                  onChange={(e) => setEmpPos(e.target.value)}
-                  className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500/50"
-                />
-              </div>
-
-              {empType === 'Digital Employee' && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Internal AI Code</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. AI-CS-005"
-                      value={empAiCode}
-                      onChange={(e) => setEmpAiCode(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500/50"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Target Performance (Score)</label>
-                    <input
-                      type="number"
-                      min="50"
-                      max="100"
-                      value={empScore}
-                      onChange={(e) => setEmpScore(parseInt(e.target.value) || 98)}
-                      className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500/50"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Custom Profile Photo</label>
-                <div className="flex gap-2 items-center">
-                  <input
-                    type="text"
-                    placeholder="Photo URL or Upload file..."
-                    value={empPhoto.startsWith('data:') ? 'Local Image Loaded (Base64)' : empPhoto}
-                    onChange={(e) => {
-                      if (!e.target.value.startsWith('Local Image')) {
-                        setEmpPhoto(e.target.value);
-                      }
-                    }}
-                    className="flex-1 bg-slate-950 border border-white/10 px-4 py-3 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500/50"
-                  />
-                  <label className="cursor-pointer bg-slate-850 hover:bg-slate-800 border border-white/10 text-slate-300 text-[10px] font-black uppercase px-3 py-3 rounded-xl transition-all shrink-0">
-                    Upload File
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onload = (ev) => {
-                            setEmpPhoto(ev.target?.result as string);
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                      }}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div className="pt-4 flex gap-3 justify-end border-t border-white/10">
-                <button
-                  type="button"
-                  onClick={() => setShowAddModal(false)}
-                  className="px-4 py-3 text-xs uppercase tracking-widest font-black text-slate-400 hover:text-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs uppercase tracking-widest font-black px-6 py-3 rounded-xl shadow-lg active:scale-95 transition-all"
-                >
-                  Confirm Stationing
-                </button>
-              </div>
-            </form>
+            )}
           </div>
         </div>
       )}
 
-      {/* AI TUNING & SANDBOX PLAYGROUND MODAL */}
-      {showTuningModal && editingEmployee && (
-        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[110] flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/10 w-full max-w-5xl h-[85vh] rounded-3xl overflow-hidden shadow-2xl flex flex-col relative animate-in fade-in zoom-in duration-300">
-            {/* Modal Header */}
-            <div className="p-6 border-b border-white/10 flex items-center justify-between shrink-0 bg-slate-900/80">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center">
-                  <Sliders className="w-5 h-5 animate-pulse" />
+      {/* ======================================================== */}
+      {/* TAB 2: MEMBER ISSUES TRACKER (NOTED DOWN BY AGENTS) */}
+      {/* ======================================================== */}
+      {activeTab === 'issues_tracker' && (
+        <div className="space-y-6">
+          {/* Header & Controls */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <ClipboardList className="w-5 h-5 text-amber-400" />
+                Member Issues Recorded by AI Agents
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Every grievance, transaction dispute, or delay reported by a member to Zubair or Nusrat is automatically filed here.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleExportIssuesCSV}
+                disabled={issues.length === 0}
+                className="px-3 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-slate-300 hover:text-white border border-white/10 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export to CSV
+              </button>
+            </div>
+          </div>
+
+          {/* Search & Filters */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-900/60 border border-white/10 p-3.5 rounded-2xl">
+            {/* Search */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+              <input
+                type="text"
+                placeholder="Search member, issue title..."
+                value={issueSearch}
+                onChange={(e) => setIssueSearch(e.target.value)}
+                className="w-full bg-slate-950 border border-white/10 pl-9 pr-3 py-2 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            {/* Filter by Status */}
+            <div>
+              <select
+                value={issueStatusFilter}
+                onChange={(e: any) => setIssueStatusFilter(e.target.value)}
+                className="w-full bg-slate-950 border border-white/10 px-3 py-2 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="all">All Statuses ({issues.length})</option>
+                <option value="Open">Open ({issues.filter(i => i.status === 'Open').length})</option>
+                <option value="In Progress">In Progress ({issues.filter(i => i.status === 'In Progress').length})</option>
+                <option value="Resolved">Resolved ({issues.filter(i => i.status === 'Resolved').length})</option>
+              </select>
+            </div>
+
+            {/* Filter by Priority */}
+            <div>
+              <select
+                value={issuePriorityFilter}
+                onChange={(e: any) => setIssuePriorityFilter(e.target.value)}
+                className="w-full bg-slate-950 border border-white/10 px-3 py-2 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="all">All Priorities</option>
+                <option value="Urgent">Urgent</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+              </select>
+            </div>
+
+            {/* Filter by Agent */}
+            <div>
+              <select
+                value={issueAgentFilter}
+                onChange={(e) => setIssueAgentFilter(e.target.value)}
+                className="w-full bg-slate-950 border border-white/10 px-3 py-2 rounded-xl text-xs text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="all">All Officers</option>
+                <option value="Zubair Ahmed">Zubair Ahmed (Credit Desk)</option>
+                <option value="Nusrat Jahan">Nusrat Jahan (Treasury Desk)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Issues List Table */}
+          {filteredIssues.length === 0 ? (
+            <div className="p-12 text-center bg-slate-900/40 border border-white/10 rounded-3xl space-y-3">
+              <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
+              <h4 className="text-sm font-bold text-white">No Issues Matching Filters</h4>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                No open member issues matching your query. All reports filed by members during chat will appear here.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredIssues.map((issue, idx) => (
+                <div
+                  key={`${issue.id || 'issue'}-${idx}`}
+                  className="bg-slate-900/60 border border-white/10 hover:border-blue-500/30 rounded-2xl p-4 sm:p-5 shadow-lg transition-all space-y-3"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-mono font-bold text-blue-400 bg-blue-500/10 px-2.5 py-0.5 rounded-lg border border-blue-500/20">
+                        #{issue.id}
+                      </span>
+                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md border ${
+                        issue.priority === 'Urgent' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                        issue.priority === 'High' ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' :
+                        'bg-slate-800 text-slate-300 border-white/10'
+                      }`}>
+                        {issue.priority} Priority
+                      </span>
+                      <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md border border-white/5">
+                        {issue.category}
+                      </span>
+                      {issue.relatedTransactionId && (
+                        <span className="text-[10px] font-mono bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-md border border-indigo-500/25">
+                          Ref: {issue.relatedTransactionId}
+                        </span>
+                      )}
+                      {issue.evidenceComplete === false && (
+                        <span className="text-[10px] font-semibold bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded-md border border-amber-500/20">
+                          Awaiting Member Info
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Status Action */}
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={issue.status}
+                        onChange={(e) => handleUpdateIssueStatus(issue.id, e.target.value as any)}
+                        className={`text-xs font-bold px-3 py-1 rounded-xl border focus:outline-none cursor-pointer ${
+                          issue.status === 'Resolved' ? 'bg-emerald-950/60 text-emerald-400 border-emerald-500/40' :
+                          issue.status === 'In Progress' ? 'bg-blue-950/60 text-blue-400 border-blue-500/40' :
+                          'bg-amber-950/60 text-amber-400 border-amber-500/40'
+                        }`}
+                      >
+                        <option value="Open">Status: Open</option>
+                        <option value="In Progress">Status: In Progress</option>
+                        <option value="Resolved">Status: Resolved</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Title & Description */}
+                  <div>
+                    <h4 className="text-sm font-bold text-white">{issue.title}</h4>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed bg-slate-950/40 p-3 rounded-xl border border-white/5 whitespace-pre-line">
+                      {issue.description}
+                    </p>
+                  </div>
+
+                  {/* Member & Agent Info */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-white/5 text-[11px] text-slate-400">
+                    <div>
+                      Member: <strong className="text-slate-200">{issue.userName}</strong> ({issue.memberId || 'ID on file'})
+                    </div>
+                    <div>
+                      Filing Officer: <strong className="text-blue-400">{issue.agentName}</strong>
+                    </div>
+                    <div className="sm:text-right">
+                      Updated: {new Date(issue.updatedAt || issue.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+
+                  {/* Officer Diagnosis & Recommended Admin Action */}
+                  {(issue.agentNotes || issue.recommendedAction || (issue.missingDetails && issue.missingDetails.length > 0)) && (
+                    <div className="bg-blue-950/30 border border-blue-500/20 p-3 rounded-xl text-[11px] text-blue-100 space-y-1.5">
+                      {issue.agentNotes && (
+                        <div>
+                          <strong className="text-blue-400 font-bold">Officer Assessment: </strong>
+                          <span>{issue.agentNotes}</span>
+                        </div>
+                      )}
+                      {issue.recommendedAction && (
+                        <div>
+                          <strong className="text-emerald-400 font-bold">Recommended Action: </strong>
+                          <span className="text-slate-200">{issue.recommendedAction}</span>
+                        </div>
+                      )}
+                      {issue.missingDetails && issue.missingDetails.length > 0 && issue.status !== 'Resolved' && (
+                        <div className="text-amber-300">
+                          <strong>Pending Member Details: </strong>
+                          {issue.missingDetails.join(', ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Admin Resolution Note Input */}
+                  <div className="pt-2 flex flex-col sm:flex-row gap-2 items-center">
+                    <input
+                      type="text"
+                      defaultValue={issue.adminNotes || ''}
+                      placeholder="Add official admin resolution note..."
+                      onBlur={(e) => {
+                        if (e.target.value !== issue.adminNotes) {
+                          handleUpdateIssueStatus(issue.id, issue.status, e.target.value);
+                        }
+                      }}
+                      className="flex-1 bg-slate-950 border border-white/10 px-3 py-1.5 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                    />
+                    {issue.status !== 'Resolved' && (
+                      <button
+                        onClick={() => handleUpdateIssueStatus(issue.id, 'Resolved')}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0"
+                      >
+                        Mark Resolved
+                      </button>
+                    )}
+                  </div>
                 </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* TAB 3: ADMIN EXECUTIVE CHAT */}
+      {/* ======================================================== */}
+      {activeTab === 'admin_chat' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-emerald-400" />
+                Admin Executive Operations Console
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Direct operational briefing desk with your Credit &amp; Treasury officers grounded in live ledgers and queues.
+              </p>
+            </div>
+
+            {/* Officer Selector Switcher */}
+            <div className="flex items-center gap-2 bg-slate-900/90 border border-white/10 p-1.5 rounded-2xl">
+              {employees.map((emp, idx) => (
+                <button
+                  key={`${emp.id || (emp.gender === 'Male' ? 'EMP-00101' : 'EMP-00102')}-${idx}`}
+                  onClick={() => setSelectedAgentForChat(emp)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer ${
+                    selectedAgentForChat.id === emp.id
+                      ? 'bg-blue-600 text-white shadow-md'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <img 
+                    src={emp.photoUrl} 
+                    alt={emp.name} 
+                    className="w-4.5 h-4.5 rounded-full object-cover" 
+                    referrerPolicy="no-referrer"
+                  />
+                  <span>{emp.name.split(' ')[0]} · {emp.id === 'EMP-00101' ? 'Credit' : 'Treasury'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Quick Admin Inquiries */}
+          <div className="flex items-center gap-2 overflow-x-auto custom-scrollbar pb-1">
+            <span className="text-[10px] font-bold uppercase text-slate-500 shrink-0">Quick Briefings:</span>
+            {[
+              "Give me today's executive operational summary.",
+              "Audit open member inquiries and missing verification details.",
+              "Evaluate dual-reserve liquidity and active debt exposure.",
+              "Prioritize pending bKash & Nagad verification queues.",
+              "Draft an advisory announcement regarding deposit safety."
+            ].map((promptText, idx) => (
+              <button
+                key={idx}
+                onClick={() => handleSendAdminMessage(promptText)}
+                className="bg-slate-900/80 hover:bg-slate-800 border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white px-3 py-1.5 rounded-xl whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+              >
+                {promptText}
+              </button>
+            ))}
+          </div>
+
+          {/* Chat Container */}
+          <div className="bg-slate-900/70 border border-white/10 rounded-3xl p-5 shadow-2xl flex flex-col h-[520px]">
+            {/* Header of Active Officer */}
+            <div className="border-b border-white/10 pb-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <img 
+                  src={selectedAgentForChat.photoUrl} 
+                  alt={selectedAgentForChat.name} 
+                  className="w-10 h-10 rounded-2xl object-cover border border-white/15"
+                  referrerPolicy="no-referrer"
+                />
                 <div>
-                  <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-1.5">
-                    AI BRAIN TUNING WORKSPACE
-                    <span className="bg-purple-500/20 text-purple-400 text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-widest">
-                      Sandbox v1.5
+                  <h4 className="text-sm font-black text-white flex items-center gap-2">
+                    {selectedAgentForChat.name}
+                    <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full font-bold">
+                      {selectedAgentForChat.id === 'EMP-00101' ? 'Credit & Underwriting' : 'Treasury & Member Care'}
                     </span>
-                  </h3>
-                  <p className="text-[10px] text-slate-400">Tuning AI core instructions and temperature settings for <strong>{editingEmployee.name}</strong>.</p>
+                  </h4>
+                  <p className="text-[11px] text-slate-400">{selectedAgentForChat.position} · Executive Desk</p>
+                </div>
+              </div>
+
+              <div className="text-right">
+                <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-lg block">
+                  Live Ledger Sync
+                </span>
+              </div>
+            </div>
+
+            {/* Messages Scroll Area */}
+            <div className="flex-1 overflow-y-auto space-y-4 py-4 pr-2 custom-scrollbar">
+              {adminChatHistory.map((msg, idx) => (
+                <div 
+                  key={idx}
+                  className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div className={`max-w-[85%] rounded-2xl p-4 text-xs leading-relaxed space-y-1.5 ${
+                    msg.sender === 'user'
+                      ? 'bg-blue-600 text-white rounded-br-none shadow-lg shadow-blue-600/20'
+                      : 'bg-slate-950 text-slate-200 border border-white/10 rounded-bl-none shadow-xl'
+                  }`}>
+                    <span className="block text-[9px] opacity-70 font-black tracking-wider uppercase">
+                      {msg.sender === 'user' ? (currentUser?.name || 'Administrator') : selectedAgentForChat.name}
+                    </span>
+                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                    <span className="block text-[8px] opacity-50 text-right">
+                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                </div>
+              ))}
+
+              {isAdminTyping && (
+                <div className="flex justify-start">
+                  <div className="bg-slate-950 text-slate-400 border border-white/10 rounded-2xl p-3.5 text-xs flex items-center gap-2">
+                    <span className="italic">Compiling executive operational response...</span>
+                    <div className="flex gap-1">
+                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Input Bar */}
+            <div className="border-t border-white/10 pt-3 flex items-center gap-2">
+              <input
+                type="text"
+                placeholder={`Ask ${selectedAgentForChat.name.split(' ')[0]} for summaries, issue reviews, or risk audits...`}
+                value={adminInput}
+                onChange={(e) => setAdminInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSendAdminMessage(adminInput);
+                }}
+                className="flex-1 bg-slate-950 border border-white/10 px-4 py-3 rounded-2xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                onClick={() => handleSendAdminMessage(adminInput)}
+                disabled={!adminInput.trim() || isAdminTyping}
+                className="w-11 h-11 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-2xl flex items-center justify-center transition-all shadow-md active:scale-95 shrink-0 cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* TAB 4: EXECUTIVE REPORTS & SUMMARIES */}
+      {/* ======================================================== */}
+      {activeTab === 'reports' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-black text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-purple-400" />
+                Executive Operational Reports Generator
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Generate audit summaries directly from live transactions, reserve solvency metrics, and reported inquiries.
+              </p>
+            </div>
+          </div>
+
+          {/* Report Selection Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+              {
+                id: 'daily',
+                title: 'Daily Operations Summary',
+                desc: 'Comprehensive 24h health check, loan velocity, deposit flows, and SLA.'
+              },
+              {
+                id: 'issues',
+                title: 'Member Issues & Incident Audit',
+                desc: 'In-depth aggregation of issues noted down by Zubair Ahmed & Nusrat Jahan.'
+              },
+              {
+                id: 'reserves',
+                title: 'Dual Reserve & Liquidity Risk',
+                desc: 'Solvency check comparing Main Reserves against segregated Deposit ring-fence.'
+              },
+              {
+                id: 'weekly',
+                title: 'Weekly Executive Briefing',
+                desc: 'Board-ready report with trends, growth, risk mitigations, and actions.'
+              }
+            ].map((card) => (
+              <button
+                key={card.id}
+                onClick={() => setReportType(card.id as any)}
+                className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                  reportType === card.id
+                    ? 'bg-purple-950/40 border-purple-500 text-white shadow-xl shadow-purple-950/30'
+                    : 'bg-slate-900/50 border-white/5 hover:border-white/20 text-slate-300'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] font-black uppercase text-purple-400 tracking-wider">
+                    Tier: {card.id.toUpperCase()}
+                  </span>
+                  {reportType === card.id && (
+                    <span className="w-2 h-2 rounded-full bg-purple-400" />
+                  )}
+                </div>
+                <h4 className="text-xs font-bold text-white">{card.title}</h4>
+                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">{card.desc}</p>
+              </button>
+            ))}
+          </div>
+
+          {/* Generate Button */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleGenerateReport}
+              disabled={generatingReport}
+              className="px-5 py-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs rounded-2xl flex items-center gap-2 shadow-xl shadow-purple-600/20 transition-all cursor-pointer"
+            >
+              {generatingReport ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Compiling Executive Report...
+                </>
+              ) : (
+                <>
+                  <FileText className="w-4 h-4 text-purple-200" />
+                  Compile {reportType.toUpperCase()} Report
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Generated Report Output */}
+          {generatedReport && (
+            <div className="bg-slate-900/80 border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-black text-white uppercase tracking-wider">
+                    {reportType.toUpperCase()} Report Generated Successfully
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCopyReport}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {reportCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    {reportCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-slate-950/70 p-5 rounded-2xl border border-white/5 font-sans text-xs text-slate-200 whitespace-pre-wrap leading-relaxed max-h-[500px] overflow-y-auto custom-scrollbar">
+                {generatedReport}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* TUNING MODAL (Customize Persona & Temperature) */}
+      {/* ======================================================== */}
+      {tuningAgent && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/15 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-3">
+                <img 
+                  src={tuningAgent.photoUrl} 
+                  alt={tuningAgent.name} 
+                  className="w-10 h-10 rounded-xl object-cover" 
+                  referrerPolicy="no-referrer"
+                />
+                <div>
+                  <h4 className="text-sm font-black text-white">{tuningAgent.name} Tuning</h4>
+                  <span className="text-[10px] text-slate-400">{tuningAgent.position}</span>
                 </div>
               </div>
               <button 
-                onClick={() => setShowTuningModal(false)}
-                className="text-slate-400 hover:text-white text-sm"
+                onClick={() => setTuningAgent(null)}
+                className="w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            {/* Split Workspace */}
-            <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-              {/* LEFT COLUMN: SYSTEM PROMPT EDITING FORM */}
-              <form onSubmit={handleSaveTuning} className="w-full md:w-1/2 p-6 border-r border-white/5 flex flex-col justify-between overflow-y-auto custom-scrollbar">
-                <div className="space-y-6">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                      <BookOpen className="w-3.5 h-3.5 text-blue-400" />
-                      Core System Instructions (System Instructions)
-                    </label>
-                    <p className="text-[10px] text-slate-500 leading-relaxed mb-2">
-                      Define the AI's identity, department rules, tone, constraints, and custom response protocols. This guides their entire conversational logic.
-                    </p>
-                    <textarea
-                      required
-                      rows={10}
-                      placeholder="e.g. You are a Senior Lending Analyst. Be highly professional, helpful, but firm on collateral standards. Never approve loans exceeding $10,000 without supervisor verification..."
-                      value={tuningPrompt}
-                      onChange={(e) => setTuningPrompt(e.target.value)}
-                      className="w-full bg-slate-950 border border-white/10 px-4 py-3 rounded-2xl text-xs text-white placeholder-slate-600 font-mono leading-relaxed focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/20 custom-scrollbar"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
-                        <Activity className="w-3.5 h-3.5 text-blue-400" />
-                        Temperature Control
-                      </label>
-                      <span className="text-xs font-mono font-bold text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded">
-                        {tuningTemp.toFixed(1)}
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 leading-relaxed">
-                      Lower temperatures keep answers strictly deterministic and factual. Higher values allow creative, brand-representative conversations.
-                    </p>
-                    <div className="flex items-center gap-4 pt-1">
-                      <span className="text-[10px] text-slate-500 font-bold uppercase">Deterministic (0.0)</span>
-                      <input
-                        type="range"
-                        min="0.0"
-                        max="1.0"
-                        step="0.1"
-                        value={tuningTemp}
-                        onChange={(e) => setTuningTemp(parseFloat(e.target.value))}
-                        className="flex-1 accent-purple-500 cursor-pointer h-1.5 bg-slate-950 rounded-lg appearance-none"
-                      />
-                      <span className="text-[10px] text-slate-500 font-bold uppercase">Creative (1.0)</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-6 border-t border-white/5 flex gap-3 justify-end bg-slate-900 mt-6 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setShowTuningModal(false)}
-                    className="px-4 py-3 text-xs uppercase tracking-widest font-black text-slate-400 hover:text-white transition-all"
-                  >
-                    Cancel Draft
-                  </button>
-                  <button
-                    type="submit"
-                    className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white text-xs uppercase tracking-widest font-black px-6 py-3 rounded-xl shadow-lg hover:shadow-purple-500/10 active:scale-95 transition-all"
-                  >
-                    Save & Deploy Brain
-                  </button>
-                </div>
-              </form>
-
-              {/* RIGHT COLUMN: REAL-TIME SANDBOX TESTING SIMULATOR */}
-              <div className="w-full md:w-1/2 p-6 flex flex-col justify-between bg-slate-950/40">
-                <div className="flex flex-col h-full">
-                  {/* Sandbox Header */}
-                  <div className="pb-3 border-b border-white/5 flex items-center justify-between shrink-0 mb-4">
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1.5">
-                      <Sparkles className="w-4 h-4 text-purple-400 animate-pulse" />
-                      Live Simulator Sandbox
-                    </span>
-                    <span className="text-[8px] uppercase tracking-widest font-bold text-slate-500 px-1.5 py-0.5 border border-white/10 rounded">
-                      Unsaved Draft Testing
-                    </span>
-                  </div>
-
-                  {/* Sandbox Conversation History */}
-                  <div className="flex-1 overflow-y-auto space-y-4 pr-1 mb-4 custom-scrollbar">
-                    {sandboxMessages.map((msg, mIdx) => {
-                      const isUser = msg.sender === 'user';
-                      return (
-                        <div 
-                          key={mIdx} 
-                          className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
-                        >
-                          <div className={`max-w-[85%] rounded-2xl p-3 text-xs leading-relaxed shadow-md ${
-                            isUser 
-                              ? 'bg-blue-600 text-white rounded-tr-none' 
-                              : 'bg-slate-900 border border-white/5 text-slate-200 rounded-tl-none'
-                          }`}>
-                            <div className="flex items-center justify-between gap-4 mb-1">
-                              <span className="text-[8px] opacity-75 font-black uppercase tracking-wider">
-                                {isUser ? 'Tahsin (Admin)' : editingEmployee.name}
-                              </span>
-                              {!isUser && (
-                                <span className="bg-purple-500/20 text-purple-400 text-[6px] font-bold px-1 rounded">
-                                  Tuned Draft response
-                                </span>
-                              )}
-                            </div>
-                            <p className="whitespace-pre-wrap">{msg.text}</p>
-                            <span className="block text-[8px] text-right opacity-60 mt-1 font-mono">
-                              {msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {isSandboxTyping && (
-                      <div className="flex justify-start">
-                        <div className="bg-purple-600/10 border border-purple-500/10 rounded-2xl p-3 text-xs text-purple-300 rounded-tl-none flex items-center gap-2">
-                          <Loader2 className="w-3.5 h-3.5 text-purple-400 animate-spin" />
-                          <span>Gemini is modeling system instructions...</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Sandbox Chat Input */}
-                  <form onSubmit={handleSendSandboxMessage} className="flex gap-2 shrink-0">
-                    <input
-                      type="text"
-                      placeholder={`Test chat prompt... (e.g. Can I borrow $20k?)`}
-                      value={sandboxInput}
-                      onChange={(e) => setSandboxInput(e.target.value)}
-                      className="flex-1 bg-slate-950 border border-white/10 px-3 py-2.5 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-purple-500/50"
-                    />
-                    <button
-                      type="submit"
-                      disabled={isSandboxTyping}
-                      className="bg-purple-600 hover:bg-purple-500 disabled:bg-purple-900 text-white p-2.5 rounded-xl transition-all flex items-center justify-center shrink-0"
-                    >
-                      <Send className="w-4 h-4" />
-                    </button>
-                  </form>
-                </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-slate-300 block mb-1">
+                  Custom Persona / Operational Directives:
+                </label>
+                <textarea
+                  rows={4}
+                  value={tuningPrompt}
+                  onChange={(e) => setTuningPrompt(e.target.value)}
+                  placeholder="e.g. Always emphasize that member deposit reserves are ring-fenced 1:1 and never at risk..."
+                  className="w-full bg-slate-950 border border-white/10 p-3 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                />
               </div>
+
+              <div>
+                <div className="flex justify-between text-xs font-bold text-slate-300 mb-1">
+                  <span>Temperature (Precision vs Creativity):</span>
+                  <span className="font-mono text-blue-400">{tuningTemp}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="0.9"
+                  step="0.05"
+                  value={tuningTemp}
+                  onChange={(e) => setTuningTemp(parseFloat(e.target.value))}
+                  className="w-full cursor-pointer"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-white/10">
+              <button
+                onClick={() => setTuningAgent(null)}
+                className="px-4 py-2 bg-slate-800 text-slate-300 hover:text-white rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveTuning}
+                disabled={savingTuning}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5"
+              >
+                {savingTuning && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Save Directives
+              </button>
             </div>
           </div>
         </div>

@@ -6,15 +6,27 @@
 import { useState, useEffect, useMemo, useCallback, Component, useRef } from 'react';
 import { MemberDashboard } from './components/MemberDashboard';
 import { SecureTransactionPortal } from './components/SecureTransactionPortal';
+import { BkashLogo, NagadLogo } from './components/PaymentBrandLogos';
 import { LoginPage } from './components/Login';
 import { AdminPortalV4 } from './components/AdminPortalV4';
 import { AdminMemberDossierModal } from './components/AdminMemberDossierModal';
-import { NotificationService, NotificationPayload } from './services/NotificationService';
+import { NotificationService, NotificationPayload, EmailAutomationConfig, DEFAULT_EMAIL_AUTOMATION_CONFIG, generateBrandedEmailHtml } from './services/NotificationService';
 import { WorkforceManagement } from './components/WorkforceManagement';
 import { WorkforceSupportWidget } from './components/WorkforceSupportWidget';
+import { RegistrationProgressTracker } from './components/RegistrationProgressTracker';
 import { UserNotificationsModal } from './components/UserNotificationsModal';
 import { calculateUserUnreadCount } from './utils/userNotificationsEngine';
 import { syncOfficialFinancialStatus } from './utils/financialSyncEngine';
+import { buildMemberDueRadar } from './utils/loanAllocationEngine';
+import { AutoEmailEngineState } from './components/admin/types';
+import { TutPaymentCheckout, TutCheckoutRequest } from './components/TutPaymentCheckout';
+import {
+  normalizeMemoCode,
+  computeLedgerChecksum,
+  formatReceiptTimestamp,
+  getReceiptMeta,
+  downloadReceiptPng
+} from './utils/receiptGenerator';
 import tutLogo from './assets/images/tut_logo_1783437312744.jpg';
 import { 
   auth, db, storage 
@@ -110,7 +122,9 @@ import {
   UserCheck,
   XCircle,
   ShieldCheck,
-  Scale
+  Scale,
+  Home,
+  Download
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { 
@@ -737,13 +751,13 @@ export interface Transaction {
   userPhoto?: string;
   proofUrl?: string;
   assignedModerator?: string;
-  type: 'loan' | 'deposit' | 'refund' | 'pay_due' | 'subscription';
+  type: 'loan' | 'deposit' | 'refund' | 'pay_due' | 'subscription' | 'merchant_payment' | 'card_payment' | 'wallet_payment';
   amount: number;
-  method: 'Cash' | 'Bkash' | 'Nagad' | 'Recharge';
+  method: 'Cash' | 'Bkash' | 'Nagad' | 'Recharge' | 'Account Balance' | 'T.U.T. Card' | 'T.U.T. Wallet';
   accountNumber?: string;
   transactionId?: string;
   mobileOperator?: string;
-  status: 'pending' | 'confirmed' | 'rejected';
+  status: 'pending' | 'confirmed' | 'rejected' | 'settled';
   timestamp: any;
   memoId?: string;
   loanReason?: string;
@@ -768,6 +782,11 @@ export interface Transaction {
   monthlyInstallment?: number;
   title?: string;
   date?: string;
+  merchantId?: string;
+  merchantName?: string;
+  orderId?: string;
+  paymentInstrument?: 'tut_card' | 'tut_wallet' | 'tut_credit';
+  cardLast4?: string;
 }
 
 export interface SponsorshipCampaign {
@@ -786,6 +805,19 @@ export interface SponsorshipCampaign {
   videoUrl?: string;
   targetUrl?: string;
   specialOffer?: string;
+  // Smart Ad-Control Fields
+  placement?: 'all' | 'entrance_popup' | 'deals_hero' | 'featured_carousel' | 'partner_grid';
+  targetAudience?: 'all' | 'standard' | 'bronze' | 'silver' | 'gold' | 'active_borrowers' | 'depositors';
+  priority?: number;
+  isPinned?: boolean;
+  category?: 'Fintech' | 'Shopping' | 'Food' | 'Mobility' | 'Telecom' | 'General';
+  discountBadge?: string;
+  ctaLabel?: string;
+  accentColor?: string;
+  maxImpressions?: number;
+  frequencyCapHours?: number;
+  updatedAt?: string;
+  createdBy?: string;
 }
 
 // --- Error Boundary ---
@@ -918,15 +950,17 @@ const Badge = ({ children, variant = 'info' }: { children: React.ReactNode, vari
 
 const FileUploader = ({ onUpload, currentUrl, label, maxDimension = 400, shape = 'circle' }: { onUpload: (url: string) => void, currentUrl?: string, label: string, maxDimension?: number, shape?: 'circle' | 'square' }) => {
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setUploadError(null);
     // Limit original file size to 5MB
     if (file.size > 5 * 1024 * 1024) {
-      alert("File size must be less than 5MB");
+      setUploadError("File size must be less than 5MB");
       return;
     }
 
@@ -966,14 +1000,14 @@ const FileUploader = ({ onUpload, currentUrl, label, maxDimension = 400, shape =
           const dataUrl = canvas.toDataURL('image/jpeg', 0.85); // High quality
           onUpload(dataUrl);
         } else {
-          alert('Failed to process image');
+          setUploadError('Failed to process image');
         }
         setUploading(false);
       };
       
       img.onerror = () => {
         console.error("Image load error");
-        alert("Failed to read image file.");
+        setUploadError("Failed to read image file.");
         setUploading(false);
       };
 
@@ -982,7 +1016,7 @@ const FileUploader = ({ onUpload, currentUrl, label, maxDimension = 400, shape =
     
     reader.onerror = () => {
       console.error("File read error", reader.error);
-      alert("Failed to read file.");
+      setUploadError("Failed to read file.");
       setUploading(false);
     };
   };
@@ -1030,6 +1064,7 @@ const FileUploader = ({ onUpload, currentUrl, label, maxDimension = 400, shape =
             )}
           </Button>
           <p className="text-[9px] text-blue-400/40 mt-2 text-center uppercase font-black tracking-widest">Max 5MB (JPG/PNG)</p>
+          {uploadError && <p className="text-[10px] text-rose-400 font-bold mt-1 text-center">{uploadError}</p>}
         </div>
       </div>
     </div>
@@ -1068,110 +1103,146 @@ export const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, o
   </AnimatePresence>
 );
 
-export const DigitalMemo = ({ memo }: { memo: Transaction }) => (
-  <div className="relative overflow-hidden bg-white rounded-2xl p-6 shadow-2xl border border-blue-100 min-h-[220px] flex flex-col justify-between group transition-all hover:shadow-blue-500/10">
-    {/* Decorative Elements */}
-    <div className="absolute top-0 right-0 w-24 h-24 bg-blue-50 rounded-bl-full -mr-8 -mt-8 opacity-50" />
-    <div className="absolute bottom-0 left-0 w-16 h-16 bg-blue-50 rounded-tr-full -ml-4 -mb-4 opacity-50" />
-    
-    {/* Watermark */}
-    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.04] rotate-[-25deg] select-none">
-      <span className="text-9xl font-black text-blue-900">T.U.T.</span>
-    </div>
-    
-    <div className="relative z-10">
-      <div className="flex justify-between items-start mb-6">
-        <div>
-          <h4 className="text-[10px] font-black text-blue-900/30 uppercase tracking-[0.2em] mb-1">Official Digital Memo</h4>
-          <p className="text-sm font-mono font-bold text-blue-900 tracking-tighter">{memo.memoId}</p>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <div className="bg-emerald-500 text-white px-2 py-0.5 rounded text-[9px] font-black tracking-wider uppercase shadow-lg shadow-emerald-500/20">
-            Verified
+export const DigitalMemo = ({ memo }: { memo: Transaction }) => {
+  const receiptPayload = {
+    id: memo.id,
+    memoId: memo.memoId,
+    type: memo.type,
+    amount: memo.amount || 0,
+    userName: memo.userName,
+    userId: memo.userId,
+    method: memo.method,
+    accountNumber: memo.accountNumber,
+    transactionId: memo.transactionId,
+    date: memo.date,
+    timestamp: memo.timestamp,
+    dueDate: (memo as any).dueDate,
+    estimatedRepaymentDate: memo.estimatedRepaymentDate,
+    status: memo.status,
+    adminNotes: memo.adminNotes,
+    loanReason: memo.loanReason,
+    reference: memo.reference,
+    mobileOperator: memo.mobileOperator,
+    isTransfer: memo.isTransfer,
+    transferType: memo.transferType,
+    transferSenderName: memo.transferSenderName,
+    transferRecipientName: memo.transferRecipientName
+  };
+
+  const cleanCode = normalizeMemoCode(memo.id, memo.memoId);
+  const checksum = computeLedgerChecksum(receiptPayload);
+  const meta = getReceiptMeta(receiptPayload);
+  const timestampStr = formatReceiptTimestamp(receiptPayload);
+  const railText = `${memo.method || ''} ${memo.mobileOperator || ''}`.toLowerCase();
+
+  const statusToneClass = {
+    confirmed: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+    pending: 'bg-amber-50 text-amber-800 border-amber-200',
+    hold: 'bg-blue-50 text-blue-800 border-blue-200',
+    rejected: 'bg-rose-50 text-rose-800 border-rose-200'
+  }[meta.statusTone];
+
+  return (
+    <div className="bg-white text-slate-900 rounded-xl shadow-lg border border-slate-200 overflow-hidden flex flex-col justify-between">
+      {/* Sovereign Navy Header */}
+      <div className="bg-[#091022] text-white px-5 py-3.5 border-b-2 border-[#D4AF37] flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[9.5px] font-bold uppercase tracking-[0.16em] text-amber-300">
+            T.U.T. Private Lending Authority
           </div>
-          <p className="text-[9px] font-bold text-blue-900/40 uppercase">Auth: 2026-TUT</p>
+          <div className="text-xs font-mono font-bold text-white tracking-tight truncate mt-0.5">
+            {cleanCode}
+          </div>
         </div>
+        <span className={cn('px-2 py-0.5 rounded text-[9.5px] font-bold tracking-wider uppercase border shrink-0', statusToneClass)}>
+          {meta.statusLabel}
+        </span>
       </div>
-      
-      <div className="space-y-3">
-        <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-          <span className="text-[10px] font-bold text-blue-900/40 uppercase">Issue Date</span>
-          <span className="text-xs font-bold text-blue-900">
-            {memo.timestamp?.toDate ? format(memo.timestamp.toDate(), 'dd MMM yyyy') : 'Processing...'}
+
+      {/* Archival Ledger Table */}
+      <div className="p-5 space-y-3">
+        <div className="flex items-baseline justify-between gap-3 pb-3 border-b border-slate-200">
+          <div>
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+              {meta.docTitle}
+            </span>
+            <span className="text-[11px] font-mono text-slate-500">{timestampStr}</span>
+          </div>
+          <span className="text-xl font-extrabold font-mono tabular-nums text-slate-900 tracking-tight">
+            ৳ {(memo.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
         </div>
-        <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-          <span className="text-[10px] font-bold text-blue-900/40 uppercase">Service Type</span>
-          <span className={cn("text-xs font-black uppercase tracking-tight", 
-            memo.isTransfer ? (memo.transferType === 'out' ? "text-rose-600" : "text-emerald-600") :
-            memo.type === 'refund' || memo.type === 'loan' ? "text-rose-600" : "text-emerald-600"
-          )}>
-            {memo.isTransfer ? (memo.transferType === 'out' ? "Transfer Out" : "Transfer In") : memo.type.replace('_', ' ')}
-          </span>
-        </div>
-        <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-          <span className="text-[10px] font-bold text-blue-900/40 uppercase">Payment Method</span>
-          <span className="text-xs font-bold text-blue-900">{memo.isTransfer ? 'T.U.T Account Transfer' : memo.method}</span>
-        </div>
-        {memo.isTransfer && memo.transferType === 'out' && (
-          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Recipient</span>
-            <span className="text-xs font-black text-rose-600 truncate max-w-[150px]">
-              {memo.transferRecipientName || 'N/A'} ({memo.transferRecipientId || 'N/A'})
+
+        <div className="space-y-2 text-xs">
+          <div className="flex justify-between items-center gap-3">
+            <span className="text-slate-500 font-medium">Category</span>
+            <span className="font-semibold text-slate-900">{meta.categoryLabel}</span>
+          </div>
+          <div className="flex justify-between items-center gap-3">
+            <span className="text-slate-500 font-medium">Payment Rail</span>
+            <span className="inline-flex items-center gap-1.5 font-semibold text-slate-900">
+              {railText.includes('bkash') && <BkashLogo size="xs" variant="badge" />}
+              {railText.includes('nagad') && <NagadLogo size="xs" variant="badge" />}
+              <span>{memo.isTransfer ? 'T.U.T. Internal Transfer' : memo.method || 'Internal Treasury'}</span>
             </span>
           </div>
-        )}
-        {memo.isTransfer && memo.transferType === 'in' && (
-          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Sender</span>
-            <span className="text-xs font-black text-emerald-600 truncate max-w-[150px]">
-              {memo.transferSenderName || 'N/A'} ({memo.transferSenderId || 'N/A'})
-            </span>
-          </div>
-        )}
-        {memo.reference && (
-          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Reference</span>
-            <span className="text-xs font-black text-blue-900 truncate max-w-[150px]">{memo.reference}</span>
-          </div>
-        )}
-        {memo.adminNotes && (
-          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Official Memo</span>
-            <span className="text-xs font-black text-blue-900 truncate max-w-[150px]">{memo.adminNotes}</span>
-          </div>
-        )}
-        {memo.type === 'loan' && memo.estimatedRepaymentDate && (
-          <div className="flex justify-between border-b border-blue-50/50 pb-1.5">
-            <span className="text-[10px] font-bold text-blue-900/40 uppercase">Expected Repayment</span>
-            <span className="text-xs font-black text-amber-600">
-              {format(new Date(memo.estimatedRepaymentDate), 'dd MMM yyyy')}
-            </span>
-          </div>
-        )}
-        <div className="flex justify-between pt-2">
-          <span className="text-[10px] font-bold text-blue-900/40 uppercase">Total Amount</span>
-          <div className="text-right">
-            <span className="text-xl font-black text-blue-900 tracking-tighter">৳ {memo.amount.toLocaleString()}</span>
-          </div>
+          {memo.isTransfer && memo.transferType === 'out' && (
+            <div className="flex justify-between items-center gap-3">
+              <span className="text-slate-500 font-medium">Recipient</span>
+              <span className="font-semibold text-slate-900 truncate max-w-[180px]">
+                {memo.transferRecipientName || 'Member'} ({memo.transferRecipientId || 'N/A'})
+              </span>
+            </div>
+          )}
+          {memo.isTransfer && memo.transferType === 'in' && (
+            <div className="flex justify-between items-center gap-3">
+              <span className="text-slate-500 font-medium">Sender</span>
+              <span className="font-semibold text-slate-900 truncate max-w-[180px]">
+                {memo.transferSenderName || 'Member'} ({memo.transferSenderId || 'N/A'})
+              </span>
+            </div>
+          )}
+          {memo.reference && (
+            <div className="flex justify-between items-center gap-3">
+              <span className="text-slate-500 font-medium">Reference</span>
+              <span className="font-mono font-semibold text-slate-800 truncate max-w-[180px]">{memo.reference}</span>
+            </div>
+          )}
+          {memo.adminNotes && (
+            <div className="flex justify-between items-center gap-3">
+              <span className="text-slate-500 font-medium">Remarks</span>
+              <span className="text-slate-700 truncate max-w-[180px]">{memo.adminNotes}</span>
+            </div>
+          )}
+          {memo.type === 'loan' && memo.estimatedRepaymentDate && (
+            <div className="flex justify-between items-center gap-3">
+              <span className="text-slate-500 font-medium">Scheduled Due</span>
+              <span className="font-mono font-semibold text-amber-700">
+                {format(new Date(memo.estimatedRepaymentDate), 'dd MMM yyyy')}
+              </span>
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Footer Checksum + Instant PNG Download */}
+      <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+          <span className="text-[10.5px] font-mono font-bold text-slate-700 truncate">{checksum}</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => downloadReceiptPng(receiptPayload)}
+          className="px-2.5 py-1.5 rounded-lg bg-[#091022] hover:bg-[#132247] text-white text-[11px] font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+        >
+          <Download className="w-3 h-3 text-amber-300" />
+          <span>PNG</span>
+        </button>
       </div>
     </div>
-    
-    <div className="relative z-10 mt-6 pt-4 border-t border-dashed border-blue-100 flex justify-between items-center">
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-full bg-blue-900/5 flex items-center justify-center">
-          <Shield className="w-3 h-3 text-blue-600" />
-        </div>
-        <span className="text-[9px] font-black text-blue-900/30 uppercase tracking-widest">T.U.T. Authority</span>
-      </div>
-      <div className="flex items-center gap-1">
-        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-        <span className="text-[9px] font-bold text-emerald-600 uppercase">Secured</span>
-      </div>
-    </div>
-  </div>
-);
+  );
+};
 
 // --- Subscription and Loyalty Helpers ---
 const getSubscriptionStatusInfo = (profile: UserProfile | null) => {
@@ -1683,9 +1754,20 @@ export default function App() {
   const [memberSearch, setMemberSearch] = useState('');
   const [showSupportWidget, setShowSupportWidget] = useState(true);
 
-  // Entrance Interstitial Ad Popup States
+  // Entrance Interstitial Ad Popup & Global Ad Delivery Settings States
   const [activeEntranceAd, setActiveEntranceAd] = useState<SponsorshipCampaign | null>(null);
   const [hasAdBeenShown, setHasAdBeenShown] = useState(false);
+  const [adSettings, setAdSettings] = useState<{
+    entrancePopupEnabled: boolean;
+    globalCooldownHours: number;
+    allowHeroRotation: boolean;
+    updatedAt?: string;
+    updatedBy?: string;
+  }>({
+    entrancePopupEnabled: true,
+    globalCooldownHours: 12,
+    allowHeroRotation: true
+  });
   const [sponsorChartView, setSponsorChartView] = useState<'traffic' | 'financial'>('traffic');
   const [copiedCouponId, setCopiedCouponId] = useState<string | null>(null);
 
@@ -1744,52 +1826,42 @@ export default function App() {
 
   const activeSponsorships = useMemo(() => {
     const mergedMap = new Map<string, SponsorshipCampaign>();
-    
-    // 1. If not seeded yet and live sponsorships are empty, show defaults
-    if (!isSponsorshipsSeeded && sponsorships.length === 0) {
-      DEFAULT_SPONSORSHIPS.forEach(s => {
-        mergedMap.set(s.id, { 
-          ...s, 
-          clicks: s.clicks ?? Math.floor(s.impressions * 0.12)
-        });
-      });
-    }
-    
-    // 2. Add live Firestore sponsorship records (skip metadata document)
+    const legacyDefaultIds = new Set(['sp-apex', 'sp-tusher', 'sp-bicon']);
+
+    // 1. Add live Firestore sponsorship records (skip metadata document & legacy unmigrated defaults)
     sponsorships.forEach(s => {
-      if (s.id === 'config_seeded') return;
+      if (s.id === 'config_seeded' || legacyDefaultIds.has(s.id)) return;
       mergedMap.set(s.id, {
         ...s,
-        clicks: s.clicks ?? Math.floor(s.impressions * 0.12)
+        clicks: s.clicks ?? 0
       });
     });
-    
-    // 3. Overlay any locally added/deleted/changed sponsorships (guarantees immediate device updates)
+
+    // 2. Overlay any locally added/changed sponsorships
     localSponsorChanges.forEach(s => {
+      if (legacyDefaultIds.has(s.id)) return;
       mergedMap.set(s.id, {
         ...s,
-        clicks: s.clicks ?? Math.floor(s.impressions * 0.12)
+        clicks: s.clicks ?? 0
       });
     });
-    
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+
     return Array.from(mergedMap.values())
       .filter(s => {
         if (s.status === 'completed') return false;
         if (localDeletedSponsors.includes(s.id)) return false;
-        
-        // Strict frontend filtering of legacy default/seeded ads
-        const nameLower = s.companyName?.toLowerCase() || '';
-        const idLower = s.id?.toLowerCase() || '';
-        const isDefaultAd = idLower.includes('apex') || 
-                            idLower.includes('bicon') || 
-                            idLower.includes('tusher') ||
-                            nameLower.includes('apex') || 
-                            nameLower.includes('bicon') || 
-                            nameLower.includes('t.u.t.') || 
-                            nameLower.includes('tusher');
-        return !isDefaultAd;
+        if (s.startDate && s.startDate.length === 10 && s.startDate > todayStr) return false;
+        if (s.endDate && s.endDate.length === 10 && s.endDate < todayStr) return false;
+        if (s.maxImpressions && s.maxImpressions > 0 && (s.impressions || 0) >= s.maxImpressions) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        if (Boolean(b.isPinned) !== Boolean(a.isPinned)) return b.isPinned ? 1 : -1;
+        return (b.priority || 0) - (a.priority || 0);
       });
-  }, [sponsorships, localSponsorChanges, localDeletedSponsors, isSponsorshipsSeeded]);
+  }, [sponsorships, localSponsorChanges, localDeletedSponsors]);
 
   // Master Financial Computations (Recomputed automatically when state shifts)
   const sponsorProfit = useMemo(() => {
@@ -1962,10 +2034,45 @@ export default function App() {
     const saved = localStorage.getItem('tut_gmail_notifications');
     return saved !== 'false';
   });
+  const [emailAutomationConfig, setEmailAutomationConfig] = useState<EmailAutomationConfig>(DEFAULT_EMAIL_AUTOMATION_CONFIG);
+  const [emailAutomationLoaded, setEmailAutomationLoaded] = useState(false);
+  const [autoEmailState, setAutoEmailState] = useState<AutoEmailEngineState>({
+    status: 'idle',
+    lastScanAt: null,
+    nextScanAt: null,
+    lastSentCount: 0,
+    lastEligibleCount: 0,
+    totalAutoSentSession: 0,
+    lastError: null
+  });
 
   useEffect(() => {
     localStorage.setItem('tut_gmail_notifications', gmailNotificationsEnabled.toString());
   }, [gmailNotificationsEnabled]);
+
+  useEffect(() => {
+    const unsubAuto = onSnapshot(doc(db, 'system_controls', 'email_automation'), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data() as any;
+        setEmailAutomationConfig({
+          ...DEFAULT_EMAIL_AUTOMATION_CONFIG,
+          ...d,
+          dueReminderLeadDays: typeof d.dueReminderLeadDays === 'number' ? d.dueReminderLeadDays : 3,
+          overdueRepeatDays: typeof d.overdueRepeatDays === 'number' ? d.overdueRepeatDays : 5,
+        });
+      } else if (isAdminLoggedIn && user) {
+        setDoc(doc(db, 'system_controls', 'email_automation'), {
+          ...DEFAULT_EMAIL_AUTOMATION_CONFIG,
+          updatedAt: new Date().toISOString(),
+          updatedBy: user.email || ADMIN_EMAIL,
+        }, { merge: true }).catch(() => {});
+      }
+      setEmailAutomationLoaded(true);
+    }, () => {
+      setEmailAutomationLoaded(true);
+    });
+    return () => unsubAuto();
+  }, [isAdminLoggedIn, user]);
 
   const handleToggleGmailNotifications = async (newValue: boolean) => {
     setGmailNotificationsEnabled(newValue);
@@ -2034,7 +2141,7 @@ export default function App() {
 
   const requestNotificationPermission = async () => {
     if (typeof Notification === 'undefined') {
-      alert("Notifications are not supported in this browser.");
+      addToast("Notifications", "Browser notifications are not supported on this platform.", "warning");
       return;
     }
     
@@ -2043,14 +2150,15 @@ export default function App() {
       setNotificationPermission(permission);
       
       if (permission === 'denied' && isIframe) {
-        alert("Notification permission was denied. This often happens in preview windows. Please open the app in a new tab using the button in the top right of AI Studio to enable notifications.");
+        addToast("Notification Notice", "Browser notifications are restricted in embedded preview. In-app alerts remain active.", "info");
       } else if (permission === 'granted') {
         sendNotification('Notifications Enabled!', 'You will now receive real-time updates from T.U.T.', user?.email || undefined);
+        addToast("Notifications Active", "System alerts are now enabled.", "success");
       }
     } catch (error) {
       console.error("Notification permission error:", error);
       if (isIframe) {
-        alert("Could not request notification permission in this preview window. Please open the app in a new tab to enable notifications.");
+        addToast("Notice", "Notification permission prompt is restricted inside embedded iframe windows.", "info");
       }
     }
   };
@@ -2075,9 +2183,23 @@ export default function App() {
     }
   }, [notificationSettingsMode]);
 
-  const sendEmail = async (to: string, subject: string, body: string, customHtml?: string, recipientName: string = 'Unknown Member', category: string = 'System') => {
+  const sendEmail = async (
+    to: string,
+    subject: string,
+    body: string,
+    customHtml?: string,
+    recipientName: string = 'Unknown Member',
+    category: string = 'System',
+    forceRetry: boolean = false,
+    meta?: { memoId?: string; eventType?: string; recipientUid?: string; attachments?: any[] }
+  ): Promise<boolean> => {
     let deliveryStatus: 'delivered' | 'failed' = 'failed';
     let deliveryError = '';
+    let latencyMs = 0;
+    let messageId: string | undefined;
+
+    const cleanBody = (body || 'Account notification from T.U.T.').trim();
+    const cleanSubject = (subject || 'T.U.T. Account Notification').trim();
 
     try {
       const response = await fetch('/api/send-email', {
@@ -2085,49 +2207,65 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           to,
-          subject,
-          text: body,
-          html: customHtml || `<div style="font-family: sans-serif; padding: 20px; background: #f4f4f4;">
-            <div style="max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-              <h2 style="color: #2563eb; margin-top: 0;">T.U.T. Notification</h2>
-              <p style="font-size: 16px; color: #333; line-height: 1.5;">${body}</p>
-              <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-              <p style="font-size: 12px; color: #999;">This is an automated message from the T.U.T. Private Lending Authority system.</p>
-            </div>
-          </div>`
+          subject: cleanSubject,
+          text: cleanBody,
+          forceRetry,
+          ...(Array.isArray(meta?.attachments) && meta.attachments.length > 0 ? { attachments: meta.attachments } : {}),
+          html: customHtml || generateBrandedEmailHtml(
+            cleanSubject.replace(/^T\.U\.T\.\s*[—:-]\s*/i, ''),
+            cleanBody,
+            meta?.memoId ? { 'Memo Reference': meta.memoId, 'Category': category } : {},
+            meta?.memoId || `SYS-${Date.now().toString().slice(-6)}`,
+            typeof window !== 'undefined' ? window.location.origin : '',
+            { accentTone: 'neutral' }
+          )
         })
       });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to send email');
+
+      const responseData = await response.json().catch(() => ({}));
+      latencyMs = typeof responseData?.latencyMs === 'number' ? responseData.latencyMs : 0;
+      messageId = responseData?.messageId || undefined;
+
+      if (!response.ok || responseData?.success === false) {
+        deliveryError = responseData?.error || 'Failed to send email';
+        setLastGmailError(deliveryError);
+        console.warn(`[Email Gateway] Email to ${to} not delivered:`, deliveryError);
+        return false;
       }
+
       setLastGmailError(null);
       deliveryStatus = 'delivered';
+      return true;
     } catch (error: any) {
-      console.error("[Email Error] Full details:", error);
-      deliveryError = error.message || String(error);
+      deliveryError = error?.message || String(error);
       setLastGmailError(deliveryError);
-      if (deliveryError.includes('Gmail Login Failed')) {
-        addToast('Gmail Error', 'Authentication failed. Please check your App Password.', 'warning');
-      }
-      throw error; // Re-throw so caller can handle
+      console.warn(`[Email Gateway] Dispatch warning:`, deliveryError);
+      return false;
     } finally {
-      // Async write to Firestore log
+      // Async write to Firestore log (strictly compliant with isValidEmailLog rules)
       try {
-        const logData = {
+        const attachmentNames = Array.isArray(meta?.attachments)
+          ? meta.attachments.map((a: any) => a?.filename).filter(Boolean)
+          : [];
+        const logData: Record<string, any> = {
           to: to.toLowerCase().trim(),
-          recipientName,
-          subject,
-          body,
+          recipientName: recipientName || 'Member',
+          subject: cleanSubject,
+          body: cleanBody,
           status: deliveryStatus,
           timestamp: new Date(),
-          category,
-          ...(deliveryError ? { error: deliveryError } : {})
+          category: category || 'System',
+          ...(latencyMs > 0 ? { latencyMs } : {}),
+          ...(messageId ? { messageId } : {}),
+          ...(meta?.memoId ? { memoId: meta.memoId } : {}),
+          ...(meta?.eventType ? { eventType: meta.eventType } : {}),
+          ...(meta?.recipientUid ? { recipientUid: meta.recipientUid } : {}),
+          ...(attachmentNames.length > 0 ? { attachments: attachmentNames } : {}),
+          ...(deliveryError ? { error: String(deliveryError) } : {})
         };
         await addDoc(collection(db, 'email_logs'), logData);
-        console.log("[Email Log] Persisted to Firestore:", logData);
       } catch (logErr) {
-        console.error("[Email Log Error] Failed to write to Firestore:", logErr);
+        // Non-admin clients cannot write to email_logs per Firestore rules; ignore quietly
       }
     }
   };
@@ -2148,368 +2286,399 @@ export default function App() {
       },
       adminEmail: ADMIN_EMAIL,
       allUsers,
-      getGmailNotificationsEnabled: () => gmailNotificationsEnabled
+      getGmailNotificationsEnabled: () => gmailNotificationsEnabled,
+      getAutomationConfig: () => emailAutomationConfig
     });
-  }, [allUsers, gmailNotificationsEnabled]);
+  }, [allUsers, gmailNotificationsEnabled, emailAutomationConfig]);
 
   useEffect(() => {
     notificationService.updateUsersContext(allUsers);
   }, [allUsers, notificationService]);
 
-  const hasScannedReminders = useRef(false);
+  const autoScanInFlightRef = useRef(false);
+  const lastAutoScanMsRef = useRef<number>(0);
 
   const sendProfessionalDueReminder = async (
     targetUserProfile: UserProfile,
-    tx: Transaction,
-    isManual: boolean = false
+    tx: Transaction | null,
+    isManual: boolean = false,
+    resolvedContext?: { daysDiff?: number | null; dueDateLabel?: string; activeDebt?: number },
+    options?: { skipAdminCopy?: boolean }
   ) => {
-    if (!targetUserProfile.email) {
-      console.warn("User has no email configured, skipping reminder.");
+    if (!targetUserProfile.email || !targetUserProfile.email.includes('@')) {
       return false;
     }
 
     const todayStr = format(new Date(), 'yyyy-MM-dd');
     const emailTo = targetUserProfile.email.toLowerCase().trim();
     const isToAdmin = emailTo === ADMIN_EMAIL;
-    
-    // Check recipient's own preferences
-    const recipientPref = isToAdmin 
-      ? gmailNotificationsEnabled 
+
+    const recipientPref = isToAdmin
+      ? gmailNotificationsEnabled
       : (targetUserProfile.emailNotificationsEnabled !== false);
 
-    // Skip if email is disabled (unless manual)
-    if (!isManual && !recipientPref) {
-      console.log(`Auto-reminder skipped: Email notifications disabled by recipient preferences (To: ${emailTo}).`);
+    if (!isManual && (!recipientPref || !gmailNotificationsEnabled || emailAutomationConfig.masterEnabled === false || emailAutomationConfig.autoDueReminders === false)) {
       return false;
     }
 
-    const estimatedDate = tx.estimatedRepaymentDate ? new Date(tx.estimatedRepaymentDate) : null;
-    let daysDiff = 0;
-    let formattedDueDate = "Not Specified";
-    
-    if (estimatedDate) {
-      const today = new Date();
-      today.setHours(0,0,0,0);
-      const estDateClean = new Date(estimatedDate);
-      estDateClean.setHours(0,0,0,0);
-      daysDiff = Math.round((estDateClean.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-      formattedDueDate = format(estDateClean, 'dd MMMM yyyy');
+    let daysDiff: number | null = resolvedContext?.daysDiff ?? null;
+    let formattedDueDate = resolvedContext?.dueDateLabel || "As scheduled";
+
+    if (daysDiff === null && tx?.estimatedRepaymentDate) {
+      const estimatedDate = new Date(tx.estimatedRepaymentDate);
+      if (!isNaN(estimatedDate.getTime())) {
+        const today = new Date();
+        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const estStart = new Date(estimatedDate.getFullYear(), estimatedDate.getMonth(), estimatedDate.getDate());
+        daysDiff = Math.round((estStart.getTime() - todayStart.getTime()) / (1000 * 60 * 60 * 24));
+        formattedDueDate = format(estStart, 'dd MMM yyyy');
+      }
     }
 
-    // Compose custom professional email Subject and Status Message
-    let subject = `T.U.T. Loan Due Reminder: ৳${tx.amount.toLocaleString()} Statement`;
-    let statusText = "Official Statement Notice";
-    let statusColor = "#3b82f6"; // Blue
-    let alertMessage = `This is a routine statement of your outstanding loan account with T.U.T. Private Authority.`;
+    const activeDebt = resolvedContext?.activeDebt ?? targetUserProfile.remainingDebt ?? tx?.amount ?? 0;
+    const memoRef = tx?.memoId || tx?.id || `ACC-${targetUserProfile.uid.slice(0, 6).toUpperCase()}`;
 
-    if (daysDiff < 0) {
-      subject = `⚠️ OVERDUE NOTICE: T.U.T. Private Lending Repayment (৳${tx.amount.toLocaleString()})`;
-      statusText = "URGENT: OVERDUE ACCOUNT";
-      statusColor = "#dc2626"; // Red
-      alertMessage = `Your expected repayment date was <strong>${formattedDueDate}</strong>, which is now <strong>${Math.abs(daysDiff)} days overdue</strong>. Please settle your remaining dues immediately to protect your solvency rating.`;
+    let subject = `T.U.T. — Loan payment statement (৳${activeDebt.toLocaleString()})`;
+    let title = 'Loan Repayment Statement';
+    let accentTone: 'neutral' | 'warning' | 'danger' = 'neutral';
+    let heroCaption = formattedDueDate !== 'As scheduled' ? `Scheduled Due: ${formattedDueDate}` : 'Active Balance';
+    let plainSummary = `Hi ${targetUserProfile.name}, this is a scheduled update on your active zero-usury loan balance of ৳${activeDebt.toLocaleString()} BDT. Submit your repayment anytime inside your member dashboard.`;
+
+    if (daysDiff !== null && daysDiff < 0) {
+      const overdueDays = Math.abs(daysDiff);
+      subject = `T.U.T. — Payment overdue by ${overdueDays} day${overdueDays > 1 ? 's' : ''} (৳${activeDebt.toLocaleString()})`;
+      title = 'Repayment Overdue Notice';
+      accentTone = 'danger';
+      heroCaption = `Overdue by ${overdueDays} Day${overdueDays > 1 ? 's' : ''} · Due ${formattedDueDate}`;
+      plainSummary = `Hi ${targetUserProfile.name}, your scheduled repayment due on ${formattedDueDate} is now ${overdueDays} day${overdueDays > 1 ? 's' : ''} overdue. Please clear your balance of ৳${activeDebt.toLocaleString()} BDT or contact an officer inside your portal if you need assistance.`;
     } else if (daysDiff === 0) {
-      subject = `📅 DUE TODAY: T.U.T. Private Lending Repayment (৳${tx.amount.toLocaleString()})`;
-      statusText = "DUE TODAY";
-      statusColor = "#ea580c"; // Orange
-      alertMessage = `Your scheduled loan repayment of ৳${tx.amount.toLocaleString()} is due today, <strong>${formattedDueDate}</strong>. Please initiate the settlement as soon as possible.`;
-    } else if (daysDiff > 0 && daysDiff <= 3) {
-      subject = `🔔 UPCOMING DUE: T.U.T. Private Lending Repayment in ${daysDiff} Days`;
-      statusText = `DUE IN ${daysDiff} DAYS`;
-      statusColor = "#ca8a04"; // Amber
-      alertMessage = `This is a courtesy notice that your scheduled loan repayment of ৳${tx.amount.toLocaleString()} is due in <strong>${daysDiff} days</strong> on <strong>${formattedDueDate}</strong>.`;
+      subject = `T.U.T. — Repayment due today (৳${activeDebt.toLocaleString()})`;
+      title = 'Payment Due Today';
+      accentTone = 'warning';
+      heroCaption = `Due Today · ${formattedDueDate}`;
+      plainSummary = `Hi ${targetUserProfile.name}, your scheduled loan repayment is due today (${formattedDueDate}). You can submit your payment through bKash, Nagad, or Cash Desk in your portal.`;
+    } else if (daysDiff !== null && daysDiff > 0 && daysDiff <= (emailAutomationConfig.dueReminderLeadDays || 3)) {
+      subject = `T.U.T. — Upcoming payment due in ${daysDiff} day${daysDiff > 1 ? 's' : ''}`;
+      title = `Payment Due in ${daysDiff} Day${daysDiff > 1 ? 's' : ''}`;
+      accentTone = 'warning';
+      heroCaption = `Upcoming Settlement · ${formattedDueDate}`;
+      plainSummary = `Hi ${targetUserProfile.name}, friendly reminder that your loan repayment is due on ${formattedDueDate} (in ${daysDiff} day${daysDiff > 1 ? 's' : ''}).`;
     } else if (isManual) {
-      subject = `💼 OFFICIAL STATEMENT & REMINDER: T.U.T. Private Lending`;
-      statusText = "OFFICIAL REMINDER";
-      statusColor = "#2563eb"; // Blue
-      alertMessage = "Your account administrator has generated this manual statement and repayment reminder for your review.";
+      subject = `T.U.T. — Repayment reminder & account balance (৳${activeDebt.toLocaleString()})`;
+      title = 'Official Repayment Reminder';
+      accentTone = 'warning';
+      plainSummary = `Hi ${targetUserProfile.name}, here is your current loan balance summary from the T.U.T. administration desk.`;
     }
 
-    // Professional HTML Layout Design
-    const htmlContent = `
-      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #0b1329; padding: 40px 20px; color: #f8fafc; text-align: left;">
-        <div style="max-width: 600px; margin: 0 auto; background-color: #0f172a; border-radius: 24px; border: 1px solid #1e293b; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
-          
-          <!-- Premium Header -->
-          <div style="background: linear-gradient(135deg, #1e3a8a 0%, #020617 100%); padding: 35px 30px; border-bottom: 1px solid #1e293b; text-align: center;">
-            <div style="display: inline-block; background-color: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); padding: 8px 16px; border-radius: 8px; margin-bottom: 15px;">
-              <span style="font-size: 11px; font-weight: 900; color: #60a5fa; letter-spacing: 0.25em; text-transform: uppercase;">TRUST • UNITY • TECHNOLOGY</span>
-            </div>
-            <h1 style="color: #ffffff; margin: 0; font-size: 22px; font-weight: 800; tracking: -0.025em; text-transform: uppercase;">T.U.T. Private Authority</h1>
-            <p style="color: #94a3b8; font-size: 12px; margin: 5px 0 0 0; font-weight: 500;">Official Private Lending & Investment System</p>
-          </div>
-
-          <!-- Alert Banner / Message -->
-          <div style="padding: 30px 30px 10px 30px;">
-            <div style="background-color: rgba(15, 23, 42, 0.6); border: 1px solid #1e293b; border-left: 4px solid ${statusColor}; padding: 20px; border-radius: 12px; margin-bottom: 25px;">
-              <span style="display: inline-block; font-size: 10px; font-weight: 900; color: ${statusColor}; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 5px;">${statusText}</span>
-              <p style="color: #cbd5e1; font-size: 13.5px; line-height: 1.6; margin: 0;">${alertMessage}</p>
-            </div>
-          </div>
-
-          <!-- Member Information -->
-          <div style="padding: 0 30px 15px 30px;">
-            <h3 style="color: #38bdf8; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; border-bottom: 1px solid #1e293b; padding-bottom: 6px;">Recipients Statement Profile</h3>
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-              <tr>
-                <td style="color: #64748b; padding: 6px 0; font-weight: 500; width: 35%;">Member Name:</td>
-                <td style="color: #f1f5f9; padding: 6px 0; font-weight: bold;">${targetUserProfile.name}</td>
-              </tr>
-              <tr>
-                <td style="color: #64748b; padding: 6px 0; font-weight: 500;">Member ID:</td>
-                <td style="color: #38bdf8; padding: 6px 0; font-weight: bold; font-family: monospace;">${targetUserProfile.memberId || 'TUT-MBR-2026'}</td>
-              </tr>
-              <tr>
-                <td style="color: #64748b; padding: 6px 0; font-weight: 500;">Phone Number:</td>
-                <td style="color: #cbd5e1; padding: 6px 0; font-family: monospace;">${targetUserProfile.phone}</td>
-              </tr>
-            </table>
-          </div>
-
-          <!-- Active Loan Specifications -->
-          <div style="padding: 0 30px 15px 30px;">
-            <h3 style="color: #fb7185; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; border-bottom: 1px solid #1e293b; padding-bottom: 6px;">Loan Account Details</h3>
-            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-              <tr>
-                <td style="color: #64748b; padding: 6px 0; font-weight: 500; width: 35%;">Principal Amount:</td>
-                <td style="color: #f43f5e; padding: 6px 0; font-weight: 900; font-size: 14.5px;">৳ ${tx.amount.toLocaleString()} BDT</td>
-              </tr>
-              <tr>
-                <td style="color: #64748b; padding: 6px 0; font-weight: 500;">Purpose of Loan:</td>
-                <td style="color: #cbd5e1; padding: 6px 0; font-weight: 500; font-style: italic;">"${tx.loanReason || 'Not Specified'}"</td>
-              </tr>
-              <tr>
-                <td style="color: #64748b; padding: 6px 0; font-weight: 500;">Expected Due Date:</td>
-                <td style="color: #f59e0b; padding: 6px 0; font-weight: bold;">${formattedDueDate}</td>
-              </tr>
-            </table>
-          </div>
-
-          <!-- Financial Statement & Ledger Summary -->
-          <div style="padding: 0 30px 30px 30px;">
-            <h3 style="color: #34d399; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; border-bottom: 1px solid #1e293b; padding-bottom: 6px;">Lending Ledger Statement</h3>
-            <div style="background-color: rgba(52, 211, 153, 0.03); border: 1px solid rgba(52, 211, 153, 0.1); border-radius: 12px; padding: 15px;">
-              <table style="width: 100%; border-collapse: collapse; font-size: 12.5px;">
-                <tr>
-                  <td style="color: #94a3b8; padding: 6px 0;">Total Borrowed Portfolio:</td>
-                  <td style="color: #cbd5e1; padding: 6px 0; text-align: right; font-weight: bold;">৳ ${(targetUserProfile.totalLoan || 0).toLocaleString()}</td>
-                </tr>
-                <tr>
-                  <td style="color: #94a3b8; padding: 6px 0;">Total Savings Deposit:</td>
-                  <td style="color: #10b981; padding: 6px 0; text-align: right; font-weight: bold;">৳ ${(targetUserProfile.totalDeposit || 0).toLocaleString()}</td>
-                </tr>
-                <tr style="border-top: 1px solid #1e293b;">
-                  <td style="color: #ffffff; padding: 8px 0; font-weight: bold; font-size: 13.5px;">Remaining Active Debt:</td>
-                  <td style="color: #ffffff; padding: 8px 0; text-align: right; font-weight: 900; font-size: 15px; text-shadow: 0 0 10px rgba(255,255,255,0.1);">৳ ${(targetUserProfile.remainingDebt || 0).toLocaleString()} BDT</td>
-                </tr>
-              </table>
-            </div>
-          </div>
-
-          <!-- Action & Repayment Channels -->
-          <div style="padding: 0 30px 35px 30px; border-top: 1px solid #1e293b; background-color: rgba(30, 41, 59, 0.25);">
-            <h4 style="color: #ffffff; font-size: 12px; font-weight: 700; margin: 20px 0 10px 0; text-transform: uppercase;">Accepted Settlement Methods</h4>
-            <div style="display: grid; font-size: 11px; color: #cbd5e1; line-height: 1.5;">
-              <div style="margin-bottom: 8px;">
-                <strong>💳 Mobile Financial Systems (bKash/Nagad)</strong><br/>
-                Please submit a 'Pay Due' transaction request inside your dashboard after completing the mobile transfer.
-              </div>
-              <div>
-                <strong>🏢 Cash Desk Placement</strong><br/>
-                Repayments can be submitted directly in cash to the T.U.T. Executive Committee Admin Desk.
-              </div>
-            </div>
-          </div>
-
-          <!-- Professional System Footer -->
-          <div style="background-color: #020617; padding: 25px 30px; border-top: 1px solid #1e293b; text-align: center; font-size: 11px; color: #64748b; line-height: 1.6;">
-            <p style="margin: 0 0 10px 0; font-weight: bold; color: #94a3b8;">T.U.T. Private Lending Authority</p>
-            <p style="margin: 0;">This is an automated system-generated notice based on your registered lending agreements with the T.U.T. Private Authority. Please do not reply directly to this email.</p>
-            <p style="margin: 10px 0 0 0; color: #3b82f6; font-weight: 600;">Secure Core System Online • 100% Verified Ledger</p>
-          </div>
-
-        </div>
-      </div>
-    `;
+    const htmlContent = generateBrandedEmailHtml(
+      title,
+      plainSummary,
+      {
+        'Member Name': targetUserProfile.name,
+        'Member ID': targetUserProfile.memberId || 'N/A',
+        'Original Tranche Principal': tx ? `৳${tx.amount.toLocaleString()} BDT` : 'Active Account Balance',
+        'Loan Purpose': tx?.loanReason || 'Personal Support',
+        'Expected Due Date': formattedDueDate,
+        'Remaining Debt Due': `৳${activeDebt.toLocaleString()} BDT`,
+        'Vault Savings': `৳${(targetUserProfile.totalDeposit || 0).toLocaleString()} BDT`,
+        'Official Memo ID': memoRef,
+      },
+      memoRef,
+      typeof window !== 'undefined' ? window.location.origin : '',
+      {
+        accentTone,
+        heroAmount: `৳${activeDebt.toLocaleString()} BDT`,
+        heroCaption,
+        automationBadge: isManual ? 'Member Desk Push' : 'Automated Due Schedule',
+        ctaLabel: 'Open Dashboard to Repay',
+        memoNote: 'Accepted repayment methods: bKash (01713710607), Nagad (01921801100), or direct Cash Desk handover. Submit "Pay Due" inside your portal after transferring.'
+      }
+    );
 
     try {
-      await sendEmail(
+      const sentOk = await sendEmail(
         emailTo,
         subject,
-        `Dear ${targetUserProfile.name}, your repayment of ৳${tx.amount.toLocaleString()} is due. Please check your dashboard for details.`,
-        htmlContent
+        plainSummary,
+        htmlContent,
+        targetUserProfile.name,
+        'Due Reminder',
+        isManual,
+        { memoId: memoRef, eventType: isManual ? 'manual_due_reminder' : 'auto_due_reminder', recipientUid: targetUserProfile.uid }
       );
-      
-      await updateDoc(doc(db, 'transactions', tx.id), {
-        lastReminderSent: todayStr
-      });
+      if (!sentOk) return false;
 
-      console.log(`[Reminder System] Successfully sent professional statement email to ${emailTo}`);
+      if (!isToAdmin && !options?.skipAdminCopy && emailAutomationConfig.copyAdminOnMemberMails !== false) {
+        const adminCopySummary = `Due reminder sent to ${targetUserProfile.name} (${emailTo}) for active balance ৳${activeDebt.toLocaleString()} BDT.\n\n${plainSummary}`;
+        const adminCopyHtml = generateBrandedEmailHtml(
+          `[Admin Copy] ${title}`,
+          adminCopySummary,
+          {
+            'Borrower': `${targetUserProfile.name} (${emailTo})`,
+            'Member ID': targetUserProfile.memberId || 'N/A',
+            'Due Date': formattedDueDate,
+            'Remaining Debt Due': `৳${activeDebt.toLocaleString()} BDT`,
+            'Official Memo ID': memoRef,
+          },
+          memoRef,
+          typeof window !== 'undefined' ? window.location.origin : '',
+          {
+            accentTone,
+            heroAmount: `৳${activeDebt.toLocaleString()} BDT`,
+            heroCaption,
+            automationBadge: 'Chief Admin Copy · Due Reminder',
+            ctaLabel: 'Open Admin Console',
+          }
+        );
+        sendEmail(
+          ADMIN_EMAIL,
+          `[Admin Copy] ${subject}`,
+          adminCopySummary,
+          adminCopyHtml,
+          'Chief Admin (Copy)',
+          'Due Reminder',
+          false,
+          { memoId: memoRef, eventType: isManual ? 'admin_copy_manual_due' : 'admin_copy_auto_due', recipientUid: 'admin' }
+        ).catch(() => {});
+      }
+
+      if (tx?.id) {
+        await updateDoc(doc(db, 'transactions', tx.id), {
+          lastReminderSent: todayStr
+        }).catch(() => {});
+      }
+      await updateDoc(doc(db, 'users', targetUserProfile.uid), {
+        lastReminderSent: todayStr
+      }).catch(() => {});
+
       return true;
     } catch (error) {
-      console.error("[Reminder System] Error sending email statement reminder:", error);
+      console.warn("[Reminder System] Email reminder skipped:", error);
       return false;
     }
   };
 
-  const runAutomaticDueReminderScan = async () => {
-    if (!user || !profile) return;
-    if (hasScannedReminders.current) return;
-    hasScannedReminders.current = true;
-    
-    console.log("[Auto Reminder] Running active due reminder scanner...");
-    
-    // Find all active confirmed loans with estimatedRepaymentDate
-    const confirmedLoans = allTransactions.filter(
-      t => t.type === 'loan' && t.status === 'confirmed' && t.estimatedRepaymentDate
-    );
+  const runAutomaticDueReminderScan = useCallback(async (forceRun: boolean = false): Promise<number> => {
+    if (!user || !profile || !isAdminLoggedIn) return 0;
+    if (autoScanInFlightRef.current) return 0;
 
-    let sentCount = 0;
+    if (!gmailNotificationsEnabled || emailAutomationConfig.masterEnabled === false || emailAutomationConfig.autoDueReminders === false) {
+      setAutoEmailState(prev => ({
+        ...prev,
+        status: 'paused',
+        lastError: null
+      }));
+      return 0;
+    }
+
+    const nowMs = Date.now();
+    // Prevent duplicate rapid scans on consecutive Firestore renders unless manually triggered
+    if (!forceRun && lastAutoScanMsRef.current > 0 && nowMs - lastAutoScanMsRef.current < 2 * 60 * 1000) {
+      return 0;
+    }
+
+    autoScanInFlightRef.current = true;
+    lastAutoScanMsRef.current = nowMs;
+    setAutoEmailState(prev => ({ ...prev, status: 'scanning' }));
+
+    const leadDays = emailAutomationConfig.dueReminderLeadDays ?? 3;
+    const repeatDays = emailAutomationConfig.overdueRepeatDays ?? 5;
     const today = new Date();
-    today.setHours(0,0,0,0);
-    const todayStr = format(today, 'yyyy-MM-dd');
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-    for (const tx of confirmedLoans) {
-      const userProfile = allUsers.find(u => u.uid === tx.userId);
-      if (!userProfile) continue;
+    // Use the exact same unified engine as Active Debts & Due Radar
+    const radar = buildMemberDueRadar(allUsers, allTransactions, leadDays, today);
+    let sentCount = 0;
+    let eligibleCount = 0;
+    let hadFailure = false;
+    const notifiedSummaries: { name: string; email: string; debt: number; urgency: string; dueDateLabel: string }[] = [];
 
-      // Only check if they still have debt!
-      if (userProfile.remainingDebt <= 0) continue;
-
-      // Skip if reminder was already sent today
-      if (tx.lastReminderSent === todayStr) {
-        continue;
-      }
-
-      // Compute days difference
-      const estRepayDate = new Date(tx.estimatedRepaymentDate!);
-      estRepayDate.setHours(0,0,0,0);
-      const daysDiff = Math.round((estRepayDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    for (const item of radar) {
+      const { member, primaryLoanTx, daysDiff, dueDateLabel, activeDebt, lastReminderSent, sentToday, urgency } = item;
+      if (!member.email || !member.email.includes('@')) continue;
+      if (member.emailNotificationsEnabled === false) continue;
+      if (sentToday) continue;
 
       let shouldSend = false;
-
-      if (daysDiff === 0) {
-        shouldSend = true; // Due today!
-      } else if (daysDiff > 0 && daysDiff <= 3) {
-        // Upcoming in 3 days, send only once
-        if (!tx.lastReminderSent) {
-          shouldSend = true;
-        }
-      } else if (daysDiff < 0) {
-        // Overdue! Send every 5 days
-        if (!tx.lastReminderSent) {
+      if (urgency === 'today') {
+        shouldSend = true;
+      } else if (urgency === 'upcoming') {
+        if (!lastReminderSent) shouldSend = true;
+      } else if (urgency === 'overdue') {
+        if (!lastReminderSent) {
           shouldSend = true;
         } else {
-          try {
-            const lastSent = new Date(tx.lastReminderSent);
-            lastSent.setHours(0,0,0,0);
-            const daysSinceLastReminder = Math.round((today.getTime() - lastSent.getTime()) / (1000 * 60 * 60 * 24));
-            if (daysSinceLastReminder >= 5) {
-              shouldSend = true;
-            }
-          } catch (e) {
+          const lastSent = new Date(lastReminderSent);
+          if (!isNaN(lastSent.getTime())) {
+            const lastStart = new Date(lastSent.getFullYear(), lastSent.getMonth(), lastSent.getDate());
+            const daysSinceLast = Math.round((todayStart.getTime() - lastStart.getTime()) / (1000 * 60 * 60 * 24));
+            if (daysSinceLast >= repeatDays) shouldSend = true;
+          } else {
             shouldSend = true;
           }
         }
       }
 
-      if (shouldSend && userProfile.email) {
-        console.log(`[Auto Reminder] Triggering automatic due notice for ${userProfile.name}`);
-        const success = await sendProfessionalDueReminder(userProfile, tx, false);
+      if (shouldSend) {
+        eligibleCount++;
+        const success = await sendProfessionalDueReminder(
+          member,
+          primaryLoanTx,
+          forceRun,
+          { daysDiff, dueDateLabel, activeDebt },
+          { skipAdminCopy: true }
+        );
         if (success) {
           sentCount++;
+          notifiedSummaries.push({
+            name: member.name,
+            email: member.email,
+            debt: activeDebt,
+            urgency,
+            dueDateLabel
+          });
+        } else {
+          hadFailure = true;
         }
       }
     }
 
-    if (sentCount > 0) {
-      addToast('Automatic Reminders Sent', `Dispatched ${sentCount} automatic professional email due reminders.`, 'success');
+    // Send 1 consolidated Chief Admin Digest summarizing all automated due reminders dispatched in this cycle
+    if (sentCount > 0 && emailAutomationConfig.copyAdminOnMemberMails !== false) {
+      const digestLines = notifiedSummaries
+        .map((n, idx) => `${idx + 1}. ${n.name} (${n.email}) — ৳${n.debt.toLocaleString()} [${n.urgency.toUpperCase()} · ${n.dueDateLabel}]`)
+        .join('\n');
+      const totalTargetedDebt = notifiedSummaries.reduce((sum, n) => sum + n.debt, 0);
+      const digestSummary = `Automated Due Reminder Cycle completed with ${sentCount} borrower notification${sentCount > 1 ? 's' : ''} sent (৳${totalTargetedDebt.toLocaleString()} total balance tracked).\n\n${digestLines}`;
+      const digestDetails: Record<string, string> = {
+        'Cycle Date': format(today, 'dd MMM yyyy, HH:mm'),
+        'Reminders Dispatched': `${sentCount} of ${eligibleCount} eligible`,
+        'Total Exposure Notified': `৳${totalTargetedDebt.toLocaleString()} BDT`,
+      };
+      notifiedSummaries.slice(0, 6).forEach((n, i) => {
+        digestDetails[`Borrower #${i + 1}`] = `${n.name} — ৳${n.debt.toLocaleString()} (${n.urgency.toUpperCase()} · ${n.dueDateLabel})`;
+      });
+      const digestRef = `AUTO-DUE-${format(today, 'yyyyMMdd-HHmm')}`;
+      const digestHtml = generateBrandedEmailHtml(
+        'Autonomous Due Reminder Digest',
+        digestSummary,
+        digestDetails,
+        digestRef,
+        typeof window !== 'undefined' ? window.location.origin : '',
+        {
+          accentTone: notifiedSummaries.some(n => n.urgency === 'overdue') ? 'warning' : 'neutral',
+          heroAmount: `${sentCount} Sent`,
+          heroCaption: `Total Tracked Debt: ৳${totalTargetedDebt.toLocaleString()} BDT`,
+          automationBadge: 'Chief Admin Copy · Auto-Cycle Digest',
+          ctaLabel: 'Review Due Radar',
+        }
+      );
+      sendEmail(
+        ADMIN_EMAIL,
+        `[Admin Digest] ${sentCount} Automated Due Reminder${sentCount > 1 ? 's' : ''} Sent`,
+        digestSummary,
+        digestHtml,
+        'Chief Admin (Digest)',
+        'Due Reminder',
+        false,
+        { memoId: digestRef, eventType: 'admin_due_cycle_digest', recipientUid: 'admin' }
+      ).catch(() => {});
     }
-  };
+
+    autoScanInFlightRef.current = false;
+    const nextScanIso = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const scanIso = new Date().toISOString();
+
+    setAutoEmailState(prev => ({
+      status: hadFailure && sentCount === 0 ? 'smtp_blocked' : 'active',
+      lastScanAt: scanIso,
+      nextScanAt: nextScanIso,
+      lastSentCount: sentCount,
+      lastEligibleCount: eligibleCount,
+      totalAutoSentSession: prev.totalAutoSentSession + sentCount,
+      lastError: hadFailure && sentCount === 0 ? (lastGmailError || 'SMTP gateway blocked automatic delivery') : null
+    }));
+
+    if (sentCount > 0) {
+      addToast('Automated Reminders Sent', `Dispatched ${sentCount} scheduled due reminder email${sentCount > 1 ? 's' : ''}.`, 'success');
+    } else if (forceRun && eligibleCount === 0) {
+      addToast('Automation Up to Date', 'All eligible due/overdue borrowers are already notified for today.', 'info');
+    } else if (forceRun && hadFailure) {
+      addToast('Automation Blocked by SMTP', 'Scheduled reminders could not deliver. Check Gmail App Password in Gateway Test.', 'warning');
+    }
+
+    return sentCount;
+  }, [user, profile, isAdminLoggedIn, gmailNotificationsEnabled, emailAutomationConfig, allUsers, allTransactions, lastGmailError]);
 
   useEffect(() => {
-    if (isAdminLoggedIn && allUsers.length > 0 && allTransactions.length > 0) {
-      runAutomaticDueReminderScan();
-    }
-  }, [isAdminLoggedIn, allUsers, allTransactions]);
+    if (!isAdminLoggedIn || !emailAutomationLoaded) return;
+    if (allUsers.length === 0) return;
+
+    runAutomaticDueReminderScan(false);
+    const intervalId = setInterval(() => {
+      runAutomaticDueReminderScan(false);
+    }, 15 * 60 * 1000);
+
+    return () => clearInterval(intervalId);
+  }, [isAdminLoggedIn, emailAutomationLoaded, allUsers.length, allTransactions.length, emailAutomationConfig, gmailNotificationsEnabled]);
 
   const sendNotification = async (title: string, body: string, targetEmail?: string, forceSend: boolean = false) => {
-    // Save to history
     const newNotif = {
       id: Math.random().toString(36).substring(2, 9),
       title,
       body,
       timestamp: Date.now()
     };
-    setNotificationHistory(prev => [newNotif, ...prev].slice(0, 50)); // Keep last 50
-
-    // Always show in-app toast for 100% reliability
+    setNotificationHistory(prev => [newNotif, ...prev].slice(0, 50));
     addToast(title, body, 'info');
 
-    // Send Gmail notification
     const adminEmailLower = ADMIN_EMAIL.toLowerCase();
-
-    // Determine recipient metadata
     let recipientName = 'Admin';
+    let recipientUid: string | undefined;
     if (targetEmail) {
       const normalizedTarget = targetEmail.toLowerCase().trim();
       const member = allUsers.find(u => u.email?.toLowerCase().trim() === normalizedTarget);
       if (member) {
         recipientName = member.name;
+        recipientUid = member.uid;
       } else {
         recipientName = normalizedTarget;
       }
     }
 
-    // Determine category
     let category = 'System';
     const lowerTitle = title.toLowerCase();
     const lowerBody = body.toLowerCase();
     if (lowerTitle.includes('debt') || lowerBody.includes('debt') || lowerTitle.includes('due') || lowerBody.includes('due')) {
       category = 'Due Reminder';
     } else if (lowerTitle.includes('approve') || lowerBody.includes('approve') || lowerTitle.includes('reject') || lowerBody.includes('reject')) {
-      category = 'Membership Status';
+      category = 'Membership';
     } else if (lowerTitle.includes('transaction') || lowerBody.includes('transaction') || lowerTitle.includes('deposit') || lowerBody.includes('deposit') || lowerTitle.includes('loan') || lowerBody.includes('loan')) {
       category = 'Transaction';
     } else if (lowerTitle.includes('broadcast') || lowerBody.includes('broadcast')) {
       category = 'Broadcast';
     }
 
-    // 1. Send to target member email if present and not already admin
-    if (targetEmail && targetEmail.toLowerCase().trim() !== adminEmailLower) {
+    let delivered = true;
+
+    if (targetEmail && targetEmail.toLowerCase().trim() !== adminEmailLower && targetEmail.includes('@')) {
       const normalizedTarget = targetEmail.toLowerCase().trim();
       const memberProfile = allUsers.find(u => u.email?.toLowerCase().trim() === normalizedTarget);
       const memberPref = memberProfile ? (memberProfile.emailNotificationsEnabled !== false) : true;
 
-      if (memberPref || forceSend) {
-        console.log(`[Notification] Triggering email to member: ${normalizedTarget}`);
-        sendEmail(normalizedTarget, title, body, undefined, recipientName, category).catch(e => {
-          console.error("[Email Error] Member notification failed:", e);
-        });
-      } else {
-        console.log(`[Notification] Member email skipped (User disabled notifications for themselves)`);
+      if ((memberPref && gmailNotificationsEnabled) || forceSend) {
+        const ok = await sendEmail(normalizedTarget, `T.U.T. — ${title}`, body, undefined, recipientName, category, forceSend, { recipientUid });
+        if (!ok) delivered = false;
       }
 
-      // Send copy to admin IF admin has enabled notifications
-      if (gmailNotificationsEnabled) {
-        console.log(`[Notification] Sending copy of member notification to Admin: ${adminEmailLower}`);
-        const adminCopySubject = `[Member Notify Copy] ${title}`;
-        const adminCopyBody = `Dear Admin, the following notification was sent to member ${recipientName} (${normalizedTarget}):\n\n${body}`;
-        sendEmail(adminEmailLower, adminCopySubject, adminCopyBody, undefined, 'Admin (Copy)', category).catch(e => {
-          console.error("[Email Error] Admin notification copy failed:", e);
-        });
-      } else {
-        console.log(`[Notification] Admin copy skipped (Admin notifications globally disabled)`);
+      if (gmailNotificationsEnabled && emailAutomationConfig.copyAdminOnMemberMails !== false) {
+        const adminCopySubject = `[Member Copy] ${title}`;
+        const adminCopyBody = `Copy of message sent to ${recipientName} (${normalizedTarget}):\n\n${body}`;
+        sendEmail(adminEmailLower, adminCopySubject, adminCopyBody, undefined, 'Admin (Copy)', category).catch(() => {});
       }
-    } else {
-      // 2. Direct admin notification
-      if (gmailNotificationsEnabled) {
-        console.log(`[Notification] Triggering email to Admin: ${adminEmailLower}`);
-        sendEmail(adminEmailLower, title, body, undefined, 'Admin', category).catch(e => {
-          console.error("[Email Error] Admin notification failed:", e);
-        });
-      } else {
-        console.log(`[Notification] Admin direct email skipped (Admin notifications globally disabled)`);
-      }
+    } else if (gmailNotificationsEnabled || forceSend) {
+      const ok = await sendEmail(adminEmailLower, title, body, undefined, 'Admin', category, forceSend);
+      if (!ok) delivered = false;
     }
 
     if (notificationPermission === 'granted') {
@@ -2520,54 +2689,84 @@ export default function App() {
         tag: 'tut-notification'
       };
 
-      // Vibration for mobile devices
       if ('vibrate' in navigator) {
         navigator.vibrate([200, 100, 200]);
       }
 
-      // Try Service Worker first (required for Android/Chrome)
       if (swRegistration) {
-        swRegistration.showNotification(title, options).catch(e => {
-          console.error("Service Worker notification failed:", e);
-          // Fallback to constructor
-          try {
-            new Notification(title, options);
-          } catch (err) {
-            console.error("Constructor notification also failed:", err);
-          }
+        swRegistration.showNotification(title, options).catch(() => {
+          try { new Notification(title, options); } catch {}
         });
       } else {
-        // Fallback to constructor if SW not ready
         try {
           const n = new Notification(title, options);
-          n.onclick = () => {
-            window.focus();
-            n.close();
-          };
-        } catch (e) {
-          console.error("Failed to send notification via constructor:", e);
-        }
+          n.onclick = () => { window.focus(); n.close(); };
+        } catch {}
       }
     }
+
+    return delivered;
   };
 
   const sendWorkflowNotification = async (
-    eventType: 'membership_request' | 'membership_approved' | 'membership_rejected' | 'transaction_request' | 'transaction_confirmed' | 'transaction_rejected' | 'subscription_request' | 'transaction_more_info' | 'membership_more_info' | 'credit_limit_adjusted' | 'debt_warning',
+    eventType:
+      | 'membership_request'
+      | 'membership_approved'
+      | 'membership_rejected'
+      | 'transaction_request'
+      | 'transaction_confirmed'
+      | 'transaction_rejected'
+      | 'transaction_hold'
+      | 'subscription_request'
+      | 'subscription_confirmed'
+      | 'refund_processed'
+      | 'transaction_more_info'
+      | 'membership_more_info'
+      | 'info_requested'
+      | 'credit_limit_adjusted'
+      | 'debt_warning'
+      | 'p2p_transfer_sent'
+      | 'p2p_transfer_received'
+      | 'wallet_added'
+      | 'wallet_verified'
+      | 'wallet_update_request'
+      | 'profile_updated'
+      | 'profile_verification_request'
+      | 'account_created'
+      | 'new_member_registration'
+      | 'loan_disbursed'
+      | 'loan_cancelled'
+      | 'loan_fully_completed'
+      | string,
     memberEmail: string | undefined,
     memberName: string,
     details: {
+      uid?: string;
+      phone?: string;
+      nid?: string;
+      borrowingLimit?: number;
+      remainingDebt?: number;
+      emailNotificationsEnabled?: boolean;
       amount?: number;
       type?: string;
       tier?: string;
+      subscriptionMonths?: number;
       notes?: string;
       memberId?: string;
       memoId?: string;
       method?: string;
       accountNumber?: string;
       transactionId?: string;
+      reference?: string;
+      mobileOperator?: string;
+      estimatedRepaymentDate?: string;
+      wallet?: {
+        provider?: string;
+        mobileNumber?: string;
+        holderName?: string;
+      };
     } = {}
   ) => {
-    // Resolve dynamic registered event type
     let resolvedEvent: string = eventType;
     if (eventType === 'transaction_request') {
       if (details.type === 'loan') resolvedEvent = 'new_loan_request';
@@ -2575,17 +2774,25 @@ export default function App() {
       else if (details.type === 'pay_due' || details.type === 'repayment') resolvedEvent = 'repayment_request';
     } else if (eventType === 'transaction_confirmed') {
       if (details.type === 'loan') resolvedEvent = 'loan_approved';
+      else if (details.type === 'deposit') resolvedEvent = 'deposit_confirmed';
       else if (details.type === 'pay_due' || details.type === 'repayment') resolvedEvent = 'repayment_received';
+      else if (details.type === 'refund') resolvedEvent = 'refund_processed';
+      else if (details.type === 'subscription') resolvedEvent = 'subscription_confirmed';
     } else if (eventType === 'transaction_rejected') {
       if (details.type === 'loan') resolvedEvent = 'loan_rejected';
     }
 
-    // Map into NotificationPayload
     const payload: NotificationPayload = {
       user: {
+        uid: details.uid,
         name: memberName,
         email: memberEmail,
+        phone: details.phone,
+        nid: details.nid,
         memberId: details.memberId,
+        borrowingLimit: details.borrowingLimit,
+        remainingDebt: details.remainingDebt,
+        emailNotificationsEnabled: details.emailNotificationsEnabled,
       },
       tx: {
         amount: details.amount,
@@ -2594,8 +2801,14 @@ export default function App() {
         memoId: details.memoId,
         transactionId: details.transactionId,
         accountNumber: details.accountNumber,
+        reference: details.reference,
+        mobileOperator: details.mobileOperator,
         subscriptionTier: details.tier,
+        subscriptionMonths: details.subscriptionMonths,
+        estimatedRepaymentDate: details.estimatedRepaymentDate,
+        loanReason: details.type === 'loan' ? details.notes : undefined,
       },
+      wallet: details.wallet,
       customNotes: details.notes,
     };
 
@@ -2662,7 +2875,8 @@ export default function App() {
   const [subTrxId, setSubTrxId] = useState('');
   const [subWallet, setSubWallet] = useState<'Bkash' | 'Nagad' | 'Recharge' | 'Cash'>('Bkash');
   const [showSubPaymentMode, setShowSubPaymentMode] = useState(false);
-  const [memberTab, setMemberTab] = useState<'banking' | 'subscription' | 'profile' | 'partners'>('banking');
+  const [activeMemberTab, setActiveMemberTab] = useState<'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets'>('dashboard');
+  const pendingMemberTxCount = useMemo(() => transactions.filter((t) => t.status === 'pending').length, [transactions]);
   const [activeTransactionView, setActiveTransactionView] = useState<'loan' | 'deposit' | 'pay_due' | 'refund' | 'transfer' | 'subscription' | null>(null);
 
   // Handle URL Parameters for External Linking
@@ -2673,16 +2887,65 @@ export default function App() {
     const action = params.get('action');
 
     if (action === 'loan') {
-      setRequestType('loan');
-      setShowRequestModal(true);
+      setActiveTransactionView('loan');
       // Clean up URL
       window.history.replaceState({}, '', window.location.pathname);
     } else if (action === 'deposit') {
-      setRequestType('deposit');
-      setShowRequestModal(true);
+      setActiveTransactionView('deposit');
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, [isAuthReady, user, profile]);
+
+  // Detect External Hosted Checkout Query or Path (?tut_pay=1, /pay, /checkout, /tut-pay)
+  const tutCheckoutRequest = useMemo<(TutCheckoutRequest & { payerEmailHint?: string }) | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search);
+    const cleanPath = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+    const cleanHash = window.location.hash.toLowerCase();
+    const tutPayParam = (params.get('tut_pay') || '').toLowerCase();
+    const actionParam = (params.get('action') || '').toLowerCase();
+
+    const isPayRoute =
+      tutPayParam === '1' ||
+      tutPayParam === 'true' ||
+      params.get('pay') === '1' ||
+      params.get('checkout') === '1' ||
+      actionParam === 'pay' ||
+      actionParam === 'checkout' ||
+      cleanPath === '/pay' ||
+      cleanPath === '/checkout' ||
+      cleanPath === '/tut-pay' ||
+      cleanPath === '/tut_pay' ||
+      cleanPath === '/gateway/pay' ||
+      cleanPath === '/gateway/checkout' ||
+      cleanHash.startsWith('#/pay') ||
+      cleanHash.startsWith('#/checkout');
+
+    if (!isPayRoute) return null;
+
+    const rawAmount = Number(params.get('amount'));
+    const planLabel = params.get('plan') || '';
+    const refLabel = params.get('reference') || (planLabel ? `Plan: ${planLabel}` : '');
+    return {
+      amount: Number.isFinite(rawAmount) && rawAmount > 0 ? rawAmount : undefined,
+      merchantName: params.get('merchant') || params.get('merchantName') || params.get('app') || 'Connected Partner App',
+      merchantId: params.get('merchantId') || undefined,
+      orderId: params.get('orderId') || `ORD-${Date.now().toString(36).toUpperCase()}`,
+      returnUrl: params.get('returnUrl') || params.get('callback') || undefined,
+      reference: refLabel || undefined,
+      payerEmailHint: params.get('email') || undefined
+    };
+  }, []);
+
+  // Failsafe: never stall hosted payment checkout on loading if iframe cookies/storage delay auth
+  useEffect(() => {
+    if (!tutCheckoutRequest || !loading) return;
+    const timer = setTimeout(() => {
+      setIsAuthReady(true);
+      setLoading(false);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [tutCheckoutRequest, loading]);
 
   // Profile State
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -2790,6 +3053,18 @@ export default function App() {
       });
       addToast('Profile Updated', 'Your profile details have been updated successfully.', 'success');
       setShowProfileModal(false);
+      sendWorkflowNotification(
+        'profile_updated',
+        profileData.email || user.email || undefined,
+        profileData.name || profile.name,
+        {
+          uid: user.uid,
+          memberId: profile.memberId,
+          phone: profileData.phone,
+          emailNotificationsEnabled: profileData.emailNotificationsEnabled !== false,
+          notes: 'Profile Details & Email Notification Settings'
+        }
+      ).catch(() => {});
     } catch (error) {
       console.error("Update profile error:", error);
       addToast('Update Failed', 'Failed to update profile details.', 'warning');
@@ -3205,9 +3480,12 @@ export default function App() {
       });
       const pendingCount = users.filter(u => u.status === 'pending').length;
       
-      // Notify admin if new pending user arrives
+      // Show live in-app alert if new pending user arrives (email comes from NotificationService workflow)
       if (lastUserCount.current !== null && pendingCount > lastUserCount.current) {
-        sendNotification('New Membership Request', `There are ${pendingCount} pending registrations awaiting review.`, ADMIN_EMAIL);
+        const title = 'New Membership Request';
+        const body = `There are ${pendingCount} pending registrations awaiting review.`;
+        setNotificationHistory(prev => [{ id: Math.random().toString(36).substring(2, 9), title, body, timestamp: Date.now() }, ...prev].slice(0, 50));
+        addToast(title, body, 'info');
       }
       lastUserCount.current = pendingCount;
       
@@ -3260,9 +3538,12 @@ export default function App() {
       });
       
       const pendingCount = txs.filter(t => t.status === 'pending').length;
-      // Notify admin if new pending transaction arrives
+      // Show live in-app alert if new pending transaction arrives (email comes from NotificationService workflow)
       if (lastTxCount.current !== null && pendingCount > lastTxCount.current) {
-        sendNotification('New Transaction Request', `There are ${pendingCount} pending transactions awaiting confirmation.`, ADMIN_EMAIL);
+        const title = 'New Transaction Request';
+        const body = `There are ${pendingCount} pending transactions awaiting confirmation.`;
+        setNotificationHistory(prev => [{ id: Math.random().toString(36).substring(2, 9), title, body, timestamp: Date.now() }, ...prev].slice(0, 50));
+        addToast(title, body, 'info');
       }
       lastTxCount.current = pendingCount;
 
@@ -3348,32 +3629,82 @@ export default function App() {
         setIsSponsorshipsSeeded(false);
       }
     }, (err) => {
-      console.error("Error listening to system_controls/sponsorships_seeded:", err);
+      console.warn("Notice listening to system_controls/sponsorships_seeded:", err?.message || err);
     });
     return unsubSeeded;
   }, []);
 
-  // Real-time Trigger for Entrance Dashboard Advertisement Popup
+  // Real-time listener for system_controls/ad_settings
   useEffect(() => {
-    // Show ad when activeSponsorships are loaded, user has an approved profile,
-    // and we haven't shown one during this session yet.
-    if (profile && profile.status === 'approved' && !hasAdBeenShown && activeSponsorships.length > 0) {
-      const activeList = activeSponsorships.filter(s => s.status === 'active');
-      if (activeList.length > 0) {
-        // Pick one for display as the entrance poster ad (randomized for variance)
-        const chosenCampaign = activeList[Math.floor(Math.random() * activeList.length)];
-        setActiveEntranceAd(chosenCampaign);
-        setHasAdBeenShown(true);
-        
-        // Track real-time impression block
-        const chosenId = chosenCampaign.id;
-        if (!incrementedSponsorsRef.current.has(chosenId)) {
-          incrementedSponsorsRef.current.add(chosenId);
-          incrementAdImpression(chosenId);
+    const unsubAdSettings = onSnapshot(doc(db, 'system_controls', 'ad_settings'), (docSnap) => {
+      if (docSnap.exists()) {
+        const d = docSnap.data() as any;
+        setAdSettings({
+          entrancePopupEnabled: d.entrancePopupEnabled !== false,
+          globalCooldownHours: typeof d.globalCooldownHours === 'number' ? d.globalCooldownHours : 12,
+          allowHeroRotation: d.allowHeroRotation !== false,
+          updatedAt: d.updatedAt,
+          updatedBy: d.updatedBy
+        });
+      }
+    }, (err) => {
+      console.warn("Notice listening to system_controls/ad_settings:", err?.message || err);
+    });
+    return unsubAdSettings;
+  }, []);
+
+  // Real-time Trigger for Entrance Dashboard Advertisement Popup (Honors Placement, Audience, Cooldown & Priority)
+  useEffect(() => {
+    if (!profile || profile.status !== 'approved' || hasAdBeenShown || activeSponsorships.length === 0) return;
+    if (!adSettings.entrancePopupEnabled) return;
+
+    const cooldownHours = adSettings.globalCooldownHours ?? 12;
+    if (cooldownHours > 0) {
+      try {
+        const lastShown = Number(localStorage.getItem('tut_ad_last_shown_at') || '0');
+        if (lastShown > 0 && Date.now() - lastShown < cooldownHours * 3600 * 1000) {
+          return;
         }
+      } catch {}
+    }
+
+    const memberTier = (profile.subscriptionTier || 'standard').toLowerCase();
+    const hasDebt = (profile.remainingDebt || 0) > 0;
+    const hasDeposit = (profile.totalDeposit || 0) > 0;
+
+    const eligibleList = activeSponsorships.filter(s => {
+      if (s.status !== 'active') return false;
+      const placement = s.placement || 'all';
+      if (placement !== 'all' && placement !== 'entrance_popup') return false;
+      if (s.maxImpressions && s.maxImpressions > 0 && (s.impressions || 0) >= s.maxImpressions) return false;
+
+      const audience = s.targetAudience || 'all';
+      if (audience === 'all') return true;
+      if (audience === 'active_borrowers') return hasDebt;
+      if (audience === 'depositors') return hasDeposit;
+      return audience === memberTier;
+    });
+
+    if (eligibleList.length > 0) {
+      // Top pinned/priority campaigns get picked cleanly
+      const sorted = [...eligibleList].sort((a, b) => {
+        if (Boolean(b.isPinned) !== Boolean(a.isPinned)) return b.isPinned ? 1 : -1;
+        return (b.priority || 0) - (a.priority || 0);
+      });
+      const chosenCampaign = sorted[0];
+      setActiveEntranceAd(chosenCampaign);
+      setHasAdBeenShown(true);
+      try {
+        localStorage.setItem('tut_ad_last_shown_at', String(Date.now()));
+      } catch {}
+
+      const chosenId = chosenCampaign.id;
+      if (!incrementedSponsorsRef.current.has(chosenId)) {
+        incrementedSponsorsRef.current.add(chosenId);
+        incrementAdImpression(chosenId);
       }
     }
-  }, [profile, activeSponsorships, hasAdBeenShown]);
+  }, [profile, activeSponsorships, hasAdBeenShown, adSettings]);
 
   // Real-time Impression tracker for dashboard active collaborations displayed as cards
   useEffect(() => {
@@ -3439,7 +3770,7 @@ export default function App() {
   const handleUpdateAuthorityFund = async (amountStr: string) => {
     const amount = Number(amountStr);
     if (isNaN(amount) || amount < 0) {
-      alert("Please enter a valid positive number for the personal fund.");
+      addToast("Invalid Amount", "Please enter a valid positive number for the personal fund.", "warning");
       return;
     }
     try {
@@ -3602,7 +3933,7 @@ export default function App() {
 
       setShowEditUserModal(false);
       setEditingUser(null);
-      alert("Member data updated successfully!");
+      addToast("Updated", "Member data updated successfully!", "success");
     } catch (error) {
       console.error("Update user error:", error);
       handleFirestoreError(error, OperationType.UPDATE, `users/${editingUser.uid}`);
@@ -3623,7 +3954,7 @@ export default function App() {
       await deleteDoc(doc(db, 'users', userToDelete.uid));
       setShowDeleteModal(false);
       setUserToDelete(null);
-      alert("Member account deleted successfully!");
+      addToast("Deleted", "Member account deleted successfully!", "info");
     } catch (error) {
       console.error("Delete user error:", error);
       handleFirestoreError(error, OperationType.DELETE, `users/${userToDelete.uid}`);
@@ -3633,23 +3964,23 @@ export default function App() {
   const handleCreateMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!createMemberName.trim()) {
-      alert("Name is required");
+      addToast("Validation Error", "Name is required", "warning");
       return;
     }
     const cleanEmail = createMemberEmail.toLowerCase().trim();
     if (!cleanEmail) {
-      alert("Email is required for account creation and automatic linking");
+      addToast("Validation Error", "Email is required for account creation and automatic linking", "warning");
       return;
     }
     if (createMemberPhone.length !== 11 || !createMemberPhone.startsWith('0')) {
-      alert("Phone number must be 11 digits starting with 0");
+      addToast("Validation Error", "Phone number must be 11 digits starting with 0", "warning");
       return;
     }
 
     // Check for email uniqueness in existing users
     const emailExists = allUsers.some(u => u.email?.toLowerCase().trim() === cleanEmail);
     if (emailExists) {
-      alert("A member profile with this email already exists!");
+      addToast("Profile Exists", "A member profile with this email already exists!", "warning");
       return;
     }
 
@@ -3702,11 +4033,11 @@ export default function App() {
       setCreateMemberInitialDebt('0');
       
       setShowCreateMemberModal(false);
-      alert("Member profile created and registered successfully! When this member logs in with this email, their dashboard will automatically connect.");
+      addToast("Member Registered", "Member profile created and registered successfully! When this member logs in with this email, their dashboard will automatically connect.", "success");
     } catch (error) {
       console.error("Error creating pre-registered member:", error);
       handleFirestoreError(error, OperationType.WRITE, 'users/pre_email_info');
-      alert("Failed to create member profile.");
+      addToast("Registration Failed", "Failed to create member profile.", "warning");
     }
   };
 
@@ -3736,7 +4067,8 @@ export default function App() {
     }
   };
 
-  const handleAdClick = async (id: string) => {
+  const handleAdClick = async (rawId: string) => {
+    const id = rawId.startsWith('sponsor-') ? rawId.slice(8) : rawId;
     try {
       // Instantly update local state for real-time visual responsiveness
       setLocalSponsorChanges(prev => {
@@ -3755,17 +4087,6 @@ export default function App() {
         await updateDoc(docRef, {
           clicks: increment(1)
         });
-        console.log(`Incremented real-time click counter for campaign: ${id}`);
-      } else {
-        const defaultSponsor = DEFAULT_SPONSORSHIPS.find(s => s.id === id);
-        if (defaultSponsor && isAdminLoggedIn) {
-          const payload = {
-            ...defaultSponsor,
-            clicks: (defaultSponsor.clicks || 0) + 1
-          };
-          const { id: _, ...safePayload } = payload;
-          await setDoc(doc(db, 'sponsorships', id), safePayload);
-        }
       }
     } catch (err) {
       console.error("Ad click increment failed in background:", err);
@@ -3805,10 +4126,10 @@ export default function App() {
       // Fire Firestore creation in the background using setDoc for ID consistency
       const { id: _, ...dbPayload } = payload;
       await setDoc(doc(db, 'sponsorships', randomId), dbPayload);
-      alert("Sponsorship Deal added and synchronized successfully!");
+      addToast("Deal Created", "Sponsorship Deal added and synchronized successfully!", "success");
     } catch (err) {
       console.warn("Firestore write deferred (persisted offline on device):", err);
-      alert("Sponsorship Deal logged and saved successfully on your screen!");
+      addToast("Deal Saved", "Sponsorship Deal logged and saved successfully on your screen!", "info");
     }
 
     setSponsorCompany('');
@@ -3848,11 +4169,11 @@ export default function App() {
         const { id: _, ...dbPayload } = payload;
         await setDoc(docRef, dbPayload);
       }
-      alert(`Sponsorship status successfully updated to ${newStatus}`);
+      addToast("Status Updated", `Sponsorship status successfully updated to ${newStatus}`, "success");
     } catch (err) {
       console.error("Firestore update error:", err);
       handleFirestoreError(err, OperationType.UPDATE, 'sponsorships/' + id);
-      alert(`Failed to save state to server, toggled locally on device!`);
+      addToast("Status Notice", "Failed to save state to server, toggled locally on device!", "warning");
     }
   };
 
@@ -3875,11 +4196,11 @@ export default function App() {
       // 3. Delete from Firestore completely
       await deleteDoc(doc(db, 'sponsorships', id));
       
-      alert("Sponsorship deal deleted and synced successfully!");
+      addToast("Campaign Removed", "Sponsorship deal deleted and synced successfully!", "info");
     } catch (err) {
       console.error("Firestore delete error:", err);
       handleFirestoreError(err, OperationType.DELETE, 'sponsorships/' + id);
-      alert("Sponsorship deal removed locally on your device!");
+      addToast("Notice", "Sponsorship deal removed locally on your device!", "warning");
     }
   };
 
@@ -3902,10 +4223,10 @@ export default function App() {
       setLocalSponsorChanges([]);
       setLocalDeletedSponsors([]);
 
-      alert("All current sponsorship ads have been cleared from the database successfully! You are now starting with a blank slate.");
+      addToast("Ads Cleared", "All current sponsorship ads have been cleared from the database successfully!", "info");
     } catch (err) {
       console.error("Failed to clear sponsorships from Firestore:", err);
-      alert("Error occurred while clearing ads. Make sure you are authenticated and try again.");
+      addToast("Clear Error", "Error occurred while clearing ads. Make sure you are authenticated and try again.", "warning");
     } finally {
       setIsClearingAllAdsLoading(false);
       setIsClearingAllAds(false);
@@ -3914,7 +4235,18 @@ export default function App() {
 
   // Run on-mount/auth to permanently delete default sponsorship campaigns from Firestore and set isSponsorshipsSeeded to true
   useEffect(() => {
-    if (!isAdminLoggedIn) return;
+    // Only proceed if auth is ready, user is signed in, and admin session is active
+    if (!isAuthReady || !user || !isAdminLoggedIn) return;
+
+    // Check if the authenticated user is an authorized admin
+    const isAuthorizedAdmin = 
+      user.email?.toLowerCase() === 'tahsinullahtusher999@gmail.com' ||
+      user.email?.toLowerCase() === 'tahsinullahtusher@gmail.com' ||
+      user.email?.toLowerCase() === 'admin@tut.org' ||
+      user.uid === 'qLF3AOrlPaX4Jv43zy2uOOKeq952' ||
+      profile?.role === 'admin';
+
+    if (!isAuthorizedAdmin) return;
 
     const deleteDefaultSponsorships = async () => {
       try {
@@ -3928,34 +4260,51 @@ export default function App() {
           return (matchesName || matchesId) && !deletedIdsThisSession.includes(s.id);
         });
 
+        // If already marked seeded and no lingering default sponsorships exist, skip work
+        if (isSponsorshipsSeeded && toDelete.length === 0) return;
+
         if (toDelete.length > 0) {
           const newDeletedIds = [...deletedIdsThisSession];
           for (const s of toDelete) {
             newDeletedIds.push(s.id);
-            await deleteDoc(doc(db, 'sponsorships', s.id));
-            console.log(`Deleted default sponsorship ${s.id} (${s.companyName}) from Firestore`);
+            try {
+              await deleteDoc(doc(db, 'sponsorships', s.id));
+              console.log(`Deleted default sponsorship ${s.id} (${s.companyName}) from Firestore`);
+            } catch (delErr) {
+              console.warn(`Notice deleting default sponsorship doc ${s.id}:`, delErr);
+            }
           }
           setDeletedIdsThisSession(newDeletedIds);
         }
 
-        // Also delete standard hardcoded ones if not in list
+        // Also clean up standard hardcoded IDs if present
         for (const id of defaultIds) {
           if (!deletedIdsThisSession.includes(id)) {
-            await deleteDoc(doc(db, 'sponsorships', id)).catch(() => {});
+            try {
+              await deleteDoc(doc(db, 'sponsorships', id));
+            } catch {
+              // Ignore if already deleted or non-existent
+            }
           }
         }
         
-        // Also ensure system_controls/sponsorships_seeded is updated/set so clients know it is seeded
-        const seededDocRef = doc(db, 'system_controls', 'sponsorships_seeded');
-        await setDoc(seededDocRef, { seeded: true, clearedAt: new Date().toISOString() });
-        setIsSponsorshipsSeeded(true);
+        // Also ensure system_controls/sponsorships_seeded is updated/set if not already set
+        if (!isSponsorshipsSeeded) {
+          try {
+            const seededDocRef = doc(db, 'system_controls', 'sponsorships_seeded');
+            await setDoc(seededDocRef, { seeded: true, clearedAt: new Date().toISOString() }, { merge: true });
+            setIsSponsorshipsSeeded(true);
+          } catch (seedErr) {
+            console.warn("Notice updating sponsorships_seeded control doc:", seedErr);
+          }
+        }
       } catch (err) {
-        console.error("Error during default sponsorships permanent cleanup:", err);
+        console.warn("Notice during default sponsorships permanent cleanup:", err);
       }
     };
     
     deleteDefaultSponsorships();
-  }, [isAdminLoggedIn, sponsorships, deletedIdsThisSession]);
+  }, [isAuthReady, user, isAdminLoggedIn, profile?.role, isSponsorshipsSeeded, sponsorships, deletedIdsThisSession]);
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -3964,7 +4313,7 @@ export default function App() {
     if (isLoggingIn) return;
 
     if (authMode === 'signup' && password !== confirmPassword) {
-      alert("পাসওয়ার্ড দুটি মিলছে না। অনুগ্রহ করে আবার চেক করুন।");
+      addToast("পাসওয়ার্ড অমিল", "পাসওয়ার্ড দুটি মিলছে না। অনুগ্রহ করে আবার চেক করুন।", "warning");
       return;
     }
 
@@ -3999,6 +4348,10 @@ export default function App() {
       }
       
       console.log("Email auth successful");
+      if (tutCheckoutRequest) {
+        setIsLoggingIn(false);
+        return;
+      }
       window.location.reload();
     } catch (error: any) {
       console.error("Email auth error:", error);
@@ -4017,21 +4370,21 @@ export default function App() {
         msg = "সঠিক ইমেইল এড্রেস দিন।";
       }
       
-      alert(msg);
+      addToast("অথেনটিকেশন ব্যর্থ", msg, "warning");
     }
   };
 
   const handleForgotPassword = async () => {
     if (!email) {
-      alert("পাসওয়ার্ড রিসেট করতে আগে আপনার ইমেইলটি লিখুন।");
+      addToast("ইমেইল প্রয়োজন", "পাসওয়ার্ড রিসেট করতে আগে আপনার ইমেইলটি লিখুন।", "info");
       return;
     }
     try {
       await sendPasswordResetEmail(auth, email);
-      alert("আপনার ইমেইলে পাসওয়ার্ড রিসেট লিঙ্ক পাঠানো হয়েছে। অনুগ্রহ করে চেক করুন।");
+      addToast("রিসেট লিঙ্ক পাঠানো হয়েছে", "আপনার ইমেইলে পাসওয়ার্ড রিসেট লিঙ্ক পাঠানো হয়েছে। অনুগ্রহ করে চেক করুন।", "success");
     } catch (error: any) {
       console.error("Reset email error:", error);
-      alert("ত্রুটি: " + (error.message || "ইমেইল পাঠানো সম্ভব হয়নি।"));
+      addToast("ত্রুটি", error.message || "ইমেইল পাঠানো সম্ভব হয়নি।", "warning");
     }
   };
 
@@ -4050,6 +4403,10 @@ export default function App() {
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
       console.log("Login successful for user:", result.user.email);
+      if (tutCheckoutRequest) {
+        setIsLoggingIn(false);
+        return;
+      }
       window.location.reload();
     } catch (error: any) {
       console.error("Login attempt failed:", error);
@@ -4098,7 +4455,7 @@ export default function App() {
     if (!user) return;
     
     if (regData.phone.length !== 11 || !regData.phone.startsWith('0')) {
-      alert("Phone number must be 11 digits starting with 0");
+      addToast("Invalid Phone", "Phone number must be 11 digits starting with 0", "warning");
       return;
     }
 
@@ -4129,7 +4486,12 @@ export default function App() {
       console.log("Attempting to register profile:", newProfile);
       await setDoc(doc(db, 'users', user.uid), newProfile);
       console.log("Registration successful");
-      await sendWorkflowNotification('membership_request', regData.email.toLowerCase() || user.email?.toLowerCase(), regData.name);
+      await sendWorkflowNotification(
+        'membership_request',
+        regData.email.toLowerCase() || user.email?.toLowerCase(),
+        regData.name,
+        { uid: user.uid, phone: regData.phone, nid: regData.nid }
+      );
     } catch (error) {
       console.error("Registration error details:", error);
       setGlobalError(`Registration Failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -4219,7 +4581,18 @@ export default function App() {
       console.log("Submitting transaction payload:", payload);
       const docRef = await addDoc(collection(db, 'transactions'), payload);
       console.log("Transaction created with ID:", docRef.id);
-      await sendWorkflowNotification('transaction_request', profile.email || user.email || undefined, profile.name, { amount, type: requestType, method: requestMethod });
+      await sendWorkflowNotification('transaction_request', profile.email || user.email || undefined, profile.name, {
+        uid: user.uid,
+        memberId: profile.memberId,
+        amount,
+        type: requestType,
+        method: requestMethod,
+        memoId: reservedMemoId,
+        transactionId: payload.transactionId,
+        accountNumber: payload.accountNumber,
+        estimatedRepaymentDate: requestType === 'loan' ? estimatedRepaymentDate : undefined,
+        notes: requestType === 'loan' ? loanReason : undefined,
+      });
       setShowRequestModal(false);
       setRequestAmount('');
       setRequestAccount('');
@@ -4274,7 +4647,17 @@ export default function App() {
         subscriptionTier: selectedSubTier
       });
       
-      await sendWorkflowNotification('subscription_request', profile.email || user.email || undefined, profile.name, { amount: pricing.price, tier: selectedSubTier, method: subWallet, accountNumber: subSenderMobile, transactionId: subTrxId });
+      await sendWorkflowNotification('subscription_request', profile.email || user.email || undefined, profile.name, {
+        uid: user.uid,
+        memberId: profile.memberId,
+        type: 'subscription',
+        amount: pricing.price,
+        tier: selectedSubTier,
+        subscriptionMonths: pricing.months,
+        method: subWallet,
+        accountNumber: subSenderMobile,
+        transactionId: subTrxId
+      });
       
       addToast('Purchase Request Submitted', 'Your subscription payment is currently being verified by the Admin. Once verified, your limits will instantly unlock.', 'success');
       
@@ -4347,7 +4730,11 @@ export default function App() {
       if (userSnap.exists()) {
         const userData = userSnap.data() as UserProfile;
         await logAuditEvent('Membership Approved', `Approved membership for ${userData.name} with Member ID: ${memberId}`, 'info');
-        await sendWorkflowNotification('membership_approved', userData.email, userData.name, { memberId });
+        await sendWorkflowNotification('membership_approved', userData.email, userData.name, {
+          uid: targetUid,
+          memberId,
+          borrowingLimit: userData.borrowingLimit || 500
+        });
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${targetUid}`);
@@ -4484,8 +4871,23 @@ export default function App() {
 
       await logAuditEvent('Transaction Confirmed', `Confirmed ${tx.type} of ৳${tx.amount.toLocaleString()} with Memo ID: ${memoId} for ${tx.userName}`, 'info');
 
-      // Send immediate notification to user
-      await sendWorkflowNotification('transaction_confirmed', userData.email, userData.name, { amount: tx.amount, type: tx.type, memoId });
+      // Send immediate notification + PDF memo to member and Chief Admin
+      await sendWorkflowNotification('transaction_confirmed', userData.email, userData.name, {
+        uid: tx.userId,
+        memberId: userData.memberId,
+        amount: tx.amount,
+        type: tx.type,
+        memoId,
+        method: tx.method,
+        accountNumber: tx.accountNumber,
+        transactionId: tx.transactionId,
+        tier: tx.subscriptionTier,
+        subscriptionMonths: tx.subscriptionMonths,
+        estimatedRepaymentDate: tx.estimatedRepaymentDate,
+        remainingDebt: updates.remainingDebt ?? userData.remainingDebt,
+        borrowingLimit: updates.borrowingLimit ?? userData.borrowingLimit,
+        notes: notes || tx.loanReason || ''
+      });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `transactions/${tx.id}`);
     }
@@ -4515,6 +4917,25 @@ export default function App() {
       handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
     }
   };
+
+  if (tutCheckoutRequest) {
+    return (
+      <TutPaymentCheckout
+        db={db}
+        user={user}
+        profile={profile}
+        checkoutRequest={tutCheckoutRequest}
+        isAuthChecking={!isAuthReady || (!!user && loading)}
+        payerEmailHint={tutCheckoutRequest.payerEmailHint}
+        onGoogleLogin={async () => {
+          await handleLogin();
+        }}
+        isLoggingIn={isLoggingIn}
+        sendWorkflowNotification={sendWorkflowNotification}
+        addToast={addToast}
+      />
+    );
+  }
 
   if (loading) {
     return (
@@ -6149,10 +6570,14 @@ export default function App() {
             .replace(/{debt}/g, `৳${(recipient.remainingDebt || 0).toLocaleString()}`)
             .replace(/{limit}/g, `৳${(recipient.borrowingLimit || 100000).toLocaleString()}`);
 
-          await sendNotification(composeSubject, customizedBody, recipient.email, true);
-          successCount++;
+          const sentOk = await sendNotification(composeSubject, customizedBody, recipient.email, true);
+          if (sentOk !== false) {
+            successCount++;
+          } else {
+            failCount++;
+          }
         } catch (err) {
-          console.error(`Failed to send email to ${recipient.email}:`, err);
+          console.warn(`Email dispatch skipped for ${recipient.email}:`, err);
           failCount++;
         }
       }
@@ -6163,18 +6588,18 @@ export default function App() {
         setComposeSubject('');
         setComposeBody('');
       } else {
-        addToast('Transmission Failed', 'Check Gmail API configurations or admin credentials.', 'warning');
+        addToast('Transmission Failed', 'Check Gmail API configurations or admin App Password in Secrets.', 'warning');
       }
     };
 
     const handleResendEmail = async (log: any) => {
       addToast('Re-transmitting', `Retrying dispatch to ${log.to}...`, 'info');
-      try {
-        await sendEmail(log.to, log.subject, log.body, undefined, log.recipientName, log.category);
+      const ok = await sendEmail(log.to, log.subject, log.body, undefined, log.recipientName, log.category, true);
+      if (ok) {
         addToast('Successfully Re-sent', `Message successfully delivered to ${log.to}.`, 'success');
         setPreviewEmailLog(null);
-      } catch (err: any) {
-        addToast('Resend Failed', `Failed to deliver email: ${err.message || err}`, 'warning');
+      } else {
+        addToast('Resend Failed', 'Gmail authentication failed. Update GMAIL_APP_PASSWORD in AI Studio Secrets.', 'warning');
       }
     };
 
@@ -6309,12 +6734,21 @@ export default function App() {
 
               {/* Transmission Error Status or Warning banner if missing configuration */}
               {lastGmailError && (
-                <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-[10px] text-rose-400 flex items-start gap-2 animate-fadeIn">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold block uppercase">SMTP Transmission Alert</span>
-                    <p className="mt-0.5 leading-normal">{lastGmailError}</p>
+                <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-[10px] text-rose-300 flex items-start justify-between gap-2 animate-fadeIn">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-400" />
+                    <div>
+                      <span className="font-bold block uppercase text-rose-400">SMTP Transmission Alert</span>
+                      <p className="mt-0.5 leading-normal">{lastGmailError}</p>
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowGmailHelp(true)}
+                    className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-200 font-bold uppercase shrink-0 cursor-pointer"
+                  >
+                    Fix Guide
+                  </button>
                 </div>
               )}
 
@@ -7981,37 +8415,101 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-blue-50 font-sans selection:bg-blue-500/30">
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-slate-950/85 backdrop-blur-xl border-b border-blue-400/10 px-3.5 py-2.5">
-        <div className="max-w-5xl mx-auto flex gap-3 justify-between items-center">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="logo-shield w-8.5 h-8.5 overflow-hidden rounded-xl border border-blue-400/30 flex items-center justify-center shadow-lg shadow-blue-500/20 flex-shrink-0 bg-slate-900">
+      {/* Header — Sleek 3-Zone Banking Bar */}
+      <header className="sticky top-0 z-40 bg-slate-950/88 backdrop-blur-xl border-b border-white/[0.07] px-3.5 sm:px-6 py-2.5">
+        <div className="w-full max-w-7xl mx-auto flex gap-4 justify-between items-center">
+          {/* Zone 1: Brand Identity */}
+          <button
+            type="button"
+            onClick={() => {
+              if (user && profile?.status === 'approved') {
+                setShowProfileModal(false);
+                setActiveTransactionView(null);
+                setActiveMemberTab('dashboard');
+                window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+              }
+            }}
+            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group shrink-0"
+          >
+            <div className="logo-shield w-9 h-9 overflow-hidden rounded-xl border border-white/15 flex items-center justify-center flex-shrink-0 bg-slate-900 group-hover:border-blue-400/40 transition-colors">
               <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
             </div>
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <h1 className="text-sm font-black tracking-wider text-white leading-none truncate uppercase">T.U.T.</h1>
+              <div className="flex items-center gap-2">
+                <span className="text-sm sm:text-[15px] font-extrabold tracking-tight text-white leading-none whitespace-nowrap">T.U.T.</span>
                 {isOffline && (
-                  <span className="inline-flex items-center gap-1 bg-red-500/20 text-red-400 text-[9px] font-black tracking-wide px-1.5 py-0.5 rounded uppercase border border-red-500/30 animate-pulse">
+                  <span className="inline-flex items-center gap-1 bg-rose-500/15 text-rose-400 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-rose-500/25">
                     Offline
                   </span>
                 )}
               </div>
-              <p className="text-[10px] font-bold text-blue-400/90 uppercase tracking-[0.12em] truncate leading-none mt-1.5">Money Lending Authority</p>
+              <p className="text-[10px] font-medium text-slate-400 tracking-wide truncate leading-none mt-1">Private Lending</p>
             </div>
-          </div>
+          </button>
 
-          <div className="flex items-center gap-2 ml-auto">
+          {/* Zone 2: Desktop Primary Navigation (Single-row clean links) */}
+          {user && profile?.status === 'approved' && !isAdminLoggedIn && (
+            <nav aria-label="Primary Navigation" className="hidden md:flex items-center gap-1">
+              {[
+                { id: 'dashboard', label: 'Home', icon: Home },
+                { id: 'memos', label: 'Vault', icon: FileText, badge: pendingMemberTxCount },
+                { id: 'subscription', label: 'Premium', icon: Award },
+                { id: 'partners', label: 'Deals', icon: Briefcase },
+                { id: 'profile', label: 'Profile', icon: User },
+              ].map((item) => {
+                const Icon = item.icon;
+                const isSelected = !showProfileModal && (
+                  activeMemberTab === item.id || (item.id === 'profile' && activeMemberTab === 'wallets')
+                );
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setShowProfileModal(false);
+                      setActiveTransactionView(null);
+                      setActiveMemberTab(item.id as any);
+                      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+                    }}
+                    className={cn(
+                      "relative px-3.5 py-2 rounded-lg text-[13px] font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer",
+                      isSelected
+                        ? "text-white bg-white/[0.06]"
+                        : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.03]"
+                    )}
+                  >
+                    <Icon className={cn("w-3.5 h-3.5", isSelected ? "text-blue-400" : "text-current")} />
+                    <span>{item.label}</span>
+                    {item.badge !== undefined && item.badge > 0 && (
+                      <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold leading-none tabular-nums">
+                        {item.badge}
+                      </span>
+                    )}
+                    {isSelected && (
+                      <motion.div
+                        layoutId="desktopTopNavIndicator"
+                        className="absolute bottom-0 inset-x-3 h-[2px] bg-blue-400 rounded-full"
+                        transition={{ type: 'spring', stiffness: 480, damping: 36 }}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+
+          {/* Zone 3: Quick Utility & Account Controls */}
+          <div className="flex items-center gap-2 shrink-0">
             {user ? (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2">
                 <a 
                   href="https://wa.me/8801713710607" 
                   target="_blank" 
                   rel="noopener noreferrer"
-                  className="p-2.5 rounded-xl border border-emerald-500/40 text-emerald-400 bg-emerald-950/40 hover:bg-emerald-500/20 transition-all flex-shrink-0 cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.2)] flex items-center justify-center group"
+                  className="w-9.5 h-9.5 sm:w-10 sm:h-10 rounded-xl border border-emerald-500/30 text-emerald-400 bg-emerald-950/35 hover:bg-emerald-500/15 transition-colors flex-shrink-0 cursor-pointer flex items-center justify-center group"
                   title="Contact Support on WhatsApp (+8801713710607)"
                 >
-                  <svg className="w-4 h-4 fill-emerald-400 group-hover:scale-110 transition-transform" viewBox="0 0 24 24">
+                  <svg className="w-4 h-4 fill-emerald-400 group-hover:scale-105 transition-transform" viewBox="0 0 24 24">
                     <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.095 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.572-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.99c-.002 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c-.001 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
                   </svg>
                 </a>
@@ -8020,32 +8518,30 @@ export default function App() {
                     setShowNotificationCenter(true);
                   }}
                   className={cn(
-                    "p-2.5 rounded-xl border bg-slate-900/60 transition-all relative flex-shrink-0 cursor-pointer",
+                    "w-9.5 h-9.5 sm:w-10 sm:h-10 rounded-xl border bg-slate-900/75 transition-colors relative flex-shrink-0 cursor-pointer flex items-center justify-center",
                     memberUnreadCount > 0
-                      ? "border-blue-500/40 text-blue-400 hover:bg-blue-500/10 shadow-[0_0_15px_rgba(59,130,246,0.2)]" 
-                      : notificationPermission === 'granted'
-                      ? "border-amber-500/30 text-amber-400 hover:bg-amber-500/10" 
-                      : "border-slate-500/30 text-slate-400 hover:bg-slate-500/10"
+                      ? "border-blue-500/45 text-blue-400 hover:bg-blue-500/15" 
+                      : "border-white/10 text-slate-300 hover:text-white hover:border-white/20 hover:bg-slate-800/80"
                   )}
                   title="Notifications & Alerts"
                 >
                   <Bell className="w-4 h-4" />
                   {memberUnreadCount > 0 && (
-                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-rose-500 text-white font-mono text-[9px] font-black rounded-full flex items-center justify-center border-2 border-slate-950 animate-pulse shadow-sm">
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-blue-500 text-white font-mono text-[9px] font-bold rounded-full flex items-center justify-center border-2 border-slate-950 tabular-nums">
                       {memberUnreadCount > 9 ? '9+' : memberUnreadCount}
                     </span>
                   )}
                 </button>
                 <button 
                   onClick={() => signOut(auth)} 
-                  className="p-2.5 rounded-xl border border-rose-500/30 text-rose-400 bg-slate-900/60 hover:bg-rose-500/10 transition-all flex-shrink-0 cursor-pointer shadow-[0_0_15px_rgba(244,63,94,0.12)]"
+                  className="w-9.5 h-9.5 sm:w-10 sm:h-10 rounded-xl border border-rose-500/25 text-rose-400 bg-slate-900/70 hover:bg-rose-500/10 hover:border-rose-500/40 transition-colors flex-shrink-0 cursor-pointer flex items-center justify-center"
                   title="Sign Out"
                 >
                   <LogOut className="w-4 h-4" />
                 </button>
               </div>
             ) : (
-              <Button onClick={() => handleLogin()} disabled={isLoggingIn} className="text-xs px-3 py-1.5 rounded-xl">
+              <Button onClick={() => handleLogin()} disabled={isLoggingIn} className="text-xs px-3.5 py-2 rounded-xl">
                 {isLoggingIn ? (
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 ) : (
@@ -8058,7 +8554,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-2 sm:px-4 py-3 pb-24 transition-all duration-300">
+      <main className="w-full max-w-7xl mx-auto px-2.5 sm:px-5 lg:px-8 py-4 sm:py-6 pb-24 md:pb-10">
         {globalError && (
           <div className="mb-8 p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-between gap-4 text-red-400">
             <div className="flex items-center gap-3">
@@ -8159,19 +8655,22 @@ export default function App() {
             </Card>
           </div>
         ) : profile.status === 'pending' ? (
-          <div className="max-w-xl mx-auto text-center py-20">
-            <div className="w-20 h-20 bg-amber-500/20 rounded-full flex items-center justify-center mx-auto mb-6 border border-amber-500/30">
-              <Clock className="w-10 h-10 text-amber-500" />
-            </div>
-            <h2 className="text-3xl font-bold mb-4">Application Pending</h2>
-            <p className="text-blue-200/60 mb-8">
-              Your membership request is currently under review by the T.U.T. Authority. 
-              You will be notified once your account is activated.
-            </p>
-            <Button variant="outline" onClick={() => setShowAdminLogin(true)}>
-              Check Admin Status
-            </Button>
-          </div>
+          <RegistrationProgressTracker
+            profile={profile}
+            userEmail={user.email}
+            onRefreshStatus={async () => {
+              try {
+                const snap = await getDoc(doc(db, 'users', user.uid));
+                if (snap.exists()) {
+                  const data = snap.data() as UserProfile;
+                  setProfile(data);
+                }
+              } catch (e) {
+                console.error("Refresh status error:", e);
+              }
+            }}
+            onSignOut={() => signOut(auth)}
+          />
         ) : showProfileModal ? (
           <motion.div
             initial={{ opacity: 0, y: 15 }}
@@ -8620,6 +9119,8 @@ export default function App() {
             sendWorkflowNotification={sendWorkflowNotification}
             onOpenNotifications={() => setShowNotificationCenter(true)}
             unreadNotificationsCount={memberUnreadCount}
+            activeTab={activeMemberTab}
+            onTabChange={setActiveMemberTab}
           />
         )}
       </main>
@@ -8630,9 +9131,11 @@ export default function App() {
           <SecureTransactionPortal
             type={activeTransactionView}
             profile={profile}
+            transactions={transactions}
             onClose={() => setActiveTransactionView(null)}
             addToast={addToast}
             sendNotification={sendNotification}
+            sendWorkflowNotification={sendWorkflowNotification}
             selectedSubTier={selectedSubTier}
             setSelectedSubTier={setSelectedSubTier}
             subSenderMobile={subSenderMobile}
@@ -8658,12 +9161,15 @@ export default function App() {
               allTransactions={allTransactions}
               auditLogs={auditLogs}
               emailLogs={emailLogs}
+              sponsorships={sponsorships}
               reserveFund={authorityPersonalFund}
               onUpdateReserveFund={async (newAmount: number) => {
                 await handleUpdateAuthorityFund(newAmount.toString());
               }}
               notificationService={notificationService}
               sendEmail={sendEmail}
+              autoEmailState={autoEmailState}
+              onRunAutoEmailCycle={runAutomaticDueReminderScan}
               logAuditEvent={logAuditEvent}
               addToast={addToast}
               onCloseAdmin={() => setIsAdminLoggedIn(false)}
@@ -9217,12 +9723,10 @@ export default function App() {
               </div>
               <div className="flex justify-between items-center bg-black/20 p-2 rounded-lg border border-white/5 gap-3">
                 <div className="flex items-center gap-2">
-                  <div className={cn("w-6 h-6 rounded flex items-center justify-center text-[10px] font-black", 
-                    requestMethod === 'Bkash' ? "bg-[#D12053] text-white" : "bg-[#F6921E] text-white"
-                  )}>
-                    {requestMethod === 'Bkash' ? 'b' : 'n'}
-                  </div>
-                  <span className="text-xs font-bold text-white">{requestMethod} Authority</span>
+                  {requestMethod === 'Bkash' ? <BkashLogo size="xs" /> : <NagadLogo size="xs" />}
+                  <span className="text-xs font-bold text-white">
+                    {requestMethod === 'Bkash' ? 'bKash' : 'Nagad'} Authority
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-mono font-black text-amber-400 tracking-wider">
@@ -9348,8 +9852,8 @@ export default function App() {
               <p className="text-xs text-blue-100/70">
                 1. Click the <b>Gear Icon (Settings)</b> in the top right of AI Studio.<br />
                 2. Select <b>Secrets</b>.<br />
-                3. Update <code>GMAIL_APP_PASSWORD</code> with the 16-character code (<b>remove all spaces</b>).<br />
-                4. Ensure <code>GMAIL_USER</code> is your full email address.
+                3. Update <code>TUT_AUTHORITY_GMAIL_APP_PASSWORD</code> (or <code>GMAIL_APP_PASSWORD</code>) with the 16-character code (<b>remove all spaces</b>).<br />
+                4. Ensure <code>TUT_AUTHORITY_GMAIL_USER</code> (or <code>GMAIL_USER</code>) is set to your sender Gmail address (<code>tutauthority@gmail.com</code>).
               </p>
             </div>
           </div>
@@ -9375,6 +9879,7 @@ export default function App() {
         onNavigateTab={(tab) => {
           setShowNotificationCenter(false);
           refreshMemberUnreadCount();
+          window.dispatchEvent(new CustomEvent('tut-navigate-member-tab', { detail: tab }));
         }}
         onRequestAction={(type) => {
           setShowNotificationCenter(false);
@@ -9399,20 +9904,15 @@ export default function App() {
           }
         }}
         onSendTestEmail={async (targetEmail) => {
-          try {
-            await sendEmail(
-              targetEmail,
-              'T.U.T. Notification Service — Priority Test Dispatch',
-              `Dear ${profile?.name || 'Member'},\n\nThis is an automated test dispatch from your T.U.T. Private Lending Authority notification gateway.\n\nYour verified email is configured to receive official loan vouchers, repayment due notices, and monthly charter statements.\n\nIf you found this message in your Spam or Junk folder, please click "Not Spam" or add noreply@tut.org to your trusted address book.`,
-              undefined,
-              profile?.name || 'Member',
-              'Verification'
-            );
-            return true;
-          } catch (e: any) {
-            console.error("Failed to send test email dispatch:", e);
-            return false;
-          }
+          return await sendEmail(
+            targetEmail,
+            'T.U.T. Notification Service — Priority Test Dispatch',
+            `Dear ${profile?.name || 'Member'},\n\nThis is an automated test dispatch from your T.U.T. Private Lending Authority notification gateway.\n\nYour verified email is configured to receive official loan vouchers, repayment due notices, and monthly charter statements.\n\nIf you found this message in your Spam or Junk folder, please click "Not Spam" or add noreply@tut.org to your trusted address book.`,
+            undefined,
+            profile?.name || 'Member',
+            'Verification',
+            true
+          );
         }}
       />
 
@@ -9513,18 +10013,40 @@ export default function App() {
                   </div>
                 )
               ) : (
-                /* Fallback for text-only sponsorship if image fails to load */
-                <div className="w-full max-w-md bg-slate-900 border border-white/10 p-8 rounded-3xl text-center space-y-4 shadow-2xl">
+                /* Fallback for text-only sponsorship if no poster image is provided */
+                <div className="w-full max-w-md bg-[#0B132B] border border-white/15 p-7 rounded-2xl text-center space-y-4 shadow-2xl relative overflow-hidden">
+                  <div
+                    className="h-1.5 w-full absolute top-0 left-0"
+                    style={{ backgroundColor: activeEntranceAd.accentColor || '#D97706' }}
+                  />
                   {activeEntranceAd.logoUrl && (
                     <img 
                       src={activeEntranceAd.logoUrl} 
                       alt="" 
-                      className="w-16 h-16 mx-auto object-contain rounded-2xl bg-slate-950 p-2 border border-white/10"
+                      className="w-16 h-16 mx-auto object-contain rounded-xl bg-slate-950 p-2 border border-white/10"
                       referrerPolicy="no-referrer"
                     />
                   )}
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {activeEntranceAd.campaignType}
+                    </span>
+                    {activeEntranceAd.discountBadge && (
+                      <span
+                        className="px-2 py-0.5 rounded text-[10px] font-black uppercase text-slate-950"
+                        style={{ backgroundColor: activeEntranceAd.accentColor || '#FBBF24' }}
+                      >
+                        {activeEntranceAd.discountBadge}
+                      </span>
+                    )}
+                  </div>
                   <h3 className="text-xl font-black text-white">{activeEntranceAd.companyName}</h3>
-                  <p className="text-sm text-blue-200 italic">"{activeEntranceAd.promotionText}"</p>
+                  <p className="text-sm text-slate-300 leading-relaxed">{activeEntranceAd.promotionText}</p>
+                  {activeEntranceAd.specialOffer && (
+                    <div className="px-3 py-2 rounded-lg bg-slate-950 border border-white/10 font-mono text-xs text-amber-300 font-bold tracking-wider">
+                      Promo Code: {activeEntranceAd.specialOffer}
+                    </div>
+                  )}
                   {activeEntranceAd.targetUrl && (
                     <a
                       href={activeEntranceAd.targetUrl}
@@ -9534,10 +10056,10 @@ export default function App() {
                         handleAdClick(activeEntranceAd.id);
                         setActiveEntranceAd(null);
                       }}
-                      className="block pt-2"
+                      className="block pt-1"
                     >
                       <Button variant="primary" className="w-full py-3 text-xs uppercase tracking-widest font-black">
-                        Visit Partner Portal
+                        {activeEntranceAd.ctaLabel || 'Visit Partner Portal'}
                       </Button>
                     </a>
                   )}
@@ -9568,7 +10090,10 @@ export default function App() {
             subscriptionStatus: profile?.subscriptionStatus || null,
             continuousSubscriptionMonths: profile?.continuousSubscriptionMonths || 0,
             loansTakenThisMonth: profile?.loansTakenThisMonth || 0,
+            address: profile?.address || '',
+            emergencyContact: profile?.emergencyContact,
           }}
+          transactions={transactions}
         />
       )}
     </div>

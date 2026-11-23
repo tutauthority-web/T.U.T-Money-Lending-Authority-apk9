@@ -21,7 +21,11 @@ export interface AllocatedLoan {
   purpose?: string;
   method?: string;
   monthlyInstallment?: number;
-  loanNumber: string; // e.g. "Loan #001", "Loan #002"
+  loanNumber: string; // e.g. "Loan #001", "Pay #001"
+  trancheType?: 'loan' | 'merchant_payment';
+  merchantName?: string;
+  orderId?: string;
+  cardLast4?: string;
   rawTransaction: any;
 }
 
@@ -96,12 +100,34 @@ function getTimestampNum(tx: any): number {
 }
 
 /**
- * Calculates individual loan allocations for a single member based on their confirmed transactions.
+ * Identifies transactions that create active debt obligations:
+ * - Standard portal loans (type === 'loan')
+ * - Credit-line funded T.U.T. Card / Wallet external payments
+ */
+export function isCreditDebtTransaction(t: any): boolean {
+  if (!t) return false;
+  if (t.type === 'loan') return true;
+  if (t.type === 'merchant_payment' || t.type === 'card_payment' || t.type === 'wallet_payment') {
+    if (t.fundingSource === 'wallet_deposit') return false;
+    if (t.fundingSource === 'credit_line' || t.isCreditLine === true || t.paymentInstrument === 'tut_credit') {
+      return true;
+    }
+    const ref = String(t.reference || '').toLowerCase();
+    const reason = String(t.loanReason || '').toLowerCase();
+    if (ref.includes('credit line') || ref.includes('credit_line') || reason.includes('credit pay')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Calculates individual loan & credit payment allocations for a single member based on their confirmed transactions.
  * 
  * CORE ALLOCATION RULE:
- * - Each loan maintains its own independent balance and status.
- * - Repayments are allocated chronologically (oldest loan first).
- * - A loan is never marked active simply because a member has remaining debt elsewhere.
+ * - Each loan or credit-funded payment maintains its own independent balance and status.
+ * - Repayments are allocated chronologically (oldest obligation first).
+ * - An obligation is never marked active simply because a member has remaining debt elsewhere.
  */
 export function calculateMemberLoanAllocations(
   userId: string,
@@ -111,15 +137,46 @@ export function calculateMemberLoanAllocations(
   // 1. Gather all transactions belonging to this user
   const userTxs = allTransactions.filter((t) => t.userId === userId);
 
-  // 2. Identify all valid loans (confirmed, settled, repaid, or cancelled)
-  // Exclude pending/rejected requests which haven't been disbursed
-  const loans = userTxs.filter((t) => {
-    if (t.type !== 'loan') return false;
+  // 2. Identify all valid debt-creating obligations (loans + credit-funded payments)
+  // Exclude pending/rejected requests which haven't been disbursed/confirmed
+  const isValidObligationStatus = (t: any) => {
     const st = t.status as string;
     return st === 'confirmed' || st === 'settled' || st === 'repaid' || t.isPaid === true || st === 'cancelled';
-  });
+  };
 
-  // Sort loans chronologically (oldest loan first) for allocation
+  const loans = userTxs.filter((t) => isCreditDebtTransaction(t) && isValidObligationStatus(t));
+
+  // Backward-compatibility: if member has remainingDebt from an earlier T.U.T. Card credit payment
+  // recorded before fundingSource metadata was saved, include unmatched merchant payments cleanly.
+  if (userProfile && typeof userProfile.remainingDebt === 'number' && userProfile.remainingDebt > 0) {
+    const recognizedPrincipal = loans
+      .filter((t) => t.status !== 'cancelled' && t.status !== 'settled' && t.status !== 'repaid' && !t.isPaid)
+      .reduce((acc, t) => acc + (Number(t.amount) || 0), 0);
+    if (recognizedPrincipal < userProfile.remainingDebt) {
+      let gap = userProfile.remainingDebt - recognizedPrincipal;
+      const existingIds = new Set(loans.map((t) => t.id));
+      const candidateMerchantPays = userTxs
+        .filter(
+          (t) =>
+            !existingIds.has(t.id) &&
+            (t.type === 'merchant_payment' || t.type === 'card_payment' || t.type === 'wallet_payment') &&
+            t.fundingSource !== 'wallet_deposit' &&
+            t.status === 'confirmed' &&
+            !t.isPaid
+        )
+        .sort((a, b) => getTimestampNum(b) - getTimestampNum(a));
+      for (const candidate of candidateMerchantPays) {
+        if (gap <= 0) break;
+        const amt = Number(candidate.amount) || 0;
+        if (amt > 0 && amt <= gap) {
+          loans.push(candidate);
+          gap -= amt;
+        }
+      }
+    }
+  }
+
+  // Sort obligations chronologically (oldest first) for allocation
   loans.sort((a, b) => getTimestampNum(a) - getTimestampNum(b));
 
   // 3. Identify all confirmed repayments made by the member
@@ -140,15 +197,22 @@ export function calculateMemberLoanAllocations(
   let totalBorrowed = 0;
   const now = new Date();
 
+  let loanSeq = 0;
+  let paySeq = 0;
+
   // Baseline calculation using chronological repayment pool
-  let allocatedLoans: AllocatedLoan[] = loans.map((tx, idx) => {
+  let allocatedLoans: AllocatedLoan[] = loans.map((tx) => {
     const originalAmount = Math.max(0, Number(tx.amount) || 0);
     const isCancelled = tx.status === 'cancelled';
     const isExplicitlySettled = tx.status === 'settled' || tx.status === 'repaid' || tx.isPaid === true;
+    const isExternalPay = tx.type === 'merchant_payment' || tx.type === 'card_payment' || tx.type === 'wallet_payment';
+
+    if (isExternalPay) paySeq += 1;
+    else loanSeq += 1;
 
     const disbursedDate = parseDateSafe(tx.timestamp || tx.createdAt || tx.approvedDate);
     const dueDate = getLoanDueDate(tx, disbursedDate);
-    const isPastDue = now.getTime() > dueDate.getTime();
+    const isPastDue = getCalendarDaysFromToday(dueDate, now) < 0;
 
     let paidAmount = 0;
     let remainingAmount = 0;
@@ -167,7 +231,7 @@ export function calculateMemberLoanAllocations(
         paidAmount = originalAmount;
         remainingAmount = 0;
       } else {
-        // Chronological allocation: oldest loan is filled first
+        // Chronological allocation: oldest obligation is filled first
         paidAmount = Math.min(originalAmount, remainingRepayPool);
         remainingRepayPool = Math.max(0, remainingRepayPool - paidAmount);
         remainingAmount = Math.max(0, originalAmount - paidAmount);
@@ -188,7 +252,9 @@ export function calculateMemberLoanAllocations(
       }
     }
 
-    const loanNum = `Loan #${String(idx + 1).padStart(3, '0')}`;
+    const loanNum = isExternalPay
+      ? `Pay #${String(paySeq).padStart(3, '0')}`
+      : `Loan #${String(loanSeq).padStart(3, '0')}`;
     let formattedDisbursed = 'Recently';
     try {
       formattedDisbursed = format(disbursedDate, 'dd MMM, yyyy');
@@ -202,6 +268,10 @@ export function calculateMemberLoanAllocations(
         formattedDue = tx.estimatedRepaymentDate;
       }
     }
+
+    const defaultPurpose = isExternalPay
+      ? `${tx.merchantName || 'Partner App'}${tx.orderId ? ` • ${tx.orderId}` : ''}`
+      : 'Loan Disbursal';
 
     return {
       id: tx.id,
@@ -219,10 +289,14 @@ export function calculateMemberLoanAllocations(
       dueDate,
       dueDateStr: formattedDue,
       isOverdue: status === 'OVERDUE',
-      purpose: tx.loanReason || tx.purpose || 'Loan Disbursal',
-      method: tx.method || 'bKash',
+      purpose: tx.loanReason || tx.purpose || defaultPurpose,
+      method: tx.method || (isExternalPay ? 'T.U.T. Wallet' : 'bKash'),
       monthlyInstallment: tx.monthlyInstallment,
       loanNumber: loanNum,
+      trancheType: isExternalPay ? 'merchant_payment' : 'loan',
+      merchantName: tx.merchantName,
+      orderId: tx.orderId,
+      cardLast4: tx.cardLast4,
       rawTransaction: tx
     };
   });
@@ -249,17 +323,32 @@ export function calculateMemberLoanAllocations(
       // Allocate this debt starting from the newest active loan backwards.
       let unassignedDebt = targetRemainingDebt;
       
-      // Traverse from newest loan to oldest
+      // Traverse from newest obligation to oldest (respecting explicitly settled rows)
       for (let i = allocatedLoans.length - 1; i >= 0; i--) {
         const l = allocatedLoans[i];
         if (l.status === 'CANCELLED') continue;
+        const isRowSettled =
+          l.rawTransaction?.status === 'settled' ||
+          l.rawTransaction?.status === 'repaid' ||
+          l.rawTransaction?.isPaid === true;
+        if (isRowSettled) {
+          allocatedLoans[i] = {
+            ...l,
+            remainingAmount: 0,
+            paidAmount: l.originalAmount,
+            status: 'PAID',
+            statusLabel: 'PAID / COMPLETED',
+            isOverdue: false
+          };
+          continue;
+        }
 
         if (unassignedDebt > 0) {
           const allocDebt = Math.min(l.originalAmount, unassignedDebt);
           const newPaid = Math.max(0, l.originalAmount - allocDebt);
           unassignedDebt -= allocDebt;
 
-          const isPastDue = now.getTime() > l.dueDate.getTime();
+          const isPastDue = getCalendarDaysFromToday(l.dueDate, now) < 0;
           let newStatus: LoanStatusCode = 'ACTIVE';
           let newStatusLabel = 'ACTIVE';
 
@@ -298,12 +387,13 @@ export function calculateMemberLoanAllocations(
       // If there was debt remaining that exceeds existing transactions (or no loan tx exists)
       if (unassignedDebt > 0 && allocatedLoans.length > 0) {
         const newest = allocatedLoans[allocatedLoans.length - 1];
+        const newestPastDue = getCalendarDaysFromToday(newest.dueDate, now) < 0;
         allocatedLoans[allocatedLoans.length - 1] = {
           ...newest,
           remainingAmount: newest.remainingAmount + unassignedDebt,
-          status: now.getTime() > newest.dueDate.getTime() ? 'OVERDUE' : 'ACTIVE',
-          statusLabel: now.getTime() > newest.dueDate.getTime() ? 'OVERDUE' : 'ACTIVE',
-          isOverdue: now.getTime() > newest.dueDate.getTime()
+          status: newestPastDue ? 'OVERDUE' : 'ACTIVE',
+          statusLabel: newestPastDue ? 'OVERDUE' : 'ACTIVE',
+          isOverdue: newestPastDue
         };
       }
     }
@@ -431,7 +521,7 @@ export function getLoanStatusConfig(status: LoanStatusCode): {
     case 'OVERDUE':
       return {
         label: 'OVERDUE',
-        badgeClass: 'bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse',
+        badgeClass: 'bg-rose-500/20 text-rose-300 border border-rose-500/40',
         textClass: 'text-rose-400',
         borderClass: 'border-rose-500/40',
         bgClass: 'bg-rose-950/30'
@@ -454,4 +544,120 @@ export function getLoanStatusConfig(status: LoanStatusCode): {
         bgClass: 'bg-amber-950/20'
       };
   }
+}
+
+export type DueUrgency = 'overdue' | 'today' | 'upcoming' | 'normal';
+
+export interface MemberDueRadarItem {
+  member: any;
+  summary: MemberLoanSummary;
+  openTranches: AllocatedLoan[];
+  primaryTranche: AllocatedLoan | null;
+  primaryLoanTx: any | null;
+  activeDebt: number;
+  daysDiff: number | null;
+  dueDate: Date | null;
+  dueDateLabel: string;
+  urgency: DueUrgency;
+  lastReminderSent: string | null;
+  sentToday: boolean;
+}
+
+/**
+ * Computes day-normalized difference between a target date and today:
+ * negative => days overdue, 0 => due today, positive => days remaining.
+ */
+export function getCalendarDaysFromToday(targetDate: Date, referenceDate: Date = new Date()): number {
+  const todayStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate());
+  const dueStart = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+  return Math.round((dueStart.getTime() - todayStart.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * Single authoritative Due & Overdue Radar builder shared by Admin Dashboard KPIs,
+ * Active Debts Portfolio, Automated Email Reminder Scanner, and Email Hub Radar.
+ */
+export function buildMemberDueRadar(
+  allUsers: any[],
+  allTransactions: any[],
+  leadDays: number = 3,
+  referenceDate: Date = new Date()
+): MemberDueRadarItem[] {
+  const todayStr = format(referenceDate, 'yyyy-MM-dd');
+
+  const activeUsers = (allUsers || []).filter((u) => {
+    if (!u || !u.uid) return false;
+    return Number(u.remainingDebt || 0) > 0;
+  });
+
+  const items: MemberDueRadarItem[] = activeUsers.map((member) => {
+    const summary = calculateMemberLoanAllocations(member.uid, allTransactions || [], member);
+    const openTranches = summary.loans.filter((l) => l.remainingAmount > 0 && l.status !== 'CANCELLED');
+
+    // Pick the most urgent open tranche (overdue / earliest due date first)
+    const sortedOpen = [...openTranches].sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
+    const primaryTranche = sortedOpen[0] || null;
+    const primaryLoanTx = primaryTranche?.rawTransaction || null;
+
+    let dueDate: Date | null = primaryTranche?.dueDate || null;
+    if (!dueDate && member.nextRepaymentDate) {
+      const parsed = parseDateSafe(member.nextRepaymentDate);
+      if (!isNaN(parsed.getTime())) dueDate = parsed;
+    }
+
+    const daysDiff = dueDate ? getCalendarDaysFromToday(dueDate, referenceDate) : null;
+    const dueDateLabel = dueDate ? format(dueDate, 'dd MMM yyyy') : '30-Day Standard Window';
+
+    let urgency: DueUrgency = 'normal';
+    if (daysDiff !== null) {
+      if (daysDiff < 0) urgency = 'overdue';
+      else if (daysDiff === 0) urgency = 'today';
+      else if (daysDiff <= Math.max(1, leadDays)) urgency = 'upcoming';
+    } else if (summary.overdueLoans > 0) {
+      urgency = 'overdue';
+    }
+
+    // Resolve most recent reminder date across open loan transactions or user profile
+    let lastReminderSent: string | null = null;
+    openTranches.forEach((tr) => {
+      const sent = tr.rawTransaction?.lastReminderSent;
+      if (typeof sent === 'string' && sent.trim()) {
+        if (!lastReminderSent || sent > lastReminderSent) lastReminderSent = sent;
+      }
+    });
+    if (!lastReminderSent && typeof member.lastReminderSent === 'string' && member.lastReminderSent.trim()) {
+      lastReminderSent = member.lastReminderSent;
+    }
+
+    return {
+      member,
+      summary,
+      openTranches,
+      primaryTranche,
+      primaryLoanTx,
+      activeDebt: Math.max(Number(member.remainingDebt || 0), summary.totalOutstanding || 0),
+      daysDiff,
+      dueDate,
+      dueDateLabel,
+      urgency,
+      lastReminderSent,
+      sentToday: lastReminderSent === todayStr
+    };
+  });
+
+  const priorityRank: Record<DueUrgency, number> = {
+    overdue: 0,
+    today: 1,
+    upcoming: 2,
+    normal: 3
+  };
+
+  return items.sort((a, b) => {
+    const rankDiff = priorityRank[a.urgency] - priorityRank[b.urgency];
+    if (rankDiff !== 0) return rankDiff;
+    if (a.daysDiff !== null && b.daysDiff !== null && a.daysDiff !== b.daysDiff) {
+      return a.daysDiff - b.daysDiff;
+    }
+    return b.activeDebt - a.activeDebt;
+  });
 }

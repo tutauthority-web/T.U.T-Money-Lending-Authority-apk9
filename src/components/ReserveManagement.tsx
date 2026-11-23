@@ -98,7 +98,7 @@ export interface ReserveManagementProps {
   totalOutstandingDebt: number; // Allocated
   pendingDistributionAmount?: number;
   adminUser?: any;
-  sendEmail: (to: string, subject: string, body: string, customHtml?: string, recipientName?: string, category?: string) => Promise<void>;
+  sendEmail: (to: string, subject: string, body: string, customHtml?: string, recipientName?: string, category?: string) => Promise<boolean | void>;
   logAuditEvent: (action: string, details: string, severity?: 'info' | 'warning' | 'critical') => Promise<void>;
   addToast: (title: string, body: string, type?: 'info' | 'success' | 'warning') => void;
   onViewMemberDossier?: (user: UserProfile) => void;
@@ -472,19 +472,34 @@ export const ReserveManagement: React.FC<ReserveManagementProps> = ({
 
       await setDoc(doc(db, 'system_controls', 'reserves'), updatedConfig, { merge: true });
 
-      // Member Notification
+      // Member Notification & Chief Admin Copy
       if (selectedMemberToUse.email) {
-        await sendEmail(
-          selectedMemberToUse.email,
-          'Notice: Temporary Emergency Deposit Reserve Authorization',
+        const reserveBody =
           `Hello ${selectedMemberToUse.name},\n\n` +
           `Under our agreed mutual emergency support guidelines, a portion of your deposit reserve has been temporarily utilized as a syndicate backstop.\n\n` +
           `• Amount Utilized: ৳${amt.toLocaleString()} BDT\n` +
           `• Expected Return / Refund Date: ${format(parseISO(expectedReturnDate), 'dd MMMM yyyy')}\n` +
           `• Approved Member Benefit: ${approvedBonus}\n\n` +
           `Your full deposit balance remains 100% guaranteed by T.U.T. Authority and will be restored immediately upon loan settlements. Thank you for your partnership.\n\n` +
-          `T.U.T. Money Lending Authority`
+          `T.U.T. Money Lending Authority`;
+        await sendEmail(
+          selectedMemberToUse.email,
+          'Notice: Temporary Emergency Deposit Reserve Authorization',
+          reserveBody,
+          undefined,
+          selectedMemberToUse.name,
+          'System'
         );
+        if (selectedMemberToUse.email.toLowerCase().trim() !== 'tahsinullahtusher999@gmail.com') {
+          sendEmail(
+            'tahsinullahtusher999@gmail.com',
+            `[Admin Copy] Emergency Deposit Reserve Utilized — ${selectedMemberToUse.name}`,
+            `Copy of reserve notice sent to ${selectedMemberToUse.name} (${selectedMemberToUse.email}):\n\n${reserveBody}`,
+            undefined,
+            'Chief Admin (Copy)',
+            'System'
+          ).catch(() => {});
+        }
       }
 
       await logAuditEvent(
@@ -535,19 +550,34 @@ export const ReserveManagement: React.FC<ReserveManagementProps> = ({
 
       await setDoc(doc(db, 'system_controls', 'reserves'), updatedConfig, { merge: true });
 
-      // Member Notification: Restored
+      // Member Notification: Restored & Chief Admin Copy
       if (recordToRestore.userEmail) {
-        await sendEmail(
-          recordToRestore.userEmail,
-          'Deposit Reserve Restored Successfully',
+        const restoreBody =
           `Hello ${recordToRestore.userName},\n\n` +
           `We are pleased to inform you that your temporary emergency deposit usage of ৳${recordToRestore.amountUsed.toLocaleString()} BDT has been fully restored to your vault.\n\n` +
           `• Amount Restored: ৳${recordToRestore.amountUsed.toLocaleString()} BDT\n` +
           `• Benefit Earned: ${recordToRestore.bonusBenefit}\n` +
           `• Restoration Status: 100% Intact & Verified\n\n` +
           `Thank you for supporting T.U.T. syndicate liquidity.\n\n` +
-          `T.U.T. Money Lending Authority`
+          `T.U.T. Money Lending Authority`;
+        await sendEmail(
+          recordToRestore.userEmail,
+          'Deposit Reserve Restored Successfully',
+          restoreBody,
+          undefined,
+          recordToRestore.userName,
+          'System'
         );
+        if (recordToRestore.userEmail.toLowerCase().trim() !== 'tahsinullahtusher999@gmail.com') {
+          sendEmail(
+            'tahsinullahtusher999@gmail.com',
+            `[Admin Copy] Deposit Reserve Restored — ${recordToRestore.userName}`,
+            `Copy of reserve restoration notice sent to ${recordToRestore.userName} (${recordToRestore.userEmail}):\n\n${restoreBody}`,
+            undefined,
+            'Chief Admin (Copy)',
+            'System'
+          ).catch(() => {});
+        }
       }
 
       await logAuditEvent(

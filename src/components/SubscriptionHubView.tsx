@@ -43,6 +43,7 @@ import {
 import { db, auth } from '../firebase';
 import { BankingTierCard } from './BankingTierCard';
 import { TierEmblem } from './TierEmblems';
+import { BkashLogo, NagadLogo } from './PaymentBrandLogos';
 import type { UserProfile, Transaction } from '../App';
 
 interface SubscriptionHubViewProps {
@@ -75,16 +76,16 @@ const TIER_CATALOG: TierCatalogItem[] = [
   {
     id: "bronze",
     name: "Bronze Basic",
-    tier: "BRONZE TIER",
+    tier: "BRONZE RESERVE",
     short: "BRONZE",
     limit: 500,
     monthly: 0,
-    color: "#B8835A",
-    accent: "#D4A57A",
-    glow: "rgba(212,165,122,0.25)",
-    buttonGradient: "linear-gradient(135deg, #D4A57A, #B8835A)",
-    badge: "100% FREE FOR ALL",
-    buttonLabel: "Select Bronze Plan",
+    color: "#B67C52",
+    accent: "#E2B794",
+    glow: "rgba(182,124,82,0.20)",
+    buttonGradient: "linear-gradient(135deg, #DFB391, #BA835A)",
+    badge: "FREE MEMBERSHIP",
+    buttonLabel: "Select Bronze Reserve",
     features: [
       "৳500 / month maximum zero-usury borrowing",
       "Standard 24-hr ledger clearing queue",
@@ -95,14 +96,14 @@ const TIER_CATALOG: TierCatalogItem[] = [
   {
     id: "silver",
     name: "Silver Executive",
-    tier: "SILVER TIER",
+    tier: "EXECUTIVE SILVER",
     short: "SILVER",
     limit: 1500,
     monthly: 50,
-    color: "#C5CAD3",
-    accent: "#E8EBF0",
-    glow: "rgba(203,213,225,0.25)",
-    buttonGradient: "linear-gradient(135deg, #E8EBF0, #CBD5E1)",
+    color: "#94A3B8",
+    accent: "#E2E8F0",
+    glow: "rgba(203,213,225,0.18)",
+    buttonGradient: "linear-gradient(135deg, #F1F5F9, #CBD5E1)",
     badge: "RECOMMENDED",
     buttonLabel: "Select Silver Executive",
     features: [
@@ -115,20 +116,20 @@ const TIER_CATALOG: TierCatalogItem[] = [
   {
     id: "gold",
     name: "Gold Sovereign Elite",
-    tier: "GOLD TIER",
+    tier: "SOVEREIGN GOLD",
     short: "GOLD",
     limit: 2500,
     monthly: 100,
-    color: "#D4AF37",
-    accent: "#FFD700",
-    glow: "rgba(255,215,0,0.3)",
-    buttonGradient: "linear-gradient(135deg, #FFD700, #F59E0B)",
-    badge: "VIP SOVEREIGN",
+    color: "#C59F52",
+    accent: "#EAD39C",
+    glow: "rgba(197,159,82,0.22)",
+    buttonGradient: "linear-gradient(135deg, #EFE0B8, #C9A55A)",
+    badge: "SOVEREIGN TIER",
     buttonLabel: "Select Gold Sovereign",
     features: [
       "৳2,500 / month maximum zero-usury borrowing",
       "Instant priority clearing (<60 minutes guarantee)",
-      "24K Gold Sovereign digital card pass with member crest",
+      "18K Satin Champagne digital card with sovereign crest",
       "Eligible for 100% clean ledger no-loan rebate"
     ]
   }
@@ -417,6 +418,24 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
           borrowingLimit: 500,
           updatedAt: serverTimestamp()
         });
+        if (sendWorkflowNotification) {
+          sendWorkflowNotification(
+            'subscription_confirmed',
+            auth.currentUser.email || profile?.email || undefined,
+            profile?.name || 'Member',
+            {
+              uid: auth.currentUser.uid,
+              memberId: profile?.memberId,
+              type: 'subscription',
+              tier: 'bronze',
+              amount: 0,
+              method: 'Free Tier',
+              transactionId: memoId,
+              memoId,
+              subscriptionMonths: 1
+            }
+          ).catch(() => {});
+        }
         addToast('Bronze Activated', 'Bronze Basic charter unlocked. ৳500 BDT limit active.', 'success');
         setIsSuccessScreen(true);
       } catch (err: any) {
@@ -637,7 +656,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
 
             <div className="flex justify-between items-center">
               <span className="text-[12px] font-bold text-white">TOTAL PAYABLE</span>
-              <span className="text-[18px] font-black text-white font-mono" style={{ color: isGold ? '#FFD700' : '#34d399' }}>
+              <span className="text-[18px] font-black text-white font-mono" style={{ color: isGold ? '#EAD39C' : '#34d399' }}>
                 ৳{calculations.finalPayable.toLocaleString()} BDT
               </span>
             </div>
@@ -950,7 +969,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-[18px] font-black tracking-tight font-mono" style={{ color: isGold ? '#FFD700' : '#fff' }}>
+                        <div className="text-[18px] font-black tracking-tight font-mono" style={{ color: isGold ? '#EAD39C' : '#fff' }}>
                           ৳{calculations.finalPayable.toLocaleString()}
                         </div>
                         <div className="text-[8.5px] tracking-[0.16em] text-white/35 font-mono -mt-0.5 uppercase">
@@ -1072,9 +1091,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-[#E2136E] flex items-center justify-center text-xs font-black text-white shrink-0 shadow-sm">
-                      bK
-                    </div>
+                    <BkashLogo size="md" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-[13px] font-bold text-white">bKash</span>
@@ -1117,9 +1134,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                   }`}
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-[#F6921E] flex items-center justify-center text-xs font-black text-black shrink-0 shadow-sm">
-                      N
-                    </div>
+                    <NagadLogo size="md" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-[13px] font-bold text-white">Nagad</span>
@@ -1239,11 +1254,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
 
                     {/* Official Account Box */}
                     <div className="rounded-xl bg-slate-950 border border-slate-700 p-3 flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-xs shrink-0 ${
-                        paymentMethod === 'bkash' ? 'bg-[#E2136E] text-white' : 'bg-[#F6921E] text-black'
-                      }`}>
-                        {paymentMethod === 'bkash' ? 'bK' : 'N'}
-                      </div>
+                      {paymentMethod === 'bkash' ? <BkashLogo size="sm" /> : <NagadLogo size="sm" />}
                       <div className="flex-1 min-w-0">
                         <div className="text-[14px] font-bold font-mono text-white tracking-wide">
                           {paymentMethod === 'bkash' ? '01713710607' : '01921801100'}
@@ -1366,7 +1377,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                 <span className="text-[11px] font-bold text-slate-300 font-mono tracking-wide uppercase">
                   TOTAL PAYABLE
                 </span>
-                <span className="text-[17px] font-black font-mono text-white" style={{ color: isGold ? '#FFD700' : '#fff' }}>
+                <span className="text-[17px] font-black font-mono text-white" style={{ color: isGold ? '#EAD39C' : '#fff' }}>
                   ৳{calculations.finalPayable.toLocaleString()} BDT
                 </span>
               </div>
@@ -1395,7 +1406,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                 <span className="text-[11px] font-bold text-slate-300 font-mono tracking-wide uppercase">
                   TOTAL PAYABLE
                 </span>
-                <span className="text-[17px] font-black font-mono text-white" style={{ color: isGold ? '#FFD700' : '#fff' }}>
+                <span className="text-[17px] font-black font-mono text-white" style={{ color: isGold ? '#EAD39C' : '#fff' }}>
                   ৳{calculations.finalPayable.toLocaleString()} BDT
                 </span>
               </div>
@@ -1431,7 +1442,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                 <span className="text-[11px] font-bold text-slate-300 font-mono tracking-wide uppercase">
                   TOTAL PAYABLE
                 </span>
-                <span className="text-[17px] font-black font-mono text-white" style={{ color: isGold ? '#FFD700' : '#fff' }}>
+                <span className="text-[17px] font-black font-mono text-white" style={{ color: isGold ? '#EAD39C' : '#fff' }}>
                   ৳{calculations.finalPayable.toLocaleString()} BDT
                 </span>
               </div>
@@ -1600,7 +1611,7 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
   // - Clicking opens full page
   // =========================================================================
   return (
-    <div className="w-full max-w-5xl mx-auto space-y-6 text-left animate-fade-in pb-16">
+    <div className="w-full max-w-6xl xl:max-w-7xl mx-auto space-y-6 text-left animate-fade-in pb-16">
       
       {/* Top Header Bar */}
       <div className="flex items-center justify-between pb-3 border-b border-white/10">
@@ -1613,20 +1624,19 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
           <span>Back to Dashboard</span>
         </button>
 
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-slate-400 font-bold uppercase">
-            Current Tier:
-          </span>
-          <span className="text-[10px] font-mono font-black text-amber-300 bg-amber-400/10 border border-amber-400/25 px-2.5 py-0.5 rounded-full uppercase">
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-slate-400 font-medium">Current Plan</span>
+          <span aria-hidden="true" className="text-slate-600">·</span>
+          <span className="font-semibold text-[#EAD39C] capitalize">
             {profile.subscriptionTier || 'Bronze'}
           </span>
         </div>
       </div>
 
-      {/* CATALOG HEADER - Starts directly with "Update Tier" */}
+      {/* CATALOG HEADER */}
       <div className="text-center max-w-lg mx-auto pt-2">
-        <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight uppercase">
-          Update Tier
+        <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+          Membership &amp; Card Tiers
         </h1>
       </div>
 
@@ -1641,34 +1651,27 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
               key={tierItem.id}
               className={`rounded-3xl p-4 sm:p-5 flex flex-col justify-between transition-all duration-300 relative border ${
                 isCurrent
-                  ? 'bg-slate-900/90 border-emerald-500/50 shadow-[0_0_30px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/30'
+                  ? 'bg-slate-900/90 border-emerald-500/45 ring-1 ring-emerald-500/25 shadow-xl'
                   : isGold
-                  ? 'bg-slate-900/60 border-amber-500/30 hover:border-amber-400/60 hover:shadow-[0_0_30px_rgba(245,158,11,0.15)]'
-                  : 'bg-slate-900/40 border-white/10 hover:border-white/20'
+                  ? 'bg-[#12100C]/90 border-[#C59F52]/35 hover:border-[#DFC07C]/60 shadow-xl'
+                  : 'bg-slate-900/50 border-white/10 hover:border-white/20 shadow-lg'
               }`}
             >
-              {/* Badge */}
-              <div className="flex justify-between items-center mb-3">
-                <span
-                  className="text-[9px] font-mono font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full border shadow-sm"
-                  style={{
-                    backgroundColor: `${tierItem.color}15`,
-                    borderColor: `${tierItem.color}35`,
-                    color: tierItem.accent
-                  }}
-                >
+              {/* Clean Unboxed Header Line */}
+              <div className="flex justify-between items-center mb-3 text-[10.5px] tracking-wider uppercase font-semibold">
+                <span style={{ color: tierItem.accent }}>
                   {tierItem.badge}
                 </span>
 
                 {isCurrent && (
-                  <span className="text-[9px] font-mono font-black uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <CheckCircle2 className="w-2.5 h-2.5" />
-                    <span>ACTIVE</span>
+                  <span className="text-emerald-400 flex items-center gap-1 font-mono">
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>Active</span>
                   </span>
                 )}
               </div>
 
-              {/* CARD PREVIEW - Contains only the 3 required elements */}
+              {/* CARD PREVIEW */}
               <div 
                 onClick={() => handleSelectPackage(tierItem)}
                 className="cursor-pointer mb-4"
@@ -1683,18 +1686,17 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                   showDetailsToggle={false}
                   borrowLimit={tierItem.limit}
                   isPackageCard={true}
-                  className="shadow-md"
                 />
               </div>
 
               {/* Price & Monthly Commitment */}
-              <div className="p-3 rounded-2xl bg-slate-950/70 border border-white/5 mb-4 text-center">
-                <div className="text-xl sm:text-2xl font-black font-mono tracking-tight" style={{ color: tierItem.accent }}>
-                  {tierItem.monthly === 0 ? '100% FREE' : `৳${tierItem.monthly}`}
+              <div className="p-3 rounded-2xl bg-slate-950/70 border border-white/[0.06] mb-4 text-center">
+                <div className="text-xl sm:text-2xl font-black font-mono tabular-nums tracking-tight" style={{ color: tierItem.accent }}>
+                  {tierItem.monthly === 0 ? 'Free' : `৳${tierItem.monthly}`}
                   {tierItem.monthly > 0 && <span className="text-xs text-slate-400 font-normal"> / month</span>}
                 </div>
-                <div className="text-[10px] text-slate-400 font-mono mt-0.5">
-                  Max Cap: <strong className="text-emerald-400">৳{tierItem.limit.toLocaleString()} BDT</strong>
+                <div className="text-[11px] text-slate-400 font-mono mt-0.5 tabular-nums">
+                  Borrowing cap: <strong className="text-slate-100">৳{tierItem.limit.toLocaleString()} BDT</strong>
                 </div>
               </div>
 
@@ -1708,14 +1710,14 @@ export const SubscriptionHubView: React.FC<SubscriptionHubViewProps> = ({
                 ))}
               </div>
 
-              {/* Action Button - Opens full page */}
+              {/* Action Button */}
               <button
                 type="button"
                 onClick={() => handleSelectPackage(tierItem)}
-                className="w-full py-3 px-4 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-md"
+                className="w-full py-3 px-4 rounded-xl font-bold text-xs tracking-wide flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-md hover:brightness-105 active:scale-[0.99]"
                 style={{
                   background: tierItem.buttonGradient,
-                  color: tierItem.id === 'bronze' ? '#2E1A0D' : tierItem.id === 'silver' ? '#1E2128' : '#1A1500'
+                  color: tierItem.id === 'bronze' ? '#241409' : tierItem.id === 'silver' ? '#0F172A' : '#1A1409'
                 }}
               >
                 <span>{tierItem.buttonLabel}</span>

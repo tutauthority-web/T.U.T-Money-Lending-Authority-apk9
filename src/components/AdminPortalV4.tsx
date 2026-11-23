@@ -11,18 +11,24 @@ import { format, formatDistanceToNow } from 'date-fns';
 import { 
   AdminSection, 
   UnifiedRequestItem, 
-  AdminPortalV4Props 
+  AdminPortalV4Props,
+  AdDeliverySettings,
+  AdminAllNotificationItem
 } from './admin/types';
 import { AdminSidebar } from './admin/AdminSidebar';
 import { AdminHeader } from './admin/AdminHeader';
 import { AdminDashboardHome } from './admin/AdminDashboardHome';
 import { AdminRequestsView } from './admin/AdminRequestsView';
+import { AdminActiveDebtsView } from './admin/AdminActiveDebtsView';
 import { AdminMembersView } from './admin/AdminMembersView';
 import { AdminTransactionsView } from './admin/AdminTransactionsView';
 import { AdminReserveView } from './admin/AdminReserveView';
 import { AdminDepositsView } from './admin/AdminDepositsView';
-import { AdminNotificationsView } from './admin/AdminNotificationsView';
+import { AdminAdsView } from './admin/AdminAdsView';
+import { AdminNotificationsView, AdminNotificationItem } from './admin/AdminNotificationsView';
+import { AdminAllNotificationsView } from './admin/AdminAllNotificationsView';
 import { AdminSettingsView } from './admin/AdminSettingsView';
+import { AdminPaymentGatewayView } from './admin/AdminPaymentGatewayView';
 import { AdminMoreMenuModal } from './admin/AdminMoreMenuModal';
 import { AdminMobileBottomNav } from './admin/AdminMobileBottomNav';
 import { AdminAuditView } from './admin/AdminAuditView';
@@ -30,10 +36,13 @@ import { AdminReportsView } from './admin/AdminReportsView';
 import { AdminMemberDossierModal } from './AdminMemberDossierModal';
 import { WorkforceManagement } from './WorkforceManagement';
 import { ReserveManagement } from './ReserveManagement';
-import { calculateMemberLoanAllocations, getAllAllocatedLoans, AllocatedLoan } from '../utils/loanAllocationEngine';
+import { calculateMemberLoanAllocations, getAllAllocatedLoans, AllocatedLoan, buildMemberDueRadar } from '../utils/loanAllocationEngine';
 import { calculateComprehensiveCreditScore } from '../utils/creditScoreEngine';
-import { UserProfile, Transaction } from '../App';
+import { calculateAuthorizedRepaymentWindow } from '../utils/repaymentTermEngine';
+import { executeAtomicAdminApproval, executeAtomicLoanSettlement } from '../utils/bankingLedgerEngine';
+import { UserProfile, Transaction, SponsorshipCampaign } from '../App';
 import { X, ExternalLink } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
 /**
  * Robust date parser
@@ -78,10 +87,14 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
   allUsers,
   allTransactions,
   auditLogs,
+  emailLogs = [],
+  sponsorships = [],
   reserveFund,
   onUpdateReserveFund,
   notificationService,
   sendEmail,
+  autoEmailState,
+  onRunAutoEmailCycle,
   logAuditEvent,
   addToast,
   onCloseAdmin
@@ -97,6 +110,38 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
   const [editingMember, setEditingMember] = useState<UserProfile | null>(null);
   const [showAdvancedReserve, setShowAdvancedReserve] = useState(false);
   const [docPreview, setDocPreview] = useState<{ url: string; title: string } | null>(null);
+
+  // Live Global Ad Delivery Settings Listener
+  const [adSettings, setAdSettings] = useState<AdDeliverySettings>({
+    entrancePopupEnabled: true,
+    globalCooldownHours: 12,
+    allowHeroRotation: true
+  });
+
+  useEffect(() => {
+    const unsubAds = onSnapshot(doc(db, 'system_controls', 'ad_settings'), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data() as any;
+        setAdSettings({
+          entrancePopupEnabled: d.entrancePopupEnabled !== false,
+          globalCooldownHours: typeof d.globalCooldownHours === 'number' ? d.globalCooldownHours : 12,
+          allowHeroRotation: d.allowHeroRotation !== false,
+          updatedAt: d.updatedAt,
+          updatedBy: d.updatedBy
+        });
+      }
+    }, (err) => {
+      console.warn("Could not listen to system_controls/ad_settings:", err);
+    });
+    return () => unsubAds();
+  }, [db]);
+
+  const liveCampaigns = useMemo<SponsorshipCampaign[]>(() => {
+    const legacyIds = new Set(['sp-apex', 'sp-tusher', 'sp-bicon']);
+    return sponsorships.filter(s => s.id !== 'config_seeded' && !legacyIds.has(s.id));
+  }, [sponsorships]);
+
+  const activeAdsCount = useMemo(() => liveCampaigns.filter(c => c.status === 'active').length, [liveCampaigns]);
 
   // -------------------------------------------------------------
   // Calculate Member Metrics for Queue
@@ -140,6 +185,8 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
       riskReason = `Existing active debt balance of ৳${remainingDebt.toLocaleString()} BDT.`;
     }
 
+    const repaymentWindow = calculateAuthorizedRepaymentWindow(uProfile, allTransactions, currentLoanRequestAmt);
+
     return {
       borrowLimit,
       remainingDebt,
@@ -150,12 +197,15 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
       score,
       scoreLabel,
       riskLevel,
-      riskReason
+      riskReason,
+      isOverdue: Boolean(report.isOverdue),
+      maxRepaymentDays: repaymentWindow.maxDays
     };
   };
 
   const allocatedLoans = useMemo(() => getAllAllocatedLoans(allTransactions), [allTransactions]);
   const activeLoansCount = useMemo(() => allocatedLoans.filter(l => l.remainingAmount > 0).length, [allocatedLoans]);
+  const activeDebtsCount = useMemo(() => allUsers.filter(u => (u.remainingDebt || 0) > 0).length, [allUsers]);
   
   const totalDeposits = useMemo(() => {
     return allUsers.reduce((sum, u) => sum + (u.totalDeposit || 0), 0);
@@ -227,10 +277,17 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
   const unifiedRequests = useMemo<UnifiedRequestItem[]>(() => {
     const items: UnifiedRequestItem[] = [];
 
-    // Map User Registration Requests
+    // Map User Registration / Verification Requests (only actionable or rejected KYC cases, not active approved members)
     allUsers.forEach((u) => {
       const isPendingReg = u.status === 'pending';
       const isVerifPending = (u.status as string) === 'verification_pending' || u.walletVerificationStatus === 'pending';
+      const isActionableUser =
+        isPendingReg ||
+        (u.status as string) === 'info_requested' ||
+        u.status === 'rejected' ||
+        isVerifPending;
+
+      if (!isActionableUser) return;
 
       const metrics = calculateMemberMetrics(u, 0);
       const attachedDocs: { name: string; url: string; category: string }[] = [];
@@ -240,8 +297,8 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
       if (u.documents?.payslip) attachedDocs.push({ name: 'Pay Slip / Proof', url: u.documents.payslip, category: 'Financial' });
 
       const requestType = isPendingReg ? 'registration' : (u.walletVerificationStatus === 'pending' ? 'wallet_verification' : 'profile_verification');
-      const reqTypeLabel = isPendingReg ? 'Registration Application' : 'Profile Document Audit';
-      const normStatus = isPendingReg ? 'pending' : (u.status === 'approved' ? 'confirmed' : (u.status === 'rejected' ? 'rejected' : (u.status || 'confirmed')));
+      const reqTypeLabel = isPendingReg ? 'Registration Application' : (u.walletVerificationStatus === 'pending' ? 'Wallet Verification' : 'Profile KYC Review');
+      const normStatus = isPendingReg ? 'pending' : (u.status === 'rejected' ? 'rejected' : (u.status || 'pending'));
       const submittedDate = parseSafeDate(u.registeredAt || (u as any).createdAt);
 
       items.push({
@@ -263,8 +320,13 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         memberNid: u.nid || 'N/A',
         memberOccupation: u.occupation || 'N/A',
         memberAddress: u.address || 'N/A',
+        memberPermanentAddress: u.permanentAddress,
         memberFatherName: u.fatherName,
         memberMotherName: u.motherName,
+        memberNomineeName: u.nomineeName,
+        memberNomineeRelation: u.nomineeRelation,
+        memberEmergencyContact: u.emergencyContact,
+        memberTier: u.subscriptionTier,
         memberStatus: u.status,
 
         currentBorrowLimit: metrics.borrowLimit,
@@ -274,6 +336,8 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         continuousSubscriptionMonths: metrics.subMonths,
         creditScore: metrics.score,
         creditScoreLabel: metrics.scoreLabel,
+        isOverdue: metrics.isOverdue,
+        maxRepaymentDays: metrics.maxRepaymentDays,
 
         reserveBefore: availableReserve,
         reserveAfter: availableReserve,
@@ -283,6 +347,13 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         attachedDocs,
         adminNotes: u.adminNotes,
         assignedModerator: u.assignedModerator,
+        reference: u.referenceContact || 'N/A',
+        paymentMethod: 'Membership Registration',
+        transactionRefId: `REG-${u.memberId || u.uid.substring(0, 8).toUpperCase()}`,
+        memoId: `MEMO-REG-${u.uid.substring(0, 6).toUpperCase()}`,
+        loanReason: u.occupation ? `Applicant Profession: ${u.occupation}` : 'New Citizen Membership Verification',
+        decidedBy: (u as any).decidedBy,
+        decidedAt: (u as any).decidedAt,
         rawUser: u
       });
     });
@@ -325,13 +396,18 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         memberName: tx.userName || userMatch?.name || 'Member',
         memberId: userMatch?.memberId || `TUT-${(tx.userId || 'MEM').substring(0, 5).toUpperCase()}`,
         memberPhoto: tx.userPhoto || userMatch?.photoUrl || '',
-        memberEmail: userMatch?.email || tx.accountNumber || 'N/A',
+        memberEmail: userMatch?.email || (tx as any).userEmail || (tx.accountNumber?.includes('@') ? tx.accountNumber : 'N/A'),
         memberPhone: userMatch?.phone || tx.accountNumber || 'N/A',
         memberNid: userMatch?.nid || 'N/A',
         memberOccupation: userMatch?.occupation || 'N/A',
         memberAddress: userMatch?.address || 'N/A',
+        memberPermanentAddress: userMatch?.permanentAddress,
         memberFatherName: userMatch?.fatherName,
         memberMotherName: userMatch?.motherName,
+        memberNomineeName: userMatch?.nomineeName,
+        memberNomineeRelation: userMatch?.nomineeRelation,
+        memberEmergencyContact: userMatch?.emergencyContact,
+        memberTier: userMatch?.subscriptionTier,
         memberStatus: userMatch?.status || 'approved',
 
         currentBorrowLimit: metrics.borrowLimit,
@@ -341,6 +417,8 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         continuousSubscriptionMonths: metrics.subMonths,
         creditScore: metrics.score,
         creditScoreLabel: metrics.scoreLabel,
+        isOverdue: metrics.isOverdue,
+        maxRepaymentDays: metrics.maxRepaymentDays,
 
         reserveBefore,
         reserveAfter,
@@ -360,13 +438,15 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         proofUrl: tx.proofUrl,
         subscriptionTier: (tx as any).subscriptionTier,
         subscriptionMonths: (tx as any).subscriptionMonths,
+        decidedBy: (tx as any).decidedBy,
+        decidedAt: (tx as any).decidedAt,
 
         rawTx: tx,
         rawUser: userMatch
       });
     });
 
-    return items;
+    return items.sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime());
   }, [allUsers, allTransactions, availableReserve]);
 
   // Keep selectedRequest synchronized with fresh unifiedRequests data
@@ -428,9 +508,17 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
     return activities.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   }, [allTransactions]);
 
+  const dueRadarItems = useMemo(() => {
+    return buildMemberDueRadar(allUsers, allTransactions);
+  }, [allUsers, allTransactions]);
+
   const overdueMembersCount = useMemo(() => {
-    return allUsers.filter(u => (u.remainingDebt || 0) > 0).length;
-  }, [allUsers]);
+    return dueRadarItems.filter(item => item.urgency === 'overdue').length;
+  }, [dueRadarItems]);
+
+  const failedEmailsCount = useMemo(() => {
+    return (emailLogs || []).filter((l: any) => l.status === 'failed').length;
+  }, [emailLogs]);
 
   // Notifications Clearing & Dismissing State with persistent localStorage
   const [clearedNotifIds, setClearedNotifIds] = useState<string[]>(() => {
@@ -451,8 +539,101 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
     }
   });
 
+  // Unified All System Notifications List (Pending Requests, Overdue Alerts, Member KYC, System Audit Logs)
+  const allNotificationsList = useMemo<AdminAllNotificationItem[]>(() => {
+    const list: AdminAllNotificationItem[] = [];
+
+    // 1. Pending, Hold, and Info-Requested Operations
+    unifiedRequests
+      .filter(r => ['pending', 'hold', 'info_requested'].includes((r.status || '').toLowerCase()))
+      .slice(0, 15)
+      .forEach(r => {
+        const isAmount = r.requestedAmount > 0;
+        list.push({
+          id: `notif-req-${r.id}`,
+          category: 'request',
+          severity: r.riskLevel === 'High' ? 'warning' : 'info',
+          title: `${r.requestTypeLabel} · ${r.status === 'pending' ? 'Awaiting Review' : r.status.toUpperCase()}`,
+          message: isAmount
+            ? `${r.memberName} submitted ৳${r.requestedAmount.toLocaleString()} (${r.paymentMethod || 'Vault'})`
+            : `${r.memberName} submitted ${r.requestTypeLabel} for administrative review.`,
+          timestamp: r.submittedAt,
+          requestId: r.id,
+          memberUid: r.memberUid,
+          actionLabel: 'Review Request'
+        });
+      });
+
+    // 2. Overdue & Due Maturity Radar Alerts
+    dueRadarItems
+      .filter(item => item.urgency === 'overdue')
+      .forEach(item => {
+        const overdueDays = item.daysDiff !== null && item.daysDiff < 0 ? Math.abs(item.daysDiff) : 1;
+        list.push({
+          id: `notif-overdue-${item.member.uid}`,
+          category: 'overdue',
+          severity: 'critical',
+          title: `Overdue Loan Alert · ${item.member.name}`,
+          message: `৳${(item.activeDebt || 0).toLocaleString()} outstanding is ${overdueDays} day(s) past due deadline.`,
+          timestamp: item.dueDate || new Date(),
+          memberUid: item.member.uid,
+          actionLabel: 'View Borrower'
+        });
+      });
+
+    // 3. New / Pending Member Registrations & KYC Updates
+    allUsers
+      .filter(u => u.status === 'pending' || (u.status as string) === 'verification_pending' || u.walletVerificationStatus === 'pending')
+      .slice(0, 10)
+      .forEach(u => {
+        list.push({
+          id: `notif-member-${u.uid}`,
+          category: 'member',
+          severity: 'info',
+          title: u.status === 'pending' ? `New Citizen Application · ${u.name}` : `KYC Verification Pending · ${u.name}`,
+          message: `${u.occupation || 'Applicant'} · ${u.email || u.phone || 'Identity record submitted'}`,
+          timestamp: parseSafeDate(u.registeredAt || (u as any).createdAt),
+          memberUid: u.uid,
+          actionLabel: 'Inspect Member'
+        });
+      });
+
+    // 4. Recent System & Audit Trail Events
+    auditLogs.slice(0, 15).forEach((log, idx) => {
+      list.push({
+        id: `notif-log-${log.id || idx}`,
+        category: 'system',
+        severity: log.severity === 'critical' ? 'critical' : log.severity === 'warning' ? 'warning' : 'info',
+        title: log.action || 'System Audit Event',
+        message: log.details || '',
+        timestamp: parseSafeDate(log.timestamp)
+      });
+    });
+
+    return list
+      .filter(item => {
+        if (clearedNotifIds.includes(item.id)) return false;
+        const timeNum = item.timestamp instanceof Date
+          ? item.timestamp.getTime()
+          : (item.timestamp ? new Date(item.timestamp).getTime() : 0);
+        if (clearedBeforeTime > 0 && !isNaN(timeNum) && timeNum <= clearedBeforeTime) return false;
+        return true;
+      })
+      .sort((a, b) => (b.timestamp?.getTime?.() || 0) - (a.timestamp?.getTime?.() || 0));
+  }, [unifiedRequests, dueRadarItems, allUsers, auditLogs, clearedNotifIds, clearedBeforeTime]);
+
+  const legacyNotificationsList = useMemo<AdminNotificationItem[]>(() => {
+    return allNotificationsList.map(item => ({
+      id: item.id,
+      type: item.category === 'request' ? 'request' : item.category === 'member' ? 'member' : 'system',
+      title: item.title,
+      message: item.message,
+      timestamp: item.timestamp
+    }));
+  }, [allNotificationsList]);
+
   const handleClearAllNotifications = () => {
-    const allIds = notificationsList.map(n => n.id);
+    const allIds = allNotificationsList.map(n => n.id);
     const now = Date.now();
     setClearedNotifIds(prev => {
       const merged = Array.from(new Set([...prev, ...allIds]));
@@ -471,50 +652,6 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
       return updated;
     });
   };
-
-  // Notifications List
-  const notificationsList = useMemo(() => {
-    const list: Array<{
-      id: string;
-      type: 'system' | 'request' | 'member';
-      title: string;
-      message: string;
-      timestamp: any;
-    }> = [];
-
-    // Map pending requests as notifications
-    unifiedRequests.filter(r => r.status === 'pending').slice(0, 8).forEach(r => {
-      list.push({
-        id: `notif-req-${r.id}`,
-        type: 'request',
-        title: `Pending ${r.requestTypeLabel}`,
-        message: `${r.memberName} submitted a request for ৳${r.requestedAmount.toLocaleString()}`,
-        timestamp: r.submittedAt
-      });
-    });
-
-    // Map recent audit logs
-    auditLogs.slice(0, 10).forEach(log => {
-      list.push({
-        id: `notif-log-${log.id || Math.random()}`,
-        type: 'system',
-        title: log.action || 'System Log',
-        message: log.details || '',
-        timestamp: parseSafeDate(log.timestamp)
-      });
-    });
-
-    return list
-      .filter(item => {
-        if (clearedNotifIds.includes(item.id)) return false;
-        const timeNum = item.timestamp instanceof Date 
-          ? item.timestamp.getTime() 
-          : (item.timestamp ? new Date(item.timestamp).getTime() : 0);
-        if (clearedBeforeTime > 0 && !isNaN(timeNum) && timeNum <= clearedBeforeTime) return false;
-        return true;
-      })
-      .sort((a, b) => (b.timestamp?.getTime?.() || 0) - (a.timestamp?.getTime?.() || 0));
-  }, [unifiedRequests, auditLogs, clearedNotifIds, clearedBeforeTime]);
 
   // -------------------------------------------------------------
   // BACKEND HANDLERS (Preserved exactly as requested)
@@ -589,78 +726,40 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
             updatedAt: serverTimestamp()
           });
 
+          await logAuditEvent(
+            'Membership Information Requested',
+            `Requested additional verification info from ${request.memberName}: ${reason}`,
+            'info'
+          );
+
+          await notificationService.dispatchEvent('membership_more_info', {
+            user: {
+              uid: request.memberUid,
+              name: request.memberName,
+              email: request.memberEmail
+            },
+            customNotes: reason
+          });
+
           addToast('Information Requested', `Message sent to ${request.memberName}.`, 'info');
         }
       } else {
-        // Transaction source (loan, deposit, pay_due, refund)
+        // Transaction source (loan, deposit, pay_due, refund, subscription)
         const txRef = doc(db, 'transactions', request.id);
         const userRef = request.memberUid ? doc(db, 'users', request.memberUid) : null;
 
         if (action === 'approve') {
-          const cleanMemoId = request.memoId 
-            ? (request.memoId.startsWith('TUT-MEMO-') ? request.memoId : `TUT-MEMO-${request.memoId}`)
-            : `TUT-MEMO-${Math.floor(100000 + Math.random() * 900000)}`;
-
-          await updateDoc(txRef, {
-            status: 'confirmed',
-            memoId: cleanMemoId,
-            exactAmount: request.requestedAmount,
-            decidedBy: adminEmail,
-            decidedAt: nowStr,
-            adminNotes: `${request.adminNotes || ''}\n[${new Date().toLocaleDateString()}] Confirmed by ${adminEmail}: ${reason}`,
-            updatedAt: serverTimestamp()
+          const { cleanMemoId } = await executeAtomicAdminApproval(db, {
+            request,
+            adminEmail,
+            reason
           });
-
-          if (request.requestType === 'loan' && userRef) {
-            const newDebt = request.existingOutstandingLoan + request.requestedAmount;
-            const newTotalLoan = request.rawUser?.totalLoan ? request.rawUser.totalLoan + request.requestedAmount : request.requestedAmount;
-            await updateDoc(userRef, {
-              remainingDebt: newDebt,
-              totalLoan: newTotalLoan
-            });
-          } else if (request.requestType === 'pay_due' && userRef) {
-            const newDebt = Math.max(0, request.existingOutstandingLoan - request.requestedAmount);
-            const newRepaid = (request.rawUser?.totalRepaid || 0) + request.requestedAmount;
-            await updateDoc(userRef, {
-              remainingDebt: newDebt,
-              totalRepaid: newRepaid
-            });
-          } else if (request.requestType === 'deposit' && userRef) {
-            const newDeposit = (request.rawUser?.totalDeposit || 0) + request.requestedAmount;
-            await updateDoc(userRef, {
-              totalDeposit: newDeposit
-            });
-          } else if (request.requestType === 'subscription' && userRef) {
-            const tier = (request as any).subscriptionTier || request.rawUser?.subscriptionTier || 'bronze';
-            const months = (request as any).subscriptionMonths || 1;
-            const today = new Date();
-            let expiresAt = new Date();
-            if (request.rawUser?.subscriptionStatus === 'active' && request.rawUser?.subscriptionExpiresAt) {
-              const currentExp = new Date(request.rawUser.subscriptionExpiresAt);
-              if (currentExp > today) {
-                expiresAt = new Date(currentExp);
-              }
-            }
-            expiresAt.setDate(expiresAt.getDate() + ((months || 1) * 30));
-            const baseLimit = tier === 'gold' ? 2500 : tier === 'silver' ? 1500 : 500;
-            await updateDoc(userRef, {
-              subscriptionTier: tier,
-              subscriptionStatus: 'active',
-              subscriptionExpiresAt: expiresAt.toISOString(),
-              borrowingLimit: baseLimit,
-              updatedAt: serverTimestamp()
-            });
-
-            const fundsDocRef = doc(db, 'system_controls', 'funds');
-            await setDoc(fundsDocRef, {
-              personalFund: increment(request.requestedAmount),
-              updatedAt: serverTimestamp()
-            }, { merge: true }).catch(() => {});
-          }
 
           let eventType = 'loan_approved';
           if (request.requestType === 'deposit') eventType = 'deposit_confirmed';
-          if (request.requestType === 'pay_due') eventType = 'repayment_received';
+          else if (request.requestType === 'pay_due') eventType = 'repayment_received';
+          else if (request.requestType === 'refund') eventType = 'refund_processed';
+          else if (request.requestType === 'subscription') eventType = 'subscription_confirmed';
 
           await logAuditEvent(
             `Transaction Confirmed (${request.requestType.toUpperCase()})`,
@@ -668,19 +767,37 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
             'info'
           );
 
+          const nextRemainingDebt =
+            request.requestType === 'pay_due'
+              ? Math.max(0, request.existingOutstandingLoan - request.requestedAmount)
+              : request.requestType === 'loan'
+              ? request.existingOutstandingLoan + request.requestedAmount
+              : request.existingOutstandingLoan;
+
           await notificationService.dispatchEvent(eventType, {
             user: {
               uid: request.memberUid,
               name: request.memberName,
               email: request.memberEmail,
-              remainingDebt: Math.max(0, request.existingOutstandingLoan - (request.requestType === 'pay_due' ? request.requestedAmount : 0))
+              memberId: request.memberId,
+              remainingDebt: nextRemainingDebt
             },
             tx: {
               id: request.id,
+              type: request.requestType,
               amount: request.requestedAmount,
               method: request.paymentMethod,
               memoId: cleanMemoId,
-              transactionId: request.transactionRefId
+              transactionId: request.transactionRefId,
+              accountNumber: request.accountNumber,
+              reference: request.reference,
+              mobileOperator: request.mobileOperator,
+              subscriptionTier: request.subscriptionTier || request.memberTier,
+              subscriptionMonths: request.subscriptionMonths,
+              estimatedRepaymentDate: request.estimatedRepaymentDate,
+              loanReason: request.loanReason,
+              decidedBy: adminEmail,
+              decidedAt: nowStr
             },
             customNotes: reason
           });
@@ -697,9 +814,17 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
 
           await logAuditEvent(
             `Transaction Rejected (${request.requestType.toUpperCase()})`,
-            `Declined ৳${request.requestedAmount.toLocaleString()} for ${request.memberName}.`,
+            `Declined ৳${request.requestedAmount.toLocaleString()} for ${request.memberName}. Reason: ${reason}`,
             'warning'
           );
+
+          try {
+            await notificationService.dispatchEvent('transaction_rejected', {
+              user: { uid: request.memberUid, name: request.memberName, email: request.memberEmail },
+              tx: { id: request.id, amount: request.requestedAmount, method: request.paymentMethod, memoId: request.memoId },
+              customNotes: reason
+            });
+          } catch {}
 
           addToast('Transaction Rejected', `Declined ৳${request.requestedAmount.toLocaleString()} for ${request.memberName}.`, 'info');
         } else if (action === 'hold') {
@@ -709,6 +834,20 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
             updatedAt: serverTimestamp()
           });
 
+          await logAuditEvent(
+            `Transaction On Hold (${request.requestType.toUpperCase()})`,
+            `Placed ৳${request.requestedAmount.toLocaleString()} for ${request.memberName} on hold. Note: ${reason}`,
+            'info'
+          );
+
+          try {
+            await notificationService.dispatchEvent('transaction_hold', {
+              user: { uid: request.memberUid, name: request.memberName, email: request.memberEmail },
+              tx: { id: request.id, amount: request.requestedAmount, method: request.paymentMethod, memoId: request.memoId },
+              customNotes: reason
+            });
+          } catch {}
+
           addToast('Placed on Hold', `Request placed on hold.`, 'info');
         } else if (action === 'info') {
           await updateDoc(txRef, {
@@ -716,6 +855,20 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
             adminNotes: `${request.adminNotes || ''}\n[${new Date().toLocaleDateString()}] Info Requested by ${adminEmail}: ${reason}`,
             updatedAt: serverTimestamp()
           });
+
+          await logAuditEvent(
+            `Information Requested (${request.requestType.toUpperCase()})`,
+            `Requested additional proof/details from ${request.memberName}: ${reason}`,
+            'info'
+          );
+
+          try {
+            await notificationService.dispatchEvent('info_requested', {
+              user: { uid: request.memberUid, name: request.memberName, email: request.memberEmail },
+              tx: { id: request.id, amount: request.requestedAmount, method: request.paymentMethod, memoId: request.memoId },
+              customNotes: reason
+            });
+          } catch {}
 
           addToast('Info Requested', `Instructions sent to ${request.memberName}.`, 'info');
         }
@@ -753,20 +906,41 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
 
   const handleSettleLoan = async (loan: AllocatedLoan, member: UserProfile) => {
     try {
-      const txRef = doc(db, 'transactions', loan.id);
-      await updateDoc(txRef, { status: 'settled', isPaid: true });
+      const settleAmount = loan.remainingAmount ?? loan.originalAmount ?? 0;
+      await executeAtomicLoanSettlement(db, {
+        loanId: loan.id,
+        memberUid: member.uid,
+        adminEmail: profile?.email || user?.email || 'admin@tut.org',
+        settleAmount
+      });
 
-      if (member?.uid) {
-        const simulatedTxs = allTransactions.map(t => t.id === loan.id ? { ...t, status: 'settled', isPaid: true } : t);
-        const summary = calculateMemberLoanAllocations(member.uid, simulatedTxs);
-        const userRef = doc(db, 'users', member.uid);
-        await updateDoc(userRef, { 
-          remainingDebt: summary.totalOutstanding,
-          totalRepaid: summary.totalRepaid
-        });
-      }
-
+      const remainingAfter = Math.max(0, (member.remainingDebt || 0) - settleAmount);
       await logAuditEvent('LOAN_SETTLED', `Loan ${loan.id} (৳${loan.originalAmount}) marked as settled/paid in full`, 'info');
+
+      const settledAdmin = profile?.email || user?.email || 'admin@tut.org';
+      await notificationService.dispatchEvent(
+        remainingAfter <= 0 ? 'loan_fully_completed' : 'repayment_received',
+        {
+          user: {
+            uid: member.uid,
+            name: member.name,
+            email: member.email,
+            memberId: member.memberId,
+            remainingDebt: remainingAfter
+          },
+          tx: {
+            id: loan.id,
+            type: 'pay_due',
+            amount: settleAmount,
+            method: 'Ledger Settlement',
+            memoId: loan.memoId || loan.id,
+            transactionId: loan.id,
+            decidedBy: settledAdmin,
+            decidedAt: new Date().toISOString()
+          }
+        }
+      );
+
       addToast('Loan Settled', 'Loan status updated to Paid & Settled.', 'success');
     } catch (err: any) {
       console.error('Error settling loan:', err);
@@ -811,7 +985,10 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
         activeSection={activeSection}
         onSelectSection={handleNavigateSection}
         pendingRequestsCount={pendingRequestsCount}
-        unreadNotificationsCount={notificationsList.length}
+        activeDebtsCount={activeDebtsCount}
+        unreadNotificationsCount={allNotificationsList.length}
+        failedEmailsCount={failedEmailsCount}
+        activeAdsCount={activeAdsCount}
         mobileMenuOpen={mobileMenuOpen}
         onCloseMobileMenu={() => setMobileMenuOpen(false)}
         adminName={profile?.name || user?.displayName || 'Tahsin Ullah'}
@@ -828,7 +1005,7 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
           onOpenMobileMenu={() => setMobileMenuOpen(true)}
           onToggleMoreMenu={() => setMoreMenuOpen(!moreMenuOpen)}
           onCloseAdmin={onCloseAdmin}
-          unreadNotificationsCount={notificationsList.length}
+          unreadNotificationsCount={allNotificationsList.length}
           adminName={profile?.name || user?.displayName || 'Tahsin Ullah'}
           detailBackAction={
             activeSection === 'request_detail' ? () => {
@@ -848,10 +1025,24 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
 
         {/* Scrollable Main Content: EXACTLY ONE ACTIVE SECTION AT A TIME */}
         <main className="flex-1 overflow-y-auto px-3.5 sm:px-5 lg:px-6 py-4 lg:py-5 pb-20 lg:pb-8 custom-scrollbar">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -3 }}
+              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+              className="w-full"
+            >
           {/* SCREEN 1: DASHBOARD HOME */}
           {activeSection === 'dashboard' && (
             <AdminDashboardHome
               onNavigate={handleNavigateSection}
+              onInspectRequest={(req) => {
+                setSelectedRequest(req);
+                setActiveSection('request_detail');
+              }}
+              pendingRequests={unifiedRequests.filter(r => ['pending', 'hold', 'info_requested'].includes(r.status?.toLowerCase()))}
               pendingRequestsCount={pendingRequestsCount}
               activeLoansCount={activeLoansCount}
               reserveFund={reserveFund}
@@ -869,6 +1060,7 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
               }}
               allUsers={allUsers}
               allTransactions={allTransactions}
+              campaigns={liveCampaigns}
             />
           )}
 
@@ -884,6 +1076,26 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
               onExecuteAction={handleExecuteRequestAction}
               onAddNote={handleAddInternalNote}
               onViewDoc={(url, title) => setDocPreview({ url, title })}
+              onViewMember={(uid) => {
+                const found = allUsers.find(u => u.uid === uid);
+                if (found) {
+                  setSelectedMember(found);
+                  setActiveSection('member_profile');
+                }
+              }}
+            />
+          )}
+
+          {/* DEDICATED ACTIVE DEBTS REGISTRY */}
+          {activeSection === 'active_debts' && (
+            <AdminActiveDebtsView
+              allUsers={allUsers}
+              allTransactions={allTransactions}
+              onSelectMember={(member) => {
+                setSelectedMember(member);
+                setActiveSection('member_profile');
+              }}
+              onSettleLoan={handleSettleLoan}
             />
           )}
 
@@ -919,7 +1131,7 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
           {/* SCREEN 7: RESERVE MANAGEMENT */}
           {activeSection === 'reserve' && (
             showAdvancedReserve ? (
-              <div className="space-y-4 max-w-5xl mx-auto">
+              <div className="space-y-4 w-full max-w-7xl mx-auto">
                 <button
                   onClick={() => setShowAdvancedReserve(false)}
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-300 bg-[#132247] hover:bg-[#1A316B] border border-[#182C58]"
@@ -969,12 +1181,78 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
             />
           )}
 
-          {/* SCREEN 9: NOTIFICATIONS */}
+          {/* ADVERTISEMENT & PARTNER PERKS CONTROL STUDIO */}
+          {activeSection === 'ads' && (
+            <AdminAdsView
+              db={db}
+              campaigns={liveCampaigns}
+              adSettings={adSettings}
+              adminEmail={profile?.email || user?.email || 'Administrator'}
+              logAuditEvent={logAuditEvent}
+              addToast={addToast}
+            />
+          )}
+
+          {/* SCREEN 9A: ALL SYSTEM NOTIFICATIONS (BELL ICON) */}
           {activeSection === 'notifications' && (
-            <AdminNotificationsView
-              notifications={notificationsList}
+            <AdminAllNotificationsView
+              notifications={allNotificationsList}
               onClearAll={handleClearAllNotifications}
               onDismiss={handleDismissNotification}
+              onOpenRequest={(reqId) => {
+                const found = unifiedRequests.find(r => r.id === reqId);
+                if (found) {
+                  setSelectedRequest(found);
+                  setActiveSection('request_detail');
+                } else {
+                  setActiveSection('requests');
+                }
+              }}
+              onOpenMember={(uid) => {
+                const found = allUsers.find(u => u.uid === uid);
+                if (found) {
+                  setSelectedMember(found);
+                  setActiveSection('member_profile');
+                }
+              }}
+              onSelectSection={handleNavigateSection}
+            />
+          )}
+
+          {/* SCREEN 9B: EMAIL NOTIFICATION SYSTEM (MAIL ICON / SIDEBAR EMAIL SYSTEM) */}
+          {activeSection === 'email_hub' && (
+            <AdminNotificationsView
+              notifications={legacyNotificationsList}
+              onClearAll={handleClearAllNotifications}
+              onDismiss={handleDismissNotification}
+              db={db}
+              allUsers={allUsers}
+              allTransactions={allTransactions}
+              emailLogs={emailLogs}
+              adminEmail="tahsinullahtusher999@gmail.com"
+              adminPhoto={profile?.photoUrl}
+              sendEmail={sendEmail}
+              autoEmailState={autoEmailState}
+              onRunAutoEmailCycle={onRunAutoEmailCycle}
+              notificationService={notificationService}
+              logAuditEvent={logAuditEvent}
+              addToast={addToast}
+              onInspectMember={(member) => {
+                setSelectedMember(member);
+                setActiveSection('member_profile');
+              }}
+              onNavigateSection={handleNavigateSection}
+            />
+          )}
+
+          {/* SCREEN 9C: PAYMENT GATEWAY & APP SECRETS HUB */}
+          {activeSection === 'gateway' && (
+            <AdminPaymentGatewayView
+              db={db}
+              adminEmail={profile?.email || user?.email || 'tahsinullahtusher999@gmail.com'}
+              allTransactions={allTransactions}
+              logAuditEvent={logAuditEvent}
+              addToast={addToast}
             />
           )}
 
@@ -988,7 +1266,7 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
             />
           )}
 
-          {/* DIGITAL WORKFORCE / AI EMPLOYEES */}
+          {/* DIGITAL WORKFORCE / BANKING OFFICERS */}
           {activeSection === 'workforce' && (
             <div className="max-w-6xl mx-auto animate-fadeIn">
               <WorkforceManagement
@@ -999,6 +1277,11 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
                   remainingDebt: totalOutstandingDebt,
                   pendingMembersCount: allUsers.filter(u => u.status === 'pending').length,
                   pendingTransactionsCount: pendingRequestsCount
+                }}
+                recentTransactions={allTransactions.slice(0, 25)}
+                reserveSummary={{
+                  availableReserve,
+                  targetReserve
                 }}
                 currentUser={profile as any}
               />
@@ -1019,6 +1302,8 @@ export const AdminPortalV4: React.FC<AdminPortalV4Props> = ({
               targetReserve={targetReserve}
             />
           )}
+            </motion.div>
+          </AnimatePresence>
         </main>
 
         {/* 3. Mobile Bottom Navigation Bar (Screen 12 in visual reference) */}

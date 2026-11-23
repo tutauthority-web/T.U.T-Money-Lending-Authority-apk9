@@ -63,7 +63,7 @@ export const AdminReserveView: React.FC<AdminReserveViewProps> = ({
   };
 
   return (
-    <div className="space-y-4 max-w-4xl mx-auto animate-fadeIn">
+    <div className="space-y-4 w-full max-w-7xl mx-auto animate-fadeIn">
       {/* CARD 1: PRIMARY RESERVE */}
       <div className="bg-[#0C152E]/95 border border-[#16274E]/90 rounded-xl p-4 sm:p-5 shadow-xs">
         <div className="flex items-center justify-between pb-3.5 border-b border-[#16274E]/70">

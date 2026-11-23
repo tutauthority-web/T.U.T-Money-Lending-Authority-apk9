@@ -55,7 +55,8 @@ import {
   ShieldCheck,
   LogOut,
   Bell,
-  ChevronLeft
+  ChevronLeft,
+  KeyRound
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -63,7 +64,6 @@ import {
   cn, 
   Button, 
   Card, 
-  DigitalMemo, 
   getSubscriptionPricing, 
   SubscriptionBadge, 
   UserProfile,
@@ -73,11 +73,18 @@ import {
 } from '../App';
 import { calculateMemberLoanAllocations } from '../utils/loanAllocationEngine';
 import { calculateComprehensiveCreditScore } from '../utils/creditScoreEngine';
+import { executeAtomicP2PTransfer } from '../utils/bankingLedgerEngine';
+import { OfficialReceiptModal, OfficialReceiptData } from './common/OfficialReceiptModal';
+import { downloadReceiptPng, normalizeMemoCode } from '../utils/receiptGenerator';
 import { CreditScoreModal } from './CreditScoreModal';
 import { MemberLoanHistoryCard } from './MemberLoanHistoryCard';
 import { BankingTierCard } from './BankingTierCard';
+import { TutCardSecurityModal } from './TutCardSecurityModal';
+import { TutPaymentCheckout } from './TutPaymentCheckout';
+import { TutPayCardRecord } from '../utils/tutPaymentEngine';
 import { SubscriptionHubView } from './SubscriptionHubView';
 import { TierEmblem } from './TierEmblems';
+import { BkashLogo, NagadLogo } from './PaymentBrandLogos';
 import { db, auth } from '../firebase';
 import tutLogo from '../assets/images/tut_logo_1783437312744.jpg';
 import { 
@@ -111,7 +118,7 @@ const CopyButton = ({ text }: { text: string }) => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      alert(`Payment info: ${text}`);
+      console.warn("Clipboard access limited:", err);
     }
   };
 
@@ -524,6 +531,39 @@ const VirtualBankCard = ({ profile, mode, setMode }: { profile: UserProfile, mod
   );
 };
 
+const DealCountdownBadge = () => {
+  const [countdown, setCountdown] = useState({ h: 14, m: 32, s: 58 });
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        let { h, m, s } = prev;
+        s--;
+        if (s < 0) {
+          s = 59;
+          m--;
+        }
+        if (m < 0) {
+          m = 59;
+          h--;
+        }
+        if (h < 0) {
+          return { h: 0, m: 0, s: 0 };
+        }
+        return { h, m, s };
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <span className="text-[10px] font-mono tabular-nums text-slate-200 inline-flex items-center gap-1.5 bg-slate-950/75 border border-white/10 px-2 py-0.5 rounded-md">
+      <Clock className="w-2.5 h-2.5 text-rose-400" />
+      <span>{String(countdown.h).padStart(2, '0')}:{String(countdown.m).padStart(2, '0')}:{String(countdown.s).padStart(2, '0')}</span>
+    </span>
+  );
+};
+
 interface MemberDashboardProps {
   profile: UserProfile;
   transactions: Transaction[];
@@ -551,6 +591,8 @@ interface MemberDashboardProps {
   sendWorkflowNotification?: (type: string, email?: string, name?: string, meta?: any) => Promise<void>;
   onOpenNotifications?: () => void;
   unreadNotificationsCount?: number;
+  activeTab?: 'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets';
+  onTabChange?: (tab: 'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets') => void;
 }
 
 export function MemberDashboard({
@@ -575,21 +617,58 @@ export function MemberDashboard({
   addToast,
   sendWorkflowNotification,
   onOpenNotifications,
-  unreadNotificationsCount
+  unreadNotificationsCount,
+  activeTab,
+  onTabChange
 }: MemberDashboardProps) {
-  const [memberTab, _setMemberTab] = useState<'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets'>('dashboard');
+  const [internalMemberTab, setInternalMemberTab] = useState<'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets'>('dashboard');
+  const memberTab = activeTab ?? internalMemberTab;
 
-  // Smart smooth navigation with instant scroll reset & zero lag
+  const [hideBalances, setHideBalances] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('tut_hide_balances') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const togglePrivacyMode = useCallback(() => {
+    setHideBalances((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('tut_hide_balances', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  // Instant scroll reset on tab change prevents layout-vs-scroll stutter
   const navigateTab = useCallback((newTab: 'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets') => {
     if (memberTab === newTab) {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    _setMemberTab(newTab);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [memberTab]);
+    if (onTabChange) {
+      onTabChange(newTab);
+    } else {
+      setInternalMemberTab(newTab);
+    }
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }, [memberTab, onTabChange]);
 
   const setMemberTab = navigateTab;
+
+  // Listen for cross-component tab navigation (e.g. from Notification Center)
+  useEffect(() => {
+    const handleExternalTabNav = (e: Event) => {
+      const customEvent = e as CustomEvent<'dashboard' | 'memos' | 'subscription' | 'partners' | 'profile' | 'wallets'>;
+      if (customEvent.detail) {
+        navigateTab(customEvent.detail);
+      }
+    };
+    window.addEventListener('tut-navigate-member-tab', handleExternalTabNav);
+    return () => window.removeEventListener('tut-navigate-member-tab', handleExternalTabNav);
+  }, [navigateTab]);
   
   // Memoized transaction splits for high-performance zero-lag rendering
   const pendingTransactions = useMemo(() => transactions.filter(t => t.status === 'pending'), [transactions]);
@@ -599,6 +678,9 @@ export function MemberDashboard({
   const [wallets, setWallets] = useState<any[]>([]);
   const [cards, setCards] = useState<any[]>([]);
   const [walletLoading, setWalletLoading] = useState(true);
+  const [tutCard, setTutCard] = useState<TutPayCardRecord | null>(null);
+  const [showCardSecurityModal, setShowCardSecurityModal] = useState(false);
+  const [showPayAppModal, setShowPayAppModal] = useState(false);
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -653,9 +735,22 @@ export function MemberDashboard({
       console.error("Error listening to cards:", error);
     });
 
+    // Real-time listener for payable T.U.T. Card security record
+    const tutCardRef = doc(db, 'tut_cards', profile.uid);
+    const unsubscribeTutCard = onSnapshot(tutCardRef, (snap) => {
+      if (snap.exists()) {
+        setTutCard(snap.data() as TutPayCardRecord);
+      } else {
+        setTutCard(null);
+      }
+    }, (error) => {
+      console.warn("Notice listening to T.U.T. Card:", error);
+    });
+
     return () => {
       unsubscribeWallets();
       unsubscribeCards();
+      unsubscribeTutCard();
     };
   }, [profile?.uid]);
 
@@ -698,37 +793,10 @@ export function MemberDashboard({
 
   // Deals & Partner Network state
   const [dealCategory, setDealCategory] = useState<string>('All');
-  const [dealCountdown, setDealCountdown] = useState<{ h: number; m: number; s: number }>({ h: 14, m: 32, s: 58 });
   const [activeStoryModal, setActiveStoryModal] = useState<any | null>(null);
   const [activePromoVideoModal, setActivePromoVideoModal] = useState<{ title: string; brand: string; url?: string } | null>(null);
   const [selectedDealMemo, setSelectedDealMemo] = useState<any | null>(null);
   const featuredDropsScrollRef = useRef<HTMLDivElement>(null);
-
-  // Pause countdown timer when not on the Deals tab to eliminate background re-renders
-  useEffect(() => {
-    if (memberTab !== 'partners') return;
-    const timer = setInterval(() => {
-      setDealCountdown((prev) => {
-        let { h, m, s } = prev;
-        s--;
-        if (s < 0) {
-          s = 59;
-          m--;
-        }
-        if (m < 0) {
-          m = 59;
-          h--;
-        }
-        if (h < 0) {
-          h = 0;
-          m = 0;
-          s = 0;
-        }
-        return { h, m, s };
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [memberTab]);
 
   // Instant 100% working subscription purchase with account deposit balance
   const handleInstantBalancePurchase = async (tier: 'bronze' | 'silver' | 'gold', monthsCount: number) => {
@@ -786,7 +854,9 @@ export function MemberDashboard({
         lastSubscriptionPaidAt: serverTimestamp()
       });
       
-      // 2. Add approved transaction
+      // 2. Add approved transaction with unified IDs
+      const subTrxId = `SUB-AUTO-${Date.now().toString(36).toUpperCase()}`;
+      const subMemoId = `TUT-SUB-${Date.now().toString().slice(-6)}`;
       await addDoc(collection(db, 'transactions'), {
         userId: profile.uid,
         userName: profile.name,
@@ -794,8 +864,8 @@ export function MemberDashboard({
         amount: pricing.price,
         method: 'Account Balance',
         accountNumber: profile.memberId || 'INTERNAL-WALLET',
-        transactionId: `SUB-AUTO-${Date.now().toString(36).toUpperCase()}`,
-        memoId: `TUT-SUB-${Date.now().toString().slice(-6)}`,
+        transactionId: subTrxId,
+        memoId: subMemoId,
         status: 'confirmed',
         subscriptionTier: tier,
         subscriptionMonths: monthsCount,
@@ -837,8 +907,8 @@ export function MemberDashboard({
           durationMonths: monthsCount,
           paymentMethod: 'Account Balance',
           accountNumber: profile.memberId || 'INTERNAL-WALLET',
-          transactionId: `SUB-AUTO-${Date.now().toString(36).toUpperCase()}`,
-          memoId: `TUT-SUB-${Date.now().toString().slice(-6)}`,
+          transactionId: subTrxId,
+          memoId: subMemoId,
           allocatedToReserve: true,
           reserveDestination: 'Main Zero-Usury Lending Liquidity Reserve',
           status: 'confirmed',
@@ -862,6 +932,27 @@ export function MemberDashboard({
         });
       } catch (e) {
         console.warn("Audit log note:", e);
+      }
+
+      // 6. Email notification & Chief Admin copy
+      if (sendWorkflowNotification) {
+        sendWorkflowNotification(
+          'subscription_confirmed',
+          profile.email || auth.currentUser?.email || undefined,
+          profile.name,
+          {
+            uid: profile.uid,
+            memberId: profile.memberId,
+            type: 'subscription',
+            tier,
+            amount: pricing.price,
+            method: 'Account Balance',
+            accountNumber: profile.memberId || 'INTERNAL-WALLET',
+            transactionId: subTrxId,
+            memoId: subMemoId,
+            subscriptionMonths: monthsCount
+          }
+        ).catch(() => {});
       }
       
       setInstantBuySuccess(true);
@@ -1087,6 +1178,23 @@ export function MemberDashboard({
 
       const docRef = await addDoc(collection(db, 'users', profile.uid, 'wallets'), walletPayload);
       
+      if (sendWorkflowNotification) {
+        sendWorkflowNotification(
+          'wallet_added',
+          profile.email || auth.currentUser?.email || undefined,
+          profile.name,
+          {
+            uid: profile.uid,
+            memberId: profile.memberId,
+            wallet: {
+              provider: walletPayload.provider,
+              mobileNumber: walletPayload.mobileNumber,
+              holderName: walletPayload.holderName
+            }
+          }
+        ).catch(() => {});
+      }
+
       // Auto-launch OTP Modal for the newly added wallet
       setOtpWallet({ id: docRef.id, ...walletPayload, dateLinked: new Date() });
       setOtpTimer(120);
@@ -1175,6 +1283,22 @@ export function MemberDashboard({
     }
     try {
       await updateDoc(doc(db, 'users', profile.uid, 'wallets', otpWallet.id), { isVerified: true });
+      if (sendWorkflowNotification) {
+        sendWorkflowNotification(
+          'wallet_verified',
+          profile.email || auth.currentUser?.email || undefined,
+          profile.name,
+          {
+            uid: profile.uid,
+            memberId: profile.memberId,
+            wallet: {
+              provider: otpWallet.provider,
+              mobileNumber: otpWallet.mobileNumber,
+              holderName: otpWallet.holderName
+            }
+          }
+        ).catch(() => {});
+      }
       setShowOtpModal(false);
       setOtpWallet(null);
       showLocalToast(`${otpWallet.provider} wallet has been fully verified and bonded!`, "success");
@@ -1402,64 +1526,23 @@ export function MemberDashboard({
     const senderUid = auth.currentUser.uid;
     const recipientUid = verifiedRecipient.uid;
 
-    // Update sender Total Deposit
-    const senderRef = doc(db, 'users', senderUid);
-    await updateDoc(senderRef, {
-      totalDeposit: increment(-amount)
-    });
-
-    // Update recipient Total Deposit
-    const recipientRef = doc(db, 'users', recipientUid);
-    await updateDoc(recipientRef, {
-      totalDeposit: increment(amount)
-    });
-
-    // Create official transaction records for both users
-    const senderTxMemoId = `TUT-TX-${Math.floor(100000 + Math.random() * 900000)}`;
-    const recipientTxMemoId = `TUT-TX-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    // Create outbound transfer transaction
-    await addDoc(collection(db, 'transactions'), {
-      userId: senderUid,
-      userName: profile.name,
-      type: 'refund', // internal type so the bookkeeping balances correctly (subtracts from deposit)
-      isTransfer: true,
-      transferType: 'out',
-      transferRecipientName: verifiedRecipient.name,
-      transferRecipientId: verifiedRecipient.memberId || 'Approved Member',
-      amount: amount,
-      method: 'Cash',
-      status: 'confirmed',
-      timestamp: serverTimestamp(),
-      memoId: senderTxMemoId,
-      accountNumber: verifiedRecipient.memberId || 'N/A',
-      reference: transferReference.trim()
-    });
-
-    // Create inbound transfer transaction
-    await addDoc(collection(db, 'transactions'), {
-      userId: recipientUid,
-      userName: verifiedRecipient.name,
-      type: 'deposit', // internal type so the bookkeeping balances correctly (adds to deposit)
-      isTransfer: true,
-      transferType: 'in',
-      transferSenderName: profile.name,
-      transferSenderId: profile.memberId || 'Approved Member',
-      amount: amount,
-      method: 'Cash',
-      status: 'confirmed',
-      timestamp: serverTimestamp(),
-      memoId: recipientTxMemoId,
-      accountNumber: profile.memberId || 'N/A',
+    const result = await executeAtomicP2PTransfer(db, {
+      senderUid,
+      recipientUid,
+      amount,
+      senderName: profile.name,
+      recipientName: verifiedRecipient.name,
+      senderMemberId: profile.memberId || 'Approved Member',
+      recipientMemberId: verifiedRecipient.memberId || 'Approved Member',
       reference: transferReference.trim()
     });
 
     // Record successful state
     setTransferSuccess({
-      amount,
+      amount: result.transferredAmount,
       recipientName: verifiedRecipient.name,
       recipientId: verifiedRecipient.memberId || 'Approved Member',
-      memoId: senderTxMemoId,
+      memoId: result.senderMemoId,
       date: new Date(),
       reference: transferReference.trim()
     });
@@ -1567,93 +1650,122 @@ export function MemberDashboard({
 
   return (
     <div className={cn(
-      "space-y-4 pb-28 text-left mx-auto px-2 sm:px-4 relative transition-all duration-300 ease-out",
+      "space-y-4 pb-24 md:pb-8 text-left mx-auto px-1 sm:px-3 lg:px-4 relative",
       memberTab === 'partners'
-        ? "max-w-4xl"
+        ? "w-full max-w-5xl xl:max-w-6xl"
         : (memberTab === 'memos' || memberTab === 'subscription')
-          ? "max-w-4xl"
+          ? "w-full max-w-6xl xl:max-w-7xl"
           : memberTab === 'wallets'
-            ? "max-w-3xl"
-            : "max-w-lg"
+            ? "w-full max-w-4xl xl:max-w-5xl"
+            : "w-full max-w-lg lg:max-w-5xl xl:max-w-6xl"
     )}>
       
-      {/* Top Welcome Card - Visible only on Home (dashboard) tab */}
-      {memberTab === 'dashboard' && (
-        <div className="p-4 bg-slate-900/40 border border-white/5 rounded-[22px] flex items-center justify-between shadow-sm backdrop-blur-md">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              onClick={() => setMemberTab('profile')}
-              className="w-11 h-11 rounded-full border border-blue-500/20 overflow-hidden bg-blue-600/10 cursor-pointer hover:border-blue-500/40 transition-all active:scale-95 flex items-center justify-center relative flex-shrink-0"
-            >
-              {profile.photoUrl ? (
-                <img src={profile.photoUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <User className="w-5.5 h-5.5 text-blue-400" />
-              )}
-              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-slate-950 animate-pulse" />
-            </button>
-            
-            <div className="min-w-0">
-              <p className="text-[7.5px] font-black text-blue-400/60 uppercase tracking-[0.18em] leading-none mb-1">WELCOME BACK</p>
-              <h3 className="text-xs sm:text-sm font-black text-white uppercase tracking-tight truncate max-w-[130px]">{profile.name}</h3>
-              <span className="inline-block mt-0.5 text-[7px] font-bold tracking-[0.15em] text-blue-400/80 bg-blue-500/10 px-1.5 py-0.5 rounded uppercase border border-blue-500/20 leading-none">
-                MEMBER SESSION
-              </span>
+      {/* Top Executive Banking Bar - Visible on Home (dashboard) tab */}
+      {memberTab === 'dashboard' && (() => {
+        const hour = new Date().getHours();
+        const timeGreeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+        return (
+          <div className="p-3.5 sm:px-4 sm:py-3.5 bg-[#0B1222] border border-white/[0.07] rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            {/* Identity Row */}
+            <div className="flex items-center justify-between gap-3 min-w-0 flex-1">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => setMemberTab('profile')}
+                  className="w-10 h-10 sm:w-11 sm:h-11 rounded-full border border-white/15 overflow-hidden bg-slate-900 cursor-pointer hover:border-blue-400/50 transition-colors active:scale-95 flex items-center justify-center flex-shrink-0"
+                  title="View Profile"
+                >
+                  {profile.photoUrl ? (
+                    <img src={profile.photoUrl} alt={profile.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <User className="w-5 h-5 text-blue-400" />
+                  )}
+                </button>
+
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-medium text-slate-400 leading-none mb-1">{timeGreeting}</p>
+                  <h2 className="text-sm sm:text-[15px] font-bold text-white tracking-tight truncate">
+                    {profile.name}
+                  </h2>
+                  <div className="flex items-center gap-1.5 text-[10.5px] text-slate-400 font-mono mt-0.5 truncate">
+                    <span className="truncate">{profile.memberId || 'Verified Member'}</span>
+                    <span aria-hidden="true" className="text-slate-600 shrink-0">·</span>
+                    <span className="capitalize text-slate-300 shrink-0">{profile.subscriptionTier || 'Standard'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Mobile Privacy Balance Mask Toggle */}
+              <button
+                type="button"
+                onClick={togglePrivacyMode}
+                className="sm:hidden w-9 h-9 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/[0.08] text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer tap-interactive shrink-0"
+                title={hideBalances ? 'Show balances' : 'Hide balances'}
+                aria-label={hideBalances ? 'Show balances' : 'Hide balances'}
+              >
+                {hideBalances ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+
+            {/* Credit Score & Desktop Privacy Toggle */}
+            <div className="flex items-center justify-between sm:justify-end gap-2 pt-2.5 sm:pt-0 border-t border-white/[0.06] sm:border-t-0 shrink-0">
+              <button
+                type="button"
+                onClick={togglePrivacyMode}
+                className="hidden sm:flex w-9 h-9 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/[0.08] text-slate-400 hover:text-white items-center justify-center transition-colors cursor-pointer tap-interactive shrink-0"
+                title={hideBalances ? 'Show balances' : 'Hide balances'}
+                aria-label={hideBalances ? 'Show balances' : 'Hide balances'}
+              >
+                {hideBalances ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowCreditModal(true)}
+                className="w-full sm:w-auto px-3 py-2 sm:py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/[0.08] hover:border-white/15 flex sm:block items-center justify-between text-left sm:text-right cursor-pointer group transition-colors tap-interactive"
+                title="View credit scorecard"
+              >
+                <span className="text-[11px] sm:text-[10px] font-medium text-slate-400 sm:block leading-none sm:mb-1">
+                  Credit Score
+                </span>
+                <div className="flex items-center justify-end gap-1.5 font-mono tabular-nums leading-none">
+                  <span className={cn(
+                    "text-sm sm:text-[15px] font-bold",
+                    dynamicScore >= 640 ? "text-emerald-400" :
+                    dynamicScore >= 580 ? "text-amber-300" :
+                    "text-rose-400"
+                  )}>
+                    {dynamicScore}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-600 text-[10px]">·</span>
+                  <span className={cn(
+                    "text-[11px] sm:text-[10px] font-semibold",
+                    dynamicScore >= 640 ? "text-emerald-400/90" :
+                    dynamicScore >= 580 ? "text-amber-300/90" :
+                    "text-rose-400"
+                  )}>
+                    {dynamicScore < 580 ? 'Low' : scoreLabel}
+                  </span>
+                </div>
+              </button>
             </div>
           </div>
-
-          <div className="h-9 w-[1px] bg-white/5 mx-2" />
-
-          {/* Real-time Credit Score display on Welcome Card */}
-          <button
-            type="button"
-            onClick={() => setShowCreditModal(true)}
-            className="text-right flex-shrink-0 cursor-pointer group focus:outline-none transition-transform active:scale-95"
-            title="Click to view full institutional credit scorecard"
-          >
-            <p className="text-[7.5px] font-black text-blue-400/60 uppercase tracking-[0.18em] leading-none mb-1 group-hover:text-blue-400 transition-colors">
-              CREDIT SCORE
-            </p>
-            <div className="flex items-center justify-end gap-1 font-mono">
-              <span className={cn(
-                "text-sm sm:text-base font-black transition-colors drop-shadow-sm",
-                dynamicScore >= 640 ? "text-emerald-400" :
-                dynamicScore >= 580 ? "text-amber-400" :
-                "text-rose-500"
-              )}>
-                {dynamicScore}
-              </span>
-              {dynamicScore < 580 && (
-                <span className="text-xs sm:text-sm animate-pulse select-none text-rose-500 font-bold leading-none" title="Credit score is too low — needs attention">
-                  ❗
-                </span>
-              )}
-            </div>
-            <span className={cn(
-              "inline-block mt-0.5 text-[6.5px] sm:text-[7px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded leading-none border transition-colors",
-              dynamicScore >= 640 
-                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" 
-                : dynamicScore >= 580 
-                ? "text-amber-400 bg-amber-500/10 border-amber-500/20" 
-                : "text-rose-400 bg-rose-500/10 border-rose-500/20"
-            )}>
-              {dynamicScore < 580 ? 'NEEDS ATTENTION' : scoreLabel}
-            </span>
-          </button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Dynamic Tab Panel Views */}
-      <div className="mt-1 min-h-[40vh]">
+      <div key={memberTab} className="mt-1 min-h-[40vh] animate-fade-in">
         
         {/* TAB 1: HOME (Dashboard, virtual card, toggles, recent activity) */}
         {memberTab === 'dashboard' && (
-          <div className="space-y-4 animate-fade-in">
-            {/* Texture Mode Selector & VIP Pass Quick Access */}
-            <div className="flex items-center justify-between px-1 mb-1">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">Card Sheen:</span>
-                <div className="flex items-center gap-1 bg-slate-900/90 p-0.5 rounded-lg border border-white/5 text-[9px] font-bold">
+          <div className="space-y-4 lg:grid lg:grid-cols-12 lg:gap-6 lg:space-y-0 items-start">
+            {/* Left Executive Column: Virtual Card, Limits & Actions */}
+            <div className="lg:col-span-5 space-y-4">
+              {/* Card Finish Selector & Tier Upgrade */}
+            <div className="flex flex-wrap items-center justify-between gap-2 px-0.5 mb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">Card Finish</span>
+                <div className="flex items-center gap-0.5 bg-slate-900/90 p-0.5 rounded-lg border border-white/[0.08] text-[10px] font-semibold">
                   {(['auto', 'bronze', 'silver', 'gold'] as const).map((mode) => {
                     const tierRankMap: Record<string, number> = { standard: 0, bronze: 1, silver: 2, gold: 3 };
                     const userCurrentTier = (profile.subscriptionTier || (profile.subscriptionStatus === 'active' ? 'bronze' : 'standard'));
@@ -1665,16 +1777,9 @@ export function MemberDashboard({
                         setCardTextureMode('auto');
                         return;
                       }
-                      if (isMaxTierUser) {
-                        // Max tier (Gold Elite) members can preview any tier
-                        setCardTextureMode(mode);
-                        return;
-                      }
-                      if (tierRankMap[mode] <= tierRankMap[userCurrentTier]) {
-                        // User owns or has unlocked this tier
+                      if (isMaxTierUser || tierRankMap[mode] <= tierRankMap[userCurrentTier]) {
                         setCardTextureMode(mode);
                       } else {
-                        // Locked tier: Prompt to upgrade subscription
                         setLockedSheenTier(mode);
                       }
                     };
@@ -1685,17 +1790,17 @@ export function MemberDashboard({
                         type="button"
                         onClick={handleSheenClick}
                         className={cn(
-                          "px-2 py-0.5 rounded uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1",
+                          "px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1 capitalize",
                           cardTextureMode === mode
-                            ? "bg-blue-600 text-white shadow-sm"
+                            ? "bg-slate-800 text-white shadow-xs border border-white/10"
                             : isLocked
-                            ? "text-slate-500 hover:text-amber-300"
+                            ? "text-slate-500 hover:text-[#DFC07C]"
                             : "text-slate-400 hover:text-white"
                         )}
-                        title={isLocked ? `Upgrade to ${mode} to unlock sheen` : undefined}
+                        title={isLocked ? `Upgrade to ${mode} to unlock finish` : undefined}
                       >
-                        <span>{mode === 'auto' ? 'Auto' : mode === 'bronze' ? 'Bronze' : mode === 'silver' ? 'Silver' : 'Gold'}</span>
-                        {isLocked && <Lock className="w-2 h-2 text-amber-400/80" />}
+                        <span>{mode === 'auto' ? 'Auto' : mode}</span>
+                        {isLocked && <Lock className="w-2.5 h-2.5 text-[#C8A65E]/80" />}
                       </button>
                     );
                   })}
@@ -1708,9 +1813,10 @@ export function MemberDashboard({
                     setTargetSubscriptionTier(undefined);
                     setMemberTab('subscription');
                   }}
-                  className="text-[9px] font-black text-blue-400 hover:text-white flex items-center gap-1 uppercase tracking-wider bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-lg transition-colors cursor-pointer"
+                  className="text-[10px] font-semibold text-[#EAD39C] hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
                 >
-                  <Crown className="w-2.5 h-2.5 text-amber-400" /> Unlock Tiers
+                  <Crown className="w-3 h-3 text-[#DFC07C]" />
+                  <span>Unlock Tiers</span>
                 </button>
               )}
             </div>
@@ -1721,14 +1827,66 @@ export function MemberDashboard({
               status={profile.subscriptionStatus}
               name={profile.name}
               memberId={profile.memberId}
+              memberUid={profile.uid}
               totalDeposit={profile.totalDeposit}
               remainingDebt={profile.remainingDebt}
               subscriptionExpiresAt={profile.subscriptionExpiresAt}
+              tutCard={tutCard}
               showDetailsToggle={true}
+              hideBalances={hideBalances}
               onCardClick={() => setMemberTab('subscription')}
+              onManageSecurity={() => setShowCardSecurityModal(true)}
             />
 
-            {/* Membership & Limits Box - Styled per user reference design */}
+            {/* Payable Card & Connected App Controls */}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setShowCardSecurityModal(true)}
+                className="px-3 py-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/10 hover:border-amber-400/35 text-left flex items-center justify-between gap-2 transition-all cursor-pointer group"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className={cn(
+                    "w-7 h-7 rounded-lg border flex items-center justify-center shrink-0",
+                    tutCard?.isFrozen
+                      ? "bg-rose-500/10 border-rose-500/25 text-rose-400"
+                      : tutCard?.secretCodeHash
+                      ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
+                      : "bg-amber-500/10 border-amber-500/25 text-amber-300"
+                  )}>
+                    <KeyRound className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-[11px] font-bold text-white block truncate">
+                      {tutCard?.isFrozen ? 'Card Frozen' : tutCard?.secretCodeHash ? 'Card & PIN' : 'Set Card PIN'}
+                    </span>
+                    <span className="text-[9.5px] text-slate-400 block truncate">
+                      {tutCard?.isFrozen ? 'Tap to unfreeze' : tutCard?.secretCodeHash ? 'Active for payments' : 'Activate card pay'}
+                    </span>
+                  </div>
+                </div>
+                <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-white shrink-0" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowPayAppModal(true)}
+                className="px-3 py-2.5 rounded-xl bg-gradient-to-r from-amber-500/15 to-blue-600/15 hover:from-amber-500/25 hover:to-blue-600/25 border border-amber-400/25 hover:border-amber-400/50 text-left flex items-center justify-between gap-2 transition-all cursor-pointer group"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-7 h-7 rounded-lg bg-amber-400/15 border border-amber-400/30 flex items-center justify-center text-amber-300 shrink-0">
+                    <Zap className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-[11px] font-bold text-white block truncate">Pay App / Order</span>
+                    <span className="text-[9.5px] text-amber-200/80 block truncate">Card or Wallet</span>
+                  </div>
+                </div>
+                <ChevronRight className="w-3.5 h-3.5 text-amber-300/70 group-hover:text-white shrink-0" />
+              </button>
+            </div>
+
+            {/* Membership & Limits Box - Smart Color-Changing Borrowing Limit System */}
             {(() => {
               const activeTier = profile.subscriptionTier || 'standard';
               const maxBorrowCap = (profile.subscriptionStatus === 'active' || profile.subscriptionStatus === 'pending_approval')
@@ -1737,10 +1895,61 @@ export function MemberDashboard({
 
               const usedDebt = profile.remainingDebt || 0;
               const usedPercent = maxBorrowCap > 0 ? Math.min(100, Math.round((usedDebt / maxBorrowCap) * 100)) : 0;
+              const availableBorrow = Math.max(0, maxBorrowCap - usedDebt);
 
-              const planDisplayName = activeTier === 'gold' ? 'Gold Sovereign' : activeTier === 'silver' ? 'Silver Executive' : activeTier === 'bronze' ? 'Bronze Premier' : 'Standard Member';
+              const planDisplayName = activeTier === 'gold' ? 'Gold Sovereign' : activeTier === 'silver' ? 'Silver Executive' : activeTier === 'bronze' ? 'Bronze Reserve' : 'Standard Member';
+              const planColor = activeTier === 'gold' ? '#DFC07C' : activeTier === 'silver' ? '#CBD5E1' : activeTier === 'bronze' ? '#D39D73' : '#64748B';
 
-              const planColor = activeTier === 'gold' ? '#F59E0B' : activeTier === 'silver' ? '#94A3B8' : activeTier === 'bronze' ? '#D97706' : '#64748B';
+              // Smart usage-based color theme: Low (Emerald) -> Moderate (Amber/Yellow) -> Elevated (Orange) -> High/Critical (Crimson Red)
+              const usageTheme = maxBorrowCap <= 0
+                ? {
+                    barGradient: 'from-slate-600 to-slate-500',
+                    barGlow: '',
+                    textColor: 'text-slate-400',
+                    statusLabel: 'No active limit',
+                    cardBorder: 'border-slate-700/40 hover:border-slate-600/70',
+                    ambientGlow: 'from-slate-500/[0.03] to-transparent',
+                    badgeText: 'text-slate-400',
+                  }
+                : usedPercent <= 30
+                ? {
+                    barGradient: 'from-emerald-500 via-emerald-400 to-teal-400',
+                    barGlow: 'shadow-[0_0_12px_rgba(16,185,129,0.55)]',
+                    textColor: 'text-emerald-400',
+                    statusLabel: usedPercent === 0 ? 'Full capacity ready' : 'Low usage · Healthy',
+                    cardBorder: 'border-emerald-500/20 hover:border-emerald-500/45',
+                    ambientGlow: 'from-emerald-500/[0.06] to-transparent',
+                    badgeText: 'text-emerald-400/90',
+                  }
+                : usedPercent <= 60
+                ? {
+                    barGradient: 'from-lime-400 via-amber-400 to-yellow-400',
+                    barGlow: 'shadow-[0_0_12px_rgba(250,204,21,0.45)]',
+                    textColor: 'text-amber-300',
+                    statusLabel: 'Moderate usage',
+                    cardBorder: 'border-amber-500/25 hover:border-amber-500/50',
+                    ambientGlow: 'from-amber-500/[0.06] to-transparent',
+                    badgeText: 'text-amber-300/90',
+                  }
+                : usedPercent <= 80
+                ? {
+                    barGradient: 'from-amber-500 via-orange-500 to-orange-400',
+                    barGlow: 'shadow-[0_0_12px_rgba(249,115,22,0.55)]',
+                    textColor: 'text-orange-400',
+                    statusLabel: 'Elevated usage',
+                    cardBorder: 'border-orange-500/30 hover:border-orange-500/55',
+                    ambientGlow: 'from-orange-500/[0.07] to-transparent',
+                    badgeText: 'text-orange-400/90',
+                  }
+                : {
+                    barGradient: 'from-orange-500 via-rose-500 to-red-500',
+                    barGlow: 'shadow-[0_0_14px_rgba(244,63,94,0.65)]',
+                    textColor: 'text-rose-400',
+                    statusLabel: usedPercent >= 95 ? 'Limit nearly full' : 'High usage',
+                    cardBorder: 'border-rose-500/35 hover:border-rose-500/60',
+                    ambientGlow: 'from-rose-500/[0.09] to-transparent',
+                    badgeText: 'text-rose-400',
+                  };
 
               const renewalDateDisplay = profile.subscriptionExpiresAt
                 ? format(new Date(profile.subscriptionExpiresAt), 'dd MMM yyyy')
@@ -1751,34 +1960,28 @@ export function MemberDashboard({
               return (
                 <div 
                   onClick={() => setMemberTab('subscription')}
-                  className="relative overflow-hidden rounded-2xl bg-slate-900/50 border border-slate-700/40 hover:border-slate-600/70 backdrop-blur-md transition-all cursor-pointer p-3 sm:p-3.5 shadow-md shadow-black/30 group active:scale-[0.99]"
+                  className={cn(
+                    "relative overflow-hidden rounded-2xl bg-[#0B1222] border transition-colors duration-200 cursor-pointer p-4 group active:scale-[0.99]",
+                    usageTheme.cardBorder
+                  )}
                 >
-                  {/* Left-edge vertical tier stripe */}
-                  <div 
-                    className="absolute left-0 top-2.5 bottom-2.5 w-1 rounded-r-full transition-colors"
-                    style={{ 
-                      backgroundColor: planColor,
-                      boxShadow: `0 0 8px ${planColor}50`
-                    }}
-                  />
+                  {/* Subtle smart ambient wash reflecting utilization level */}
+                  <div className={cn("pointer-events-none absolute inset-0 bg-gradient-to-br transition-colors duration-300", usageTheme.ambientGlow)} />
 
-                  <div className="pl-2 sm:pl-2.5 space-y-2">
+                  <div className="relative space-y-2.5">
                     {/* Top Row: Current Plan & Status */}
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0">
-                        <span className={cn(
-                          "w-2 h-2 rounded-full shrink-0",
-                          profile.subscriptionStatus === 'active'
-                            ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]"
-                            : profile.subscriptionStatus === 'pending_approval'
-                            ? "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.8)]"
-                            : "bg-slate-500"
-                        )} />
-                        <span className="text-[11px] sm:text-xs font-semibold text-slate-300 tracking-tight shrink-0">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ backgroundColor: planColor }}
+                        />
+                        <span className="text-xs font-semibold text-slate-300 tracking-tight shrink-0">
                           Current Plan
                         </span>
+                        <span aria-hidden="true" className="text-slate-600 text-xs">·</span>
                         <span 
-                          className="text-[11px] sm:text-xs font-bold tracking-tight truncate"
+                          className="text-xs font-bold tracking-tight truncate"
                           style={{ color: planColor }}
                         >
                           {planDisplayName}
@@ -1786,43 +1989,64 @@ export function MemberDashboard({
                       </div>
 
                       <span className={cn(
-                        "text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md font-mono shrink-0 border",
+                        "text-[10.5px] font-bold uppercase tracking-wider font-mono shrink-0",
                         profile.subscriptionStatus === 'active'
-                          ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/25"
+                          ? "text-emerald-400"
                           : profile.subscriptionStatus === 'pending_approval'
-                          ? "text-amber-400 bg-amber-500/10 border-amber-500/25"
-                          : "text-slate-400 bg-slate-800/60 border-slate-700/60"
+                          ? "text-amber-400"
+                          : "text-slate-400"
                       )}>
-                        {profile.subscriptionStatus === 'active' ? 'ACTIVE' : profile.subscriptionStatus === 'pending_approval' ? 'PENDING' : 'INACTIVE'}
+                        {profile.subscriptionStatus === 'active' ? 'Active' : profile.subscriptionStatus === 'pending_approval' ? 'Pending' : 'Inactive'}
                       </span>
                     </div>
 
-                    {/* Middle Row: Max Borrow Cap & Value */}
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] sm:text-[11px] text-slate-400 font-medium tracking-wide">
-                        Max Borrow Cap
-                      </span>
-                      <span className="text-base sm:text-lg font-black font-mono text-white tracking-tight">
-                        ৳{maxBorrowCap.toLocaleString()}
+                    {/* Middle Row: Max Borrow Cap & Remaining Available */}
+                    <div className="flex items-baseline justify-between gap-2">
+                      <div>
+                        <span className="text-[11px] text-slate-400 font-medium block">
+                          Max Borrow Cap
+                        </span>
+                        {maxBorrowCap > 0 && (
+                          <span className="text-[11px] text-slate-400 font-mono tabular-nums">
+                            {hideBalances ? '৳ •••••' : `৳${availableBorrow.toLocaleString()}`} available
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-lg sm:text-xl font-extrabold font-mono tabular-nums text-white tracking-tight">
+                        {hideBalances ? '৳ •••••' : `৳${maxBorrowCap.toLocaleString()}`}
                       </span>
                     </div>
 
-                    {/* Dark Progress Bar Track & Fill */}
-                    <div className="w-full h-1 bg-slate-950/80 rounded-full overflow-hidden border border-white/5">
+                    {/* Smart Color-Shifting Progress Track with Subtle Threshold Markers */}
+                    <div className="relative w-full h-2 bg-slate-950/90 rounded-full overflow-hidden border border-white/[0.07] p-[1px]">
+                      <div className="pointer-events-none absolute inset-y-0 left-[30%] w-px bg-white/10 z-10" />
+                      <div className="pointer-events-none absolute inset-y-0 left-[60%] w-px bg-white/10 z-10" />
+                      <div className="pointer-events-none absolute inset-y-0 left-[80%] w-px bg-white/10 z-10" />
+
                       <div 
-                        className="h-full bg-emerald-500 transition-all duration-500 rounded-full shadow-[0_0_4px_rgba(16,185,129,0.7)]"
+                        className={cn(
+                          "h-full bg-gradient-to-r transition-all duration-500 ease-out rounded-full",
+                          usageTheme.barGradient,
+                          usedPercent > 0 ? usageTheme.barGlow : ''
+                        )}
                         style={{ width: `${usedPercent}%` }}
                       />
                     </div>
 
-                    {/* Bottom Row: % used & Next Renewal Date */}
-                    <div className="flex items-center justify-between text-[10px] sm:text-[11px]">
-                      <span className="font-semibold text-emerald-400 font-mono">
-                        {usedPercent}% used
-                      </span>
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        <span className="text-slate-400 font-medium">Next Renewal</span>
-                        <span className="font-bold text-slate-200 font-mono">
+                    {/* Bottom Row: Dynamic Usage % & Next Renewal Date */}
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={cn("font-bold font-mono tabular-nums transition-colors duration-300", usageTheme.textColor)}>
+                          {usedPercent}% used
+                        </span>
+                        <span aria-hidden="true" className="text-slate-600">·</span>
+                        <span className={cn("font-medium truncate transition-colors duration-300", usageTheme.badgeText)}>
+                          {usageTheme.statusLabel}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-slate-400 font-medium">Renewal</span>
+                        <span className="font-semibold text-slate-200 font-mono tabular-nums">
                           {renewalDateDisplay}
                         </span>
                       </div>
@@ -1832,361 +2056,326 @@ export function MemberDashboard({
               );
             })()}
 
-            {/* Quick Actions Bento Grid - Replaced with requested setup */}
+            {/* Quick Actions Rail — Modern Revolut/Wise Inspired */}
             <div className="space-y-2">
-              <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">QUICK ACTIONS</h4>
-              <div className="p-3.5 rounded-[22px] border border-white/5 bg-slate-900/20 backdrop-blur-md grid grid-cols-5 gap-2">
-                
-                {/* BORROW LOAN */}
-                <button 
-                  onClick={() => onRequestAction('loan')}
-                  className="flex flex-col items-center justify-between p-2 rounded-xl border border-blue-500/10 bg-slate-950/40 hover:bg-slate-900/60 hover:border-blue-500/30 transition-all active:scale-95 group cursor-pointer text-center aspect-[0.9]"
-                >
-                  <div className="w-8.5 h-8.5 rounded-full bg-blue-600/10 border border-blue-500/20 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(37,99,235,0.08)]">
-                    <ArrowUpRight className="w-4 h-4" />
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Borrow Loan</span>
-                </button>
-
-                {/* PAY DUE */}
-                <button 
-                  onClick={() => onRequestAction('pay_due')}
-                  className="flex flex-col items-center justify-between p-2 rounded-xl border border-rose-500/10 bg-slate-950/40 hover:bg-slate-900/60 hover:border-rose-500/30 transition-all active:scale-95 group cursor-pointer text-center aspect-[0.9]"
-                >
-                  <div className="w-8.5 h-8.5 rounded-full bg-rose-600/10 border border-rose-500/20 flex items-center justify-center text-rose-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(244,63,94,0.08)]">
-                    <CreditCard className="w-4 h-4" />
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Pay Due</span>
-                </button>
-
-                {/* DEPOSIT */}
-                <button 
-                  onClick={() => onRequestAction('deposit')}
-                  className="flex flex-col items-center justify-between p-2 rounded-xl border border-emerald-500/10 bg-slate-950/40 hover:bg-slate-900/60 hover:border-emerald-500/30 transition-all active:scale-95 group cursor-pointer text-center aspect-[0.9]"
-                >
-                  <div className="w-8.5 h-8.5 rounded-full bg-emerald-600/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(16,185,129,0.08)]">
-                    <Wallet className="w-4 h-4" />
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Deposit</span>
-                </button>
-
-                {/* REFUND DEPOSIT */}
-                <button 
-                  onClick={() => onRequestAction('refund')}
-                  className="flex flex-col items-center justify-between p-2 rounded-xl border border-amber-500/10 bg-slate-950/40 hover:bg-slate-900/60 hover:border-amber-500/30 transition-all active:scale-95 group cursor-pointer text-center aspect-[0.9]"
-                >
-                  <div className="w-8.5 h-8.5 rounded-full bg-amber-600/10 border border-amber-500/20 flex items-center justify-center text-amber-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(245,158,11,0.08)]">
-                    <ArrowDownLeft className="w-4 h-4" />
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Refund Deposit</span>
-                </button>
-
-                {/* TRANSFER */}
-                <button 
-                  onClick={() => onRequestAction('transfer')}
-                  className="flex flex-col items-center justify-between p-2 rounded-xl border border-purple-500/10 bg-slate-950/40 hover:bg-slate-900/60 hover:border-purple-500/30 transition-all active:scale-95 group cursor-pointer text-center aspect-[0.9]"
-                >
-                  <div className="w-8.5 h-8.5 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:scale-110 transition-transform duration-300 shadow-[0_0_8px_rgba(168,85,247,0.08)]">
-                    <Send className="w-4 h-4" />
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-300 group-hover:text-white transition-colors uppercase tracking-tight leading-tight mt-1">Transfer</span>
-                </button>
-
+              <h4 className="text-[11px] font-semibold text-slate-400 tracking-wide px-0.5">Quick Actions</h4>
+              <div className="p-2.5 rounded-2xl border border-white/[0.07] bg-[#0B1222] grid grid-cols-5 gap-1.5">
+                {[
+                  {
+                    action: 'loan' as const,
+                    label: 'Borrow',
+                    icon: ArrowUpRight,
+                    ring: 'bg-blue-500/12 border-blue-500/25 text-blue-400 group-hover:bg-blue-500/20',
+                  },
+                  {
+                    action: 'pay_due' as const,
+                    label: 'Repay',
+                    icon: CreditCard,
+                    ring: 'bg-rose-500/12 border-rose-500/25 text-rose-400 group-hover:bg-rose-500/20',
+                  },
+                  {
+                    action: 'deposit' as const,
+                    label: 'Deposit',
+                    icon: Wallet,
+                    ring: 'bg-emerald-500/12 border-emerald-500/25 text-emerald-400 group-hover:bg-emerald-500/20',
+                  },
+                  {
+                    action: 'refund' as const,
+                    label: 'Withdraw',
+                    icon: ArrowDownLeft,
+                    ring: 'bg-amber-500/12 border-amber-500/25 text-amber-300 group-hover:bg-amber-500/20',
+                  },
+                  {
+                    action: 'transfer' as const,
+                    label: 'Transfer',
+                    icon: Send,
+                    ring: 'bg-indigo-500/12 border-indigo-500/25 text-indigo-300 group-hover:bg-indigo-500/20',
+                  },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.action}
+                      type="button"
+                      onClick={() => onRequestAction(item.action)}
+                      className="flex flex-col items-center justify-center py-2.5 px-1 rounded-xl hover:bg-white/[0.04] transition-all cursor-pointer group tap-interactive"
+                    >
+                      <div className={cn("w-10 h-10 rounded-2xl border flex items-center justify-center transition-transform duration-150 group-hover:-translate-y-0.5", item.ring)}>
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <span className="text-[11px] font-semibold text-slate-300 group-hover:text-white transition-colors whitespace-nowrap mt-1.5">
+                        {item.label}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Live Support Banner matching Image #1 */}
+            {/* Direct Concierge Support Link */}
             <a 
               href="https://wa.me/8801713710607" 
               target="_blank" 
               rel="noopener noreferrer"
-              className="p-3.5 rounded-[20px] border border-emerald-500/10 bg-slate-900/30 backdrop-blur-md hover:bg-slate-900/50 transition-all group flex items-center justify-between"
+              className="px-4 py-3 rounded-2xl border border-white/[0.07] bg-[#0B1222] hover:border-emerald-500/30 hover:bg-slate-900/90 transition-colors group flex items-center justify-between"
             >
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 flex-shrink-0">
-                  <MessageSquare className="w-4.5 h-4.5 group-hover:scale-110 transition-transform" />
+                  <MessageSquare className="w-4 h-4" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1">LIVE SUPPORT</p>
-                  <h5 className="text-[11px] font-bold text-white tracking-tight">Need help? Contact Admin</h5>
+                  <p className="text-xs font-semibold text-white">Direct Member Desk</p>
+                  <p className="text-[11px] text-slate-400">WhatsApp concierge support</p>
                 </div>
               </div>
-              <svg className="w-3.5 h-3.5 text-slate-500 group-hover:text-white transition-colors" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-              </svg>
+              <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
             </a>
+            </div>
 
+            {/* Right Operations Column: Pending Queue & Activity Ledger */}
+            <div className="lg:col-span-7 space-y-4">
             {/* Awaiting Pending Verification Queue */}
             {pendingTransactions.length > 0 && (
               <div className="space-y-2">
-                <h4 className="text-[11px] font-black text-amber-500/80 uppercase tracking-[0.2em] ml-1 flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 animate-spin" />
-                  Awaiting Verification
-                </h4>
+                <div className="flex items-center justify-between px-0.5">
+                  <h4 className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Awaiting Verification</span>
+                  </h4>
+                  <span className="text-[11px] font-mono tabular-nums text-amber-300/80">
+                    {pendingTransactions.length} pending
+                  </span>
+                </div>
                 <div className="space-y-2">
                   {pendingTransactions.map(tx => (
-                    <div key={tx.id} className="bg-slate-900/40 border border-amber-500/25 rounded-2xl p-3.5 space-y-2.5 group hover:border-amber-500/40 transition-all shadow-sm">
-                      {/* Top Row: Type, Timestamp, Amount & Status */}
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={cn("p-2 rounded-xl transition-transform group-hover:scale-105 shrink-0", 
-                            tx.type === 'loan' ? "bg-rose-500/10 text-rose-400 border border-rose-500/20" : 
-                            tx.type === 'refund' ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : 
-                            tx.type === 'subscription' ? "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20" :
-                            "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                          )}>
-                            {tx.type === 'loan' ? <ArrowUpRight className="w-4 h-4" /> : 
-                             tx.type === 'refund' ? <ArrowUpRight className="w-4 h-4" /> :
-                             tx.type === 'subscription' ? <Award className="w-4 h-4 text-amber-400" /> :
-                             <ArrowDownLeft className="w-4 h-4" />}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-black capitalize tracking-tight text-white truncate">
-                              {tx.type === 'loan' ? 'Loan Request' : tx.type === 'deposit' ? 'Security Deposit' : tx.type === 'refund' ? 'Refund Request' : tx.type === 'pay_due' ? 'Due Repayment' : tx.type}
-                            </p>
-                            <p className="text-[9.5px] font-bold text-slate-400 tracking-wider mt-0.5">
-                              {tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Just now'}
-                            </p>
-                          </div>
+                    <div key={tx.id} className="bg-[#0B1222] border border-amber-500/25 rounded-2xl p-3.5 flex justify-between items-center group hover:border-amber-400/45 transition-colors">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border", 
+                          tx.type === 'loan' ? "bg-rose-500/10 text-rose-400 border-rose-500/20" : 
+                          tx.type === 'refund' ? "bg-amber-500/10 text-amber-300 border-amber-500/20" : 
+                          tx.type === 'subscription' ? "bg-[#DFC07C]/10 text-[#EAD39C] border-[#DFC07C]/25" :
+                          "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                        )}>
+                          {tx.type === 'loan' ? <ArrowUpRight className="w-4 h-4" /> : 
+                           tx.type === 'refund' ? <ArrowUpRight className="w-4 h-4" /> :
+                           tx.type === 'subscription' ? <Award className="w-4 h-4" /> :
+                           <ArrowDownLeft className="w-4 h-4" />}
                         </div>
-
-                        <div className="text-right shrink-0">
-                          <p className="text-sm font-black text-amber-400 tracking-tight font-mono">৳ {tx.amount.toLocaleString()}</p>
-                          <span className="inline-block mt-0.5 px-2 py-0.5 rounded text-[8.5px] font-black uppercase tracking-wider text-amber-400 bg-amber-500/15 border border-amber-500/30">
-                            Awaiting Review
-                          </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold capitalize text-white truncate">
+                            {tx.type === 'loan' ? 'Loan Request' : tx.type === 'deposit' ? 'Security Deposit' : tx.type === 'refund' ? 'Refund Request' : tx.type === 'pay_due' ? 'Due Repayment' : tx.type}
+                          </p>
+                          <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                            {tx.method ? `Via ${tx.method}` : 'Processing'} · {tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Just now'}
+                          </p>
                         </div>
                       </div>
 
-                      {/* Specifications Grid: Payment Method, Transaction ID, Reference */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-950/70 p-2.5 rounded-xl border border-white/5 text-[10px]">
-                        <div>
-                          <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-400 block">Payment Method</span>
-                          <span className="font-bold text-slate-200 block truncate">
-                            {tx.method} {tx.mobileOperator ? `(${tx.mobileOperator})` : ''}
-                          </span>
-                          {tx.accountNumber && (
-                            <span className="font-mono text-emerald-400 text-[9px] block truncate">
-                              {tx.accountNumber}
-                            </span>
-                          )}
-                        </div>
-
-                        <div>
-                          <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-400 block">Transaction ID</span>
-                          <span className="font-mono font-bold text-amber-300 block truncate" title={tx.transactionId || tx.id}>
-                            {tx.transactionId || tx.id || 'N/A'}
-                          </span>
-                        </div>
-
-                        <div>
-                          <span className="text-[8.5px] font-black uppercase tracking-wider text-slate-400 block">Reference</span>
-                          <span className="font-mono text-purple-300 block truncate" title={tx.reference || tx.memoId}>
-                            {tx.reference || tx.memoId || tx.transactionId || 'TUT-REF'}
-                          </span>
-                          {tx.estimatedRepaymentDate && (
-                            <span className="text-[9px] text-amber-400/90 block">
-                              Due: {tx.estimatedRepaymentDate}
-                            </span>
-                          )}
-                        </div>
+                      <div className="text-right shrink-0 ml-2">
+                        <p className="text-sm font-bold text-amber-300 font-mono tabular-nums">
+                          {hideBalances ? '৳ •••••' : `৳${tx.amount.toLocaleString()}`}
+                        </p>
+                        <span className="text-[10.5px] font-semibold text-amber-400/85 block mt-0.5">
+                          Pending
+                        </span>
                       </div>
-
-                      {/* Reason for Loan / Stated Purpose */}
-                      {(tx.loanReason || (tx as any).purpose) && (
-                        <div className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-slate-200">
-                          <span className="font-black uppercase tracking-wider text-amber-400 text-[8.5px] block">Reason for Loan:</span>
-                          <span className="italic block mt-0.5 font-medium text-slate-100">
-                            "{tx.loanReason || (tx as any).purpose}"
-                          </span>
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Micro-feed of Recent Receipts replaced with Latest Transactions system */}
-            <div className="space-y-3.5">
-              <div className="flex justify-between items-center px-1">
-                <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-[0.25em]">Latest Transactions</h4>
-                <button onClick={() => setMemberTab('memos')} className="text-[8.5px] font-black text-blue-400 uppercase tracking-wider hover:underline cursor-pointer">See Vault →</button>
+            {/* Latest Transactions Activity Ledger */}
+            <div className="space-y-2.5">
+              <div className="flex justify-between items-center px-0.5">
+                <h4 className="text-xs font-semibold text-slate-300">Latest Transactions</h4>
+                <button
+                  type="button"
+                  onClick={() => setMemberTab('memos')}
+                  className="text-xs font-semibold text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1 cursor-pointer"
+                >
+                  <span>See Vault</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
               </div>
               
-              <div className="bg-slate-950/40 rounded-3xl border border-white/5 p-4.5 space-y-4">
-                {confirmedTransactions.slice(0, 5).map((tx, idx, arr) => {
+              <div className="bg-[#0B1222] rounded-2xl border border-white/[0.07] divide-y divide-white/[0.05] overflow-hidden">
+                {confirmedTransactions.slice(0, 5).map((tx) => {
                   let sign = '+';
                   let colorClass = 'text-emerald-400';
                   let title = '';
                   let subtitle = '';
-                  let initial = '';
-                  let bgGradient = 'from-emerald-500 to-emerald-400';
+                  let IconComponent = ArrowDownLeft;
+                  let iconStyle = 'bg-emerald-500/12 border-emerald-500/20 text-emerald-400';
 
                   switch (tx.type) {
                     case 'deposit':
                       sign = '+';
                       colorClass = 'text-emerald-400';
                       title = 'Portal Deposit';
-                      subtitle = `Deposited via ${tx.method}`;
-                      initial = 'D';
-                      bgGradient = 'from-emerald-600 to-teal-500';
+                      subtitle = `Via ${tx.method}`;
+                      IconComponent = ArrowDownLeft;
+                      iconStyle = 'bg-emerald-500/12 border-emerald-500/20 text-emerald-400';
                       break;
                     case 'loan':
                       sign = '+';
                       colorClass = 'text-blue-400';
                       title = 'Loan Disbursed';
                       subtitle = tx.method === 'Recharge' 
-                        ? `Mobile Recharge (${tx.mobileOperator || 'Grameenphone'})` 
-                        : (tx.loanReason ? `Reason: ${tx.loanReason}` : `Via ${tx.method} Transfer`);
-                      initial = 'L';
-                      bgGradient = 'from-blue-600 to-indigo-500';
+                        ? `Recharge (${tx.mobileOperator || 'GP'})` 
+                        : `Via ${tx.method}`;
+                      IconComponent = ArrowUpRight;
+                      iconStyle = 'bg-blue-500/12 border-blue-500/20 text-blue-400';
                       break;
                     case 'refund':
                       sign = '+';
                       colorClass = 'text-emerald-400';
-                      title = 'Authority Refund';
+                      title = 'Deposit Refund';
                       subtitle = tx.method === 'Recharge' 
-                        ? `Mobile Recharge (${tx.mobileOperator || 'Grameenphone'})` 
-                        : `Received on ${tx.method}`;
-                      initial = 'R';
-                      bgGradient = 'from-teal-500 to-emerald-400';
+                        ? `Recharge (${tx.mobileOperator || 'GP'})` 
+                        : `Via ${tx.method}`;
+                      IconComponent = ArrowDownLeft;
+                      iconStyle = 'bg-teal-500/12 border-teal-500/20 text-teal-400';
                       break;
                     case 'pay_due':
                       sign = '-';
-                      colorClass = 'text-rose-400';
-                      title = 'Due Payment';
-                      subtitle = `Paid via ${tx.method}`;
-                      initial = 'P';
-                      bgGradient = 'from-rose-500 to-red-600';
+                      colorClass = 'text-slate-200';
+                      title = 'Due Repayment';
+                      subtitle = `Via ${tx.method}`;
+                      IconComponent = CreditCard;
+                      iconStyle = 'bg-rose-500/12 border-rose-500/20 text-rose-400';
                       break;
                     case 'subscription':
                       sign = '-';
-                      colorClass = 'text-amber-400';
-                      title = `${tx.subscriptionMonths ? tx.subscriptionMonths + '-Month' : 'Premium'} Sub`;
-                      subtitle = `Loyalty Plan Activation`;
-                      initial = 'S';
-                      bgGradient = 'from-amber-500 to-yellow-600';
+                      colorClass = 'text-[#EAD39C]';
+                      title = `${tx.subscriptionMonths ? tx.subscriptionMonths + '-Month' : 'Tier'} Membership`;
+                      subtitle = 'Plan activation';
+                      IconComponent = Award;
+                      iconStyle = 'bg-[#DFC07C]/12 border-[#DFC07C]/25 text-[#EAD39C]';
+                      break;
+                    case 'merchant_payment':
+                    case 'card_payment':
+                    case 'wallet_payment':
+                      sign = '-';
+                      colorClass = 'text-amber-300';
+                      title = tx.merchantName ? `Paid ${tx.merchantName}` : 'Connected App Payment';
+                      subtitle = tx.method ? `Via ${tx.method}${tx.cardLast4 ? ` (••${tx.cardLast4})` : ''}` : 'T.U.T. Gateway';
+                      IconComponent = Zap;
+                      iconStyle = 'bg-amber-500/12 border-amber-500/25 text-amber-300';
                       break;
                     default:
                       title = 'Transaction';
-                      subtitle = `Method: ${tx.method}`;
-                      initial = 'T';
-                      bgGradient = 'from-slate-500 to-slate-700';
+                      subtitle = `${tx.method || 'Ledger'}`;
+                      IconComponent = FileText;
+                      iconStyle = 'bg-slate-500/12 border-slate-500/20 text-slate-300';
                   }
 
                   if (tx.isTransfer) {
-                    initial = 'T';
-                    bgGradient = 'from-cyan-500 to-blue-500';
+                    IconComponent = Send;
+                    iconStyle = 'bg-cyan-500/12 border-cyan-500/20 text-cyan-400';
                     if (tx.transferType === 'out') {
                       sign = '-';
-                      colorClass = 'text-rose-400';
-                      title = `Transfer to ${tx.transferRecipientName || 'User'}`;
-                      subtitle = `A/C: ${tx.transferRecipientId || 'N/A'}`;
+                      colorClass = 'text-slate-200';
+                      title = `Transfer to ${tx.transferRecipientName || 'Member'}`;
+                      subtitle = 'Peer Transfer';
                     } else {
                       sign = '+';
                       colorClass = 'text-emerald-400';
-                      title = `Transfer from ${tx.transferSenderName || 'User'}`;
-                      subtitle = `A/C: ${tx.transferSenderId || 'N/A'}`;
+                      title = `Transfer from ${tx.transferSenderName || 'Member'}`;
+                      subtitle = 'Peer Transfer';
                     }
                   }
 
                   const txTime = tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Just now';
 
                   return (
-                    <div key={tx.id} className="flex flex-col">
-                      <div className="flex items-center justify-between py-1">
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          {/* Left icon box with custom gradient */}
-                          <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center font-black text-sm text-white shadow-lg flex-shrink-0 bg-gradient-to-tr", bgGradient)}>
-                            {initial}
-                          </div>
-                          
-                          {/* Center info */}
-                          <div className="min-w-0">
-                            <h5 className="text-[12.5px] font-black text-white tracking-tight truncate">
-                              {title}
-                            </h5>
-                            <p className="text-[10px] text-slate-400 font-bold truncate mt-0.5">
-                              {subtitle} <span className="mx-1 text-slate-600">•</span> {txTime}
-                            </p>
-                            {tx.reference && (
-                              <p className="text-[9.5px] text-blue-400 font-bold mt-1 italic truncate">
-                                Reference: "{tx.reference}"
-                              </p>
-                            )}
-                            {tx.adminNotes && (
-                              <p className="text-[9.5px] text-slate-400 font-semibold mt-1 italic truncate">
-                                Memo: "{tx.adminNotes}"
-                              </p>
-                            )}
-                          </div>
+                    <button
+                      type="button"
+                      key={tx.id} 
+                      onClick={() => {
+                        setSelectedDoc(tx);
+                        setMemberTab('memos');
+                      }}
+                      className="w-full text-left px-4 py-3.5 flex items-center justify-between gap-3 group cursor-pointer hover:bg-white/[0.03] transition-colors"
+                      title="View verified transaction receipt & memo"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center border flex-shrink-0", iconStyle)}>
+                          <IconComponent className="w-4 h-4" />
                         </div>
-
-                        {/* Right side amount */}
-                        <div className="text-right flex-shrink-0">
-                          <p className={cn("text-sm font-black font-mono tracking-tight", colorClass)}>
-                            {sign} ৳{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        
+                        <div className="min-w-0">
+                          <h5 className="text-[13px] font-semibold text-white tracking-tight truncate group-hover:text-blue-300 transition-colors">
+                            {title}
+                          </h5>
+                          <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                            {subtitle} · {txTime}
                           </p>
                         </div>
                       </div>
-                      
-                      {idx < arr.length - 1 && (
-                        <div className="border-b border-white/[0.04] my-2.5" />
-                      )}
-                    </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <span className={cn("text-sm font-bold font-mono tabular-nums tracking-tight", colorClass)}>
+                          {hideBalances ? '•••••' : `${sign}৳${tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                        </span>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-600 group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
+                      </div>
+                    </button>
                   );
                 })}
 
                 {confirmedTransactions.length === 0 && (
-                  <div className="py-12 px-4 text-center bg-slate-900/20 border border-dashed border-blue-500/10 rounded-3xl flex flex-col items-center justify-center space-y-3.5">
-                    <div className="w-12 h-12 rounded-full bg-blue-500/5 flex items-center justify-center text-blue-400/50 border border-blue-500/10">
-                      <CreditCard className="w-5 h-5 animate-pulse" />
+                  <div className="py-12 px-4 text-center flex flex-col items-center justify-center space-y-3">
+                    <div className="w-11 h-11 rounded-2xl bg-slate-900 flex items-center justify-center text-slate-400 border border-white/[0.07]">
+                      <CreditCard className="w-5 h-5" />
                     </div>
                     <div className="space-y-1 max-w-[280px]">
-                      <p className="text-[11px] text-slate-300 font-bold uppercase tracking-wider">No Confirmed Transactions</p>
-                      <p className="text-[10px] text-slate-500 font-semibold leading-relaxed">Your secure ledger is ready. Once your deposit or loan requests are verified, they will appear here instantly.</p>
+                      <p className="text-xs font-semibold text-slate-200">No Confirmed Transactions Yet</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">Once your deposit, loan, or repayment requests are verified, they will appear here automatically.</p>
                     </div>
                   </div>
                 )}
               </div>
+            </div>
             </div>
           </div>
         )}
 
         {/* TAB 2: VAULT (Premium Banking-Style Financial Overview) */}
         {memberTab === 'memos' && (
-          <div className="space-y-3 animate-fade-in pb-12 select-none font-sans text-left max-w-5xl mx-auto">
+          <div className="space-y-3 pb-12 select-none font-sans text-left w-full max-w-6xl xl:max-w-7xl mx-auto">
               
-              {/* Title & Time Header with Back Button */}
-              <div className="flex items-center justify-between pt-0.5 pb-1 border-b border-white/5">
-                <div className="flex items-center gap-2">
+              {/* Clean Editorial Header */}
+              <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+                <div className="flex items-center gap-2.5">
                   <button
+                    type="button"
                     onClick={() => setMemberTab('dashboard')}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-900 border border-white/10 text-[10px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shadow-sm"
+                    className="md:hidden inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer"
                   >
-                    <ArrowLeft className="w-3 h-3" /> Back
+                    <ArrowLeft className="w-3.5 h-3.5" />
                   </button>
                   <div>
-                    <h1 className="text-sm sm:text-base font-black text-white tracking-tight">My Vault</h1>
-                    <p className="text-[9px] text-slate-400 font-medium leading-none">Complete financial overview</p>
+                    <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">My Vault</h1>
+                    <p className="text-xs text-slate-400 leading-tight">Financial ledger, balances, and verified statements</p>
                   </div>
                 </div>
                 <button 
+                  type="button"
                   onClick={() => {
                     setDocFilter('all');
                   }}
-                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-900/80 border border-white/10 text-[9.5px] font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shadow-sm"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 border border-white/10 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
                 >
-                  <RotateCw className="w-2.5 h-2.5 text-blue-400" />
-                  <span className="hidden sm:inline text-[9.5px]">Real-time Ledger</span>
+                  <RotateCw className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="hidden sm:inline">Sync Ledger</span>
                 </button>
               </div>
 
               {/* 1. UPCOMING REPAYMENT - FEATURED AT TOP OF VAULT */}
               <div 
                 onClick={() => setVaultModalType('upcoming_repayment')}
-                className="p-2.5 sm:p-3 rounded-xl bg-gradient-to-r from-purple-950/70 via-slate-900/90 to-slate-900/80 border border-purple-500/35 hover:border-purple-500/60 backdrop-blur-xl transition-all shadow-md flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 cursor-pointer group"
+                className="p-3 rounded-xl bg-gradient-to-r from-[#17122B] via-[#0E1528] to-[#0B1222] border border-purple-500/30 hover:border-purple-400/55 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 cursor-pointer group"
               >
                 <div className="flex items-center gap-2.5">
                   <div className="w-7 h-7 rounded-lg bg-purple-500/20 border border-purple-500/30 flex items-center justify-center text-purple-300 shrink-0 shadow-inner group-hover:scale-105 transition-transform">
@@ -2238,7 +2427,7 @@ export function MemberDashboard({
                 {/* Card 1: TOTAL LOAN */}
                 <div 
                   onClick={() => setVaultModalType('total_loan')}
-                  className="p-2.5 sm:p-3 rounded-xl bg-slate-900/70 border border-blue-500/20 hover:border-blue-500/50 hover:bg-slate-900/90 backdrop-blur-xl transition-all shadow-md relative overflow-hidden group flex flex-col justify-between cursor-pointer"
+                  className="p-3 rounded-xl bg-[#0B1222] border border-blue-500/20 hover:border-blue-500/45 hover:bg-[#0F172A] transition-colors relative overflow-hidden group flex flex-col justify-between cursor-pointer"
                 >
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
@@ -2304,7 +2493,7 @@ export function MemberDashboard({
                 {/* Card 2: TOTAL DEPOSITS */}
                 <div 
                   onClick={() => setVaultModalType('total_deposits')}
-                  className="p-2.5 sm:p-3 rounded-xl bg-slate-900/70 border border-emerald-500/20 hover:border-emerald-500/50 hover:bg-slate-900/90 backdrop-blur-xl transition-all shadow-md flex flex-col justify-between group cursor-pointer"
+                  className="p-3 rounded-xl bg-[#0B1222] border border-emerald-500/20 hover:border-emerald-500/45 hover:bg-[#0F172A] transition-colors flex flex-col justify-between group cursor-pointer"
                 >
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
@@ -2334,7 +2523,7 @@ export function MemberDashboard({
                 {/* Card 3: CREDIT SCORE */}
                 <div 
                   onClick={() => setShowCreditModal(true)}
-                  className="p-2.5 sm:p-3 rounded-xl bg-slate-900/70 border border-amber-500/20 hover:border-amber-500/50 hover:bg-slate-900/90 backdrop-blur-xl transition-all shadow-md flex flex-col justify-between space-y-1.5 group cursor-pointer"
+                  className="p-3 rounded-xl bg-[#0B1222] border border-[#DFC07C]/25 hover:border-[#DFC07C]/50 hover:bg-[#0F172A] transition-colors flex flex-col justify-between space-y-1.5 group cursor-pointer"
                 >
                   <div>
                     <div className="flex items-center justify-between mb-1.5">
@@ -2443,7 +2632,7 @@ export function MemberDashboard({
                     </div>
                     <div className="min-w-0">
                       <p className="text-[10px] font-black text-white uppercase tracking-tight truncate">Statement</p>
-                      <p className="text-[8.5px] text-slate-400 truncate">Download PDF</p>
+                      <p className="text-[8.5px] text-slate-400 truncate">PDF & PNG</p>
                     </div>
                   </button>
 
@@ -2468,7 +2657,7 @@ export function MemberDashboard({
               </div>
 
               {/* Four Metric Strip Card */}
-              <div className="p-2 rounded-xl bg-slate-900/70 border border-white/10 backdrop-blur-xl grid grid-cols-2 md:grid-cols-4 gap-2 divide-y md:divide-y-0 md:divide-x divide-white/5 shadow-md">
+              <div className="p-2 rounded-xl bg-[#0B1222] border border-white/[0.08] grid grid-cols-2 md:grid-cols-4 gap-2 divide-y md:divide-y-0 md:divide-x divide-white/[0.06]">
                 {/* Available Limit */}
                 <div 
                   onClick={() => setVaultModalType('available_limit')}
@@ -2649,6 +2838,12 @@ export function MemberDashboard({
                       avatarType = 'letter_S';
                       sign = '-';
                       colorClass = 'text-rose-400';
+                    } else if (tx.type === 'merchant_payment' || tx.type === 'card_payment' || tx.type === 'wallet_payment') {
+                      title = tx.merchantName ? `Payment — ${tx.merchantName}` : 'Connected App Payment';
+                      category = 'vouchers';
+                      avatarType = 'letter_P';
+                      sign = '-';
+                      colorClass = 'text-amber-300';
                     }
 
                     const txDateStr = tx.timestamp?.toDate ? format(tx.timestamp.toDate(), 'dd MMM, HH:mm') : 'Recent';
@@ -2773,16 +2968,67 @@ export function MemberDashboard({
                                   </div>
                                 </div>
 
-                                <div className="shrink-0 text-right">
-                                  {item.isBadge ? (
-                                    <span className="inline-block bg-amber-500/10 border border-amber-500/30 text-amber-400 font-black text-[9px] uppercase tracking-wider px-2.5 py-0.5 rounded-md">
-                                      {item.badgeText}
-                                    </span>
-                                  ) : (
-                                    <span className={cn("font-black font-mono text-xs sm:text-sm tracking-tight", item.colorClass)}>
-                                      {item.amountFormatted}
-                                    </span>
-                                  )}
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <div className="text-right">
+                                    {item.isBadge ? (
+                                      <span className="inline-block bg-amber-500/10 border border-amber-500/30 text-amber-400 font-black text-[9px] uppercase tracking-wider px-2.5 py-0.5 rounded-md">
+                                        {item.badgeText}
+                                      </span>
+                                    ) : (
+                                      <span className={cn("font-black font-mono tabular-nums text-xs sm:text-sm tracking-tight", item.colorClass)}>
+                                        {item.amountFormatted}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const src = item.rawTx || item;
+                                      const payload: OfficialReceiptData = {
+                                        id: String(src.id || item.id),
+                                        memoId: src.memoId,
+                                        type: src.type || 'deposit',
+                                        amount: Number(src.amount ?? src.originalAmount ?? src.amountVal ?? 0),
+                                        userName: src.userName || profile.name,
+                                        userId: src.userId || profile.uid,
+                                        memberId: src.memberId || profile.memberId,
+                                        method: src.method,
+                                        accountNumber: src.accountNumber,
+                                        transactionId: src.transactionId,
+                                        date: src.date,
+                                        timestamp: src.timestamp || (src.type === 'certificate' ? profile.createdAt : undefined),
+                                        dueDate: src.dueDate,
+                                        estimatedRepaymentDate: src.estimatedRepaymentDate,
+                                        status: src.status || 'confirmed',
+                                        decidedBy: src.decidedBy,
+                                        adminNotes: src.adminNotes,
+                                        loanReason: src.loanReason,
+                                        reference: src.reference,
+                                        mobileOperator: src.mobileOperator,
+                                        isTransfer: src.isTransfer,
+                                        transferType: src.transferType,
+                                        transferSenderName: src.transferSenderName,
+                                        transferRecipientName: src.transferRecipientName,
+                                        subscriptionTier: src.subscriptionTier || profile.subscriptionTier,
+                                        subscriptionMonths: src.subscriptionMonths
+                                      };
+                                      downloadReceiptPng(payload)
+                                        .then(() => {
+                                          if (addToast) {
+                                            addToast('Voucher Downloaded', `Saved TUT-Receipt-${normalizeMemoCode(payload.id, payload.memoId)}.png`, 'success');
+                                          }
+                                        })
+                                        .catch(() => {
+                                          setSelectedDoc(src);
+                                        });
+                                    }}
+                                    className="w-8 h-8 rounded-lg bg-white/[0.04] hover:bg-amber-400/15 border border-white/10 hover:border-amber-400/40 text-slate-300 hover:text-amber-300 flex items-center justify-center transition-colors cursor-pointer"
+                                    title="Download PNG Voucher"
+                                    aria-label={`Download receipt for ${item.title}`}
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
                                 </div>
                               </div>
                             );
@@ -2808,258 +3054,47 @@ export function MemberDashboard({
             </div>
         )}
 
-            {/* Premium Interactive Document Viewer Overlay */}
-            <AnimatePresence>
-              {selectedDoc && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/95 backdrop-blur-md overflow-y-auto">
-                  <motion.div 
-                    initial={{ opacity: 0, scale: 0.95, y: 30 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: 30 }}
-                    transition={{ type: "spring", duration: 0.5 }}
-                    className="relative w-full max-w-lg bg-slate-900 border border-white/10 rounded-3xl overflow-hidden shadow-2xl p-6 md:p-8"
-                  >
-                    {/* Floating Back and Close Buttons */}
-                    <button 
-                      onClick={() => setSelectedDoc(null)}
-                      className="absolute top-4 left-4 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white hover:bg-white/10 transition-all cursor-pointer z-20"
-                    >
-                      <ArrowLeft className="w-3.5 h-3.5" /> Back
-                    </button>
-                    <button 
-                      onClick={() => setSelectedDoc(null)}
-                      className="absolute top-4 right-4 p-2 rounded-full bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 transition-all cursor-pointer z-20"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-
-                    {/* Header of Document */}
-                    <div className="relative border-b border-white/5 pb-6 mb-6 text-center">
-                      <div className="flex justify-center mb-3">
-                        <div className="logo-shield w-12 h-12 overflow-hidden rounded-2xl border border-blue-400/30 flex items-center justify-center shadow-lg shadow-blue-500/20 bg-slate-950">
-                          <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        </div>
-                      </div>
-                      <h3 className="text-base font-black tracking-widest text-white uppercase">T.U.T Money Lending Authority</h3>
-                      <p className="text-[9px] font-black tracking-[0.25em] text-blue-400 uppercase mt-1">Quantum Verified Secure Ledger</p>
-                      <div className="absolute top-0 left-0 bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[8px] font-bold tracking-widest uppercase px-2 py-0.5 rounded-md">
-                        OFFICIAL FINANCIAL STATEMENT
-                      </div>
-                    </div>
-
-                    {/* Paper Container (Simulating official white certificate / document) */}
-                    <div className="relative bg-white text-slate-950 rounded-2xl p-6 shadow-xl border border-blue-100 overflow-hidden min-h-[380px]">
-                      {/* Watermark */}
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] rotate-[-25deg] select-none z-0 text-center">
-                        <span className="text-3xl font-black text-blue-900 tracking-widest leading-none">
-                          T.U.T. MONEY LENDING AUTHORITY
-                        </span>
-                      </div>
-
-                      {/* Secure Chip and Signature Overlay */}
-                      <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
-                        <span className="text-[8px] font-black uppercase tracking-widest bg-emerald-500 text-white px-2 py-0.5 rounded shadow">
-                          Verified
-                        </span>
-                        <span className="text-[8px] font-black uppercase tracking-widest bg-blue-900 text-white px-2 py-0.5 rounded shadow">
-                          AES-256
-                        </span>
-                      </div>
-
-                      <div className="relative z-10 space-y-6">
-                        {selectedDoc.type === 'certificate' ? (
-                          /* MEMBERSHIP CERTIFICATE VIEW */
-                          <div className="text-center space-y-5 py-4">
-                            <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-500/10 border border-amber-500 text-amber-600 font-bold mb-1">
-                              👑
-                            </div>
-                            <div>
-                              <h4 className="text-[10px] font-black text-blue-900/40 uppercase tracking-[0.2em] mb-1">Official Document</h4>
-                              <p className="text-lg font-black tracking-tight text-blue-950">CERTIFICATE OF MEMBERSHIP</p>
-                            </div>
-                            
-                            <p className="text-xs text-slate-600 max-w-sm mx-auto leading-relaxed">
-                              This certifies that <strong className="text-blue-950 font-black">{profile.name}</strong> is registered as a fully authenticated member of the <span className="font-bold">T.U.T Money Lending Authority</span> under ID <strong className="font-mono">{profile.memberId || 'Pending'}</strong>.
-                            </p>
-
-                            <div className="grid grid-cols-2 gap-4 text-left border-y border-blue-50 py-4 font-sans text-xs">
-                              <div>
-                                <span className="text-[9px] font-bold text-slate-400 uppercase block">Registry Date</span>
-                                <span className="font-bold text-slate-800">
-                                  {profile.createdAt?.toDate ? format(profile.createdAt.toDate(), 'dd MMMM yyyy') : 'Recently Registered'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[9px] font-bold text-slate-400 uppercase block">Security Status</span>
-                                <span className="font-bold text-emerald-600 flex items-center gap-1">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Verified Node
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          /* STANDARD TRANSACTION DOCUMENT STATEMENT */
-                          <div className="space-y-4">
-                            <div className="border-b border-blue-50 pb-3">
-                              <h4 className="text-[10px] font-black text-blue-900/40 uppercase tracking-[0.2em] mb-1">
-                                {selectedDoc.type === 'deposit' ? 'OFFICIAL DEPOSIT CONFIRMATION' :
-                                 selectedDoc.type === 'loan' ? 'OFFICIAL LOAN AGREEMENT' :
-                                 selectedDoc.type === 'refund' ? 'REFUND SETTLEMENT VOUCHER' :
-                                 selectedDoc.type === 'pay_due' ? 'DUE PAYMENT RECEIPT' :
-                                 'MEMBERSHIP SUBSCRIPTION RECORD'}
-                              </h4>
-                              <div className="flex justify-between items-center">
-                                <span className="text-sm font-mono font-bold text-blue-950 tracking-tighter">
-                                  {selectedDoc.memoId 
-                                    ? (selectedDoc.memoId.startsWith('TUT-MEMO-') ? selectedDoc.memoId : `TUT-MEMO-${selectedDoc.memoId}`)
-                                    : `TUT-MEMO-${selectedDoc.id.substring(0, 8).toUpperCase()}`}
-                                </span>
-                                <span className="text-[9px] font-mono text-slate-400">
-                                  Ref: TUT-2026-LN
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Main details list */}
-                            <div className="space-y-3 font-sans text-xs">
-                              <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                <span className="font-bold text-slate-400 uppercase text-[9px]">Account Holder</span>
-                                <span className="font-bold text-slate-800">{profile.name}</span>
-                              </div>
-                              <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                <span className="font-bold text-slate-400 uppercase text-[9px]">Member ID</span>
-                                <span className="font-mono font-bold text-slate-800">{profile.memberId || 'N/A'}</span>
-                              </div>
-                              <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                <span className="font-bold text-slate-400 uppercase text-[9px]">Issue Date</span>
-                                <span className="font-bold text-slate-800">
-                                  {selectedDoc.timestamp?.toDate ? format(selectedDoc.timestamp.toDate(), 'dd MMMM yyyy, HH:mm') : 'Confirmed'}
-                                </span>
-                              </div>
-                              <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                <span className="font-bold text-slate-400 uppercase text-[9px]">Payment Method</span>
-                                <span className="font-bold text-slate-800">
-                                  {selectedDoc.isTransfer ? 'T.U.T Internal Transfer' : selectedDoc.method}
-                                </span>
-                              </div>
-                              {selectedDoc.isTransfer && selectedDoc.transferType === 'out' && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Recipient</span>
-                                  <span className="font-bold text-rose-600 truncate max-w-[150px]">
-                                    {selectedDoc.transferRecipientName || 'User'} ({selectedDoc.transferRecipientId || 'N/A'})
-                                  </span>
-                                </div>
-                              )}
-                              {selectedDoc.isTransfer && selectedDoc.transferType === 'in' && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Sender</span>
-                                  <span className="font-bold text-emerald-600 truncate max-w-[150px]">
-                                    {selectedDoc.transferSenderName || 'User'} ({selectedDoc.transferSenderId || 'N/A'})
-                                  </span>
-                                </div>
-                              )}
-                              {(selectedDoc.transactionId || selectedDoc.id) && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Transaction ID</span>
-                                  <span className="font-mono font-bold text-blue-900 break-all max-w-[170px] text-right">
-                                    {selectedDoc.transactionId || selectedDoc.id}
-                                  </span>
-                                </div>
-                              )}
-                              {selectedDoc.reference && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Reference</span>
-                                  <span className="font-bold text-slate-800 break-all max-w-[150px] text-right">
-                                    {selectedDoc.reference}
-                                  </span>
-                                </div>
-                              )}
-                              {(selectedDoc.loanReason || selectedDoc.purpose) && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Reason for Loan</span>
-                                  <span className="font-medium text-slate-800 break-words max-w-[180px] text-right italic">
-                                    "{selectedDoc.loanReason || selectedDoc.purpose}"
-                                  </span>
-                                </div>
-                              )}
-                              {selectedDoc.adminNotes && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Official Memo</span>
-                                  <span className="font-bold text-slate-800 break-all max-w-[150px] text-right">
-                                    {selectedDoc.adminNotes}
-                                  </span>
-                                </div>
-                              )}
-                              {selectedDoc.type === 'loan' && selectedDoc.estimatedRepaymentDate && (
-                                <div className="flex justify-between border-b border-slate-50 pb-1.5">
-                                  <span className="font-bold text-slate-400 uppercase text-[9px]">Estimated Repayment Date</span>
-                                  <span className="font-bold text-amber-600">
-                                    {format(new Date(selectedDoc.estimatedRepaymentDate), 'dd MMMM yyyy')}
-                                  </span>
-                                </div>
-                              )}
-                              <div className="flex justify-between items-center pt-2 pb-1">
-                                <span className="font-bold text-slate-400 uppercase text-[10px]">Total Certified Amount</span>
-                                <span className="text-2xl font-black text-blue-950 tracking-tighter">
-                                  ৳ {selectedDoc.amount.toLocaleString()}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Document Footer: QR Code, Stamp and Signatures */}
-                        <div className="pt-4 border-t border-dashed border-blue-100 flex justify-between items-end gap-4">
-                          {/* Simulated QR Code using our vector component */}
-                          <div className="p-2 bg-slate-950 rounded-xl border border-blue-50">
-                            <CustomQRCode value={`TUT-VERIFY-${selectedDoc.id}`} />
-                          </div>
-
-                          {/* Signature Block */}
-                          <div className="text-right space-y-1">
-                            <span className="text-[8px] font-bold text-slate-400 uppercase block">Chairman Signature</span>
-                            <div className="font-serif text-xs text-blue-900 tracking-wide font-medium italic select-none">
-                              Tahsin Ullah Tusher
-                            </div>
-                            <div className="w-24 h-0.5 bg-blue-900/10 mx-auto ml-auto" />
-                            <span className="text-[7px] font-black text-blue-900/30 uppercase tracking-widest block">T.U.T Authority Chairman</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Action button section */}
-                    <div className="mt-6 flex flex-col sm:flex-row gap-3">
-                      <button 
-                        type="button"
-                        onClick={() => setSelectedDoc(null)}
-                        className="py-3 px-4 text-xs font-black uppercase tracking-wider rounded-2xl bg-slate-800 hover:bg-slate-700 border border-white/10 text-slate-200 flex items-center justify-center gap-2 transition-all cursor-pointer"
-                      >
-                        <ArrowLeft className="w-4 h-4" /> Back
-                      </button>
-                      <button 
-                        onClick={() => {
-                          // Copy digital hash / signature
-                          navigator.clipboard.writeText(`TUT-${selectedDoc.id}-${selectedDoc.amount}`);
-                          alert("Digital hash signature copied to clipboard for ledgers verification!");
-                        }}
-                        className="flex-1 py-3 px-4 text-xs font-black uppercase tracking-wider rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 text-white flex items-center justify-center gap-2 transition-all cursor-pointer"
-                      >
-                        <Copy className="w-4 h-4" /> Copy Hash
-                      </button>
-                      <button 
-                        onClick={() => {
-                          window.print();
-                        }}
-                        className="flex-1 py-3 px-4 text-xs font-black uppercase tracking-wider rounded-2xl bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg shadow-blue-900/40"
-                      >
-                        <Download className="w-4 h-4" /> Statement
-                      </button>
-                    </div>
-                  </motion.div>
-                </div>
-              )}
-            </AnimatePresence>
+            {/* Institutional Archival Voucher & Statement Viewer */}
+            <OfficialReceiptModal
+              receipt={
+                selectedDoc
+                  ? ({
+                      id: String(selectedDoc.id || selectedDoc.memoId || 'MEMO'),
+                      memoId: selectedDoc.memoId,
+                      type: selectedDoc.type || 'loan',
+                      amount: Number(selectedDoc.amount ?? selectedDoc.originalAmount ?? selectedDoc.amountVal ?? 0),
+                      userName: selectedDoc.userName || profile.name,
+                      userId: selectedDoc.userId || profile.uid,
+                      memberId: selectedDoc.memberId || profile.memberId,
+                      method: selectedDoc.method,
+                      accountNumber: selectedDoc.accountNumber,
+                      transactionId: selectedDoc.transactionId,
+                      date: selectedDoc.date ?? selectedDoc.disbursedDateStr,
+                      timestamp: selectedDoc.timestamp || (selectedDoc.type === 'certificate' ? profile.createdAt : undefined),
+                      dueDate: selectedDoc.dueDate,
+                      estimatedRepaymentDate: selectedDoc.estimatedRepaymentDate ?? selectedDoc.dueDateStr,
+                      status:
+                        selectedDoc.status ||
+                        (selectedDoc.statusLabel === 'Settled' ? 'confirmed' : selectedDoc.statusLabel) ||
+                        'confirmed',
+                      decidedBy: selectedDoc.decidedBy,
+                      decidedAt: selectedDoc.decidedAt,
+                      adminNotes: selectedDoc.adminNotes,
+                      loanReason: selectedDoc.loanReason ?? selectedDoc.purpose,
+                      reference: selectedDoc.reference,
+                      mobileOperator: selectedDoc.mobileOperator,
+                      isTransfer: selectedDoc.isTransfer,
+                      transferType: selectedDoc.transferType,
+                      transferSenderName: selectedDoc.transferSenderName,
+                      transferRecipientName: selectedDoc.transferRecipientName,
+                      subscriptionTier: selectedDoc.subscriptionTier || profile.subscriptionTier,
+                      subscriptionMonths: selectedDoc.subscriptionMonths
+                    } as OfficialReceiptData)
+                  : null
+              }
+              onClose={() => setSelectedDoc(null)}
+              onToast={addToast}
+            />
 
             {/* Comprehensive Vault Metric Details Modal Overlay */}
             <AnimatePresence>
@@ -3597,29 +3632,57 @@ export function MemberDashboard({
             }
           ];
 
-          // Merge active sponsorships from Firestore
-          const dynamicOffers = activeSponsorships
-            .filter(s => s.status === 'active')
-            .map(s => ({
-              id: `sponsor-${s.id}`,
-              name: s.companyName,
-              category: s.campaignType?.includes('Partner') ? 'Fintech' : s.campaignType?.includes('Collab') ? 'Shopping' : 'General',
-              color: '#3B82F6',
-              logoLetter: s.companyName.charAt(0).toUpperCase(),
-              discount: s.specialOffer ? 'EXCLUSIVE' : 'PARTNER',
-              title: s.companyName,
-              subtitle: s.campaignType,
-              desc: s.promotionText,
-              code: s.specialOffer || 'TUTVIP',
-              valid: s.endDate || 'Active',
-              saving: '৳300',
-              url: s.targetUrl,
-              videoUrl: s.videoUrl,
-              imageUrl: s.imageUrl,
-              logoUrl: s.logoUrl
-            }));
+          // Merge & target active sponsorships from Firestore Admin Ad Control Studio
+          const memberTierLower = (profile.subscriptionTier || 'standard').toLowerCase();
+          const hasMemberDebt = (profile.remainingDebt || 0) > 0;
+          const hasMemberDeposit = (profile.totalDeposit || 0) > 0;
 
-          const allOffers = [...partnerOffers, ...dynamicOffers];
+          const eligibleSponsorships = activeSponsorships
+            .filter(s => {
+              if (s.status !== 'active') return false;
+              if (s.maxImpressions && s.maxImpressions > 0 && (s.impressions || 0) >= s.maxImpressions) return false;
+              const audience = s.targetAudience || 'all';
+              if (audience === 'all') return true;
+              if (audience === 'active_borrowers') return hasMemberDebt;
+              if (audience === 'depositors') return hasMemberDeposit;
+              return audience === memberTierLower;
+            })
+            .sort((a, b) => {
+              if (Boolean(b.isPinned) !== Boolean(a.isPinned)) return b.isPinned ? 1 : -1;
+              return (b.priority || 0) - (a.priority || 0);
+            });
+
+          const heroCampaign = eligibleSponsorships.find(s => (s.placement || 'all') === 'deals_hero')
+            || eligibleSponsorships.find(s => s.isPinned && (s.placement || 'all') === 'all');
+
+          const dynamicOffers = eligibleSponsorships.map(s => ({
+            id: `sponsor-${s.id}`,
+            name: s.companyName,
+            category: s.category || (s.campaignType?.includes('Partner') ? 'Fintech' : s.campaignType?.includes('Collab') ? 'Shopping' : 'General'),
+            color: s.accentColor || '#3B82F6',
+            logoLetter: s.companyName.charAt(0).toUpperCase(),
+            discount: s.discountBadge || (s.specialOffer ? 'EXCLUSIVE' : 'PARTNER'),
+            title: s.companyName,
+            subtitle: s.campaignType,
+            desc: s.promotionText,
+            code: s.specialOffer || 'TUTVIP',
+            ctaLabel: s.ctaLabel || 'Use Now',
+            placement: s.placement || 'all',
+            isPinned: Boolean(s.isPinned),
+            valid: s.endDate || 'Active',
+            saving: s.dealValue ? `৳${Math.min(1000, Math.round(s.dealValue * 0.05))}` : '৳300',
+            url: s.targetUrl,
+            videoUrl: s.videoUrl,
+            imageUrl: s.imageUrl,
+            logoUrl: s.logoUrl
+          }));
+
+          const featuredOffers = [
+            ...dynamicOffers.filter(o => o.placement === 'all' || o.placement === 'featured_carousel'),
+            ...partnerOffers
+          ];
+          const gridDynamicOffers = dynamicOffers.filter(o => o.placement === 'all' || o.placement === 'partner_grid');
+          const allOffers = [...gridDynamicOffers, ...partnerOffers];
           const filteredOffers = dealCategory === 'All' 
             ? allOffers 
             : allOffers.filter(o => o.category.toLowerCase() === dealCategory.toLowerCase());
@@ -3689,94 +3752,110 @@ export function MemberDashboard({
           };
 
           return (
-            <div className="space-y-3.5 animate-fade-in text-left pb-28 max-w-4xl mx-auto select-none">
+            <div className="space-y-3.5 text-left pb-20 md:pb-8 max-w-4xl mx-auto select-none">
               
-              {/* TOP COMPACT NAV BAR - Just small back to dashboard button as requested */}
-              <div className="flex items-center justify-between pt-0.5 pb-1 border-b border-white/5">
-                <button
-                  type="button"
-                  onClick={() => setMemberTab('dashboard')}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white transition-all cursor-pointer active:scale-95 shadow-sm"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Back to Dashboard</span>
-                </button>
+              {/* Clean Editorial Header */}
+              <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setMemberTab('dashboard')}
+                    className="md:hidden inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <div>
+                    <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">Partner Offers</h1>
+                    <p className="text-xs text-slate-400 leading-tight">{allOffers.length} active member privileges</p>
+                  </div>
+                </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 text-xs text-slate-400 font-medium">
                   <span className={cn(
-                    "inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full border shadow-sm",
+                    "font-semibold",
                     profile.subscriptionTier === 'gold'
-                      ? "text-amber-300 bg-amber-500/15 border-amber-400/30"
+                      ? "text-[#EAD39C]"
                       : profile.subscriptionTier === 'silver'
-                      ? "text-slate-200 bg-slate-300/15 border-slate-300/30"
-                      : "text-amber-500 bg-amber-500/10 border-amber-500/20"
+                      ? "text-slate-200"
+                      : "text-[#E6BFA0]"
                   )}>
-                    <span>{profile.subscriptionTier === 'gold' ? '👑 Gold VIP Perks' : profile.subscriptionTier === 'silver' ? '🥈 Silver Executive' : '🥉 Bronze Member'}</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-400 bg-slate-900/70 border border-slate-800 px-2.5 py-1 rounded-full shadow-sm">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    <span>{allOffers.length} Partner Deals Live</span>
+                    {profile.subscriptionTier === 'gold' ? 'Gold Perks' : profile.subscriptionTier === 'silver' ? 'Silver Perks' : 'Bronze Member'}
                   </span>
                 </div>
               </div>
 
-              {/* 1. HERO SPONSORED PROMO BANNER (With Back Button & Countdown) */}
-              <div className="relative rounded-2xl overflow-hidden border border-slate-800/80 bg-gradient-to-r from-slate-900 via-slate-900/95 to-slate-950 p-3.5 sm:p-4 shadow-xl shadow-black/40">
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-amber-500/10 via-transparent to-transparent pointer-events-none" />
+              {/* 1. HERO SPONSORED PROMO BANNER (Dynamic Admin Ad Studio Hero or Default Showcase) */}
+              <div
+                className="relative rounded-2xl overflow-hidden border border-white/[0.08] bg-[#0B1222] p-4 shadow-lg"
+                style={heroCampaign?.accentColor ? { borderColor: `${heroCampaign.accentColor}40` } : undefined}
+              >
+                <div
+                  className="absolute inset-0 pointer-events-none opacity-25"
+                  style={{
+                    background: `radial-gradient(ellipse at top left, ${heroCampaign?.accentColor || '#DFC07C'}33, transparent 70%)`
+                  }}
+                />
                 <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex-1 min-w-0 space-y-1.5">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {/* Back button on Card */}
-                      <button
-                        type="button"
-                        onClick={() => setMemberTab('dashboard')}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-semibold text-slate-300 hover:text-white transition-all cursor-pointer"
-                        title="Back to Dashboard"
-                      >
-                        <ArrowLeft className="w-2.5 h-2.5" />
-                        <span>Back</span>
-                      </button>
-
-                      <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-800 border border-white/10 text-slate-300">
-                        Sponsored
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                        {heroCampaign ? heroCampaign.campaignType : 'Sponsored'}
                       </span>
-                      <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 shadow-sm font-mono font-bold">
-                        LIVE
+                      <span aria-hidden="true" className="text-slate-600">·</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#EAD39C]">
+                        {heroCampaign?.discountBadge || 'Live Campaign'}
                       </span>
-                      <span className="text-[10px] font-mono text-slate-200 flex items-center gap-1 bg-slate-950/70 border border-white/10 px-2 py-0.5 rounded-md">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
-                        <span>{String(dealCountdown.h).padStart(2, '0')}:{String(dealCountdown.m).padStart(2, '0')}:{String(dealCountdown.s).padStart(2, '0')}</span>
-                      </span>
+                      <DealCountdownBadge />
                     </div>
 
                     <div>
                       <div className="text-xs sm:text-sm font-black text-amber-300 tracking-tight flex items-center gap-1.5">
-                        <span>T.U.T. Authority × bKash Exclusive</span>
+                        <span>{heroCampaign ? `T.U.T. Authority × ${heroCampaign.companyName}` : 'T.U.T. Authority × bKash Exclusive'}</span>
                         <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
                       </div>
-                      <div className="text-sm sm:text-base font-extrabold text-white tracking-tight leading-tight">Zero Interest Week</div>
+                      <div className="text-sm sm:text-base font-extrabold text-white tracking-tight leading-tight">
+                        {heroCampaign ? (heroCampaign.specialOffer ? `Promo: ${heroCampaign.specialOffer}` : `${heroCampaign.companyName} Priority Offer`) : 'Zero Interest Week'}
+                      </div>
                       <div className="text-[10px] sm:text-[11px] text-slate-300/80 mt-0.5 font-medium truncate">
-                        0% fee on ৳5,000+ • Vault 2x reserve return • Verified charter perk
+                        {heroCampaign ? heroCampaign.promotionText : '0% fee on ৳5,000+ • Vault 2x reserve return • Verified charter perk'}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
+                    {(heroCampaign?.videoUrl || !heroCampaign) && (
+                      <button
+                        type="button"
+                        onClick={() => setActivePromoVideoModal({
+                          title: heroCampaign ? `${heroCampaign.companyName} Partner Showcase` : 'bKash Zero Interest Week Launch Ceremony',
+                          brand: heroCampaign ? heroCampaign.companyName : 'bKash Official',
+                          url: heroCampaign?.videoUrl || 'https://www.youtube.com'
+                        })}
+                        className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-white/10 text-white flex items-center justify-center shadow-md transition-all cursor-pointer"
+                        title="Play Promotional Video"
+                      >
+                        <Play className="w-4 h-4 fill-white ml-0.5" />
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => setActivePromoVideoModal({
-                        title: 'bKash Zero Interest Week Launch Ceremony',
-                        brand: 'bKash Official',
-                        url: 'https://www.youtube.com'
-                      })}
-                      className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-white/10 text-white flex items-center justify-center shadow-md transition-all cursor-pointer"
-                      title="Play Promotional Video"
-                    >
-                      <Play className="w-4 h-4 fill-white ml-0.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedDealMemo({
+                      onClick={() => setSelectedDealMemo(heroCampaign ? {
+                        id: `sponsor-${heroCampaign.id}`,
+                        name: heroCampaign.companyName,
+                        category: heroCampaign.category || 'Fintech',
+                        color: heroCampaign.accentColor || '#D97706',
+                        logoLetter: heroCampaign.companyName.charAt(0).toUpperCase(),
+                        discount: heroCampaign.discountBadge || 'EXCLUSIVE',
+                        title: heroCampaign.companyName,
+                        subtitle: heroCampaign.campaignType,
+                        desc: heroCampaign.promotionText,
+                        code: heroCampaign.specialOffer || 'TUTVIP',
+                        valid: heroCampaign.endDate || 'Active',
+                        saving: '৳500',
+                        url: heroCampaign.targetUrl,
+                        imageUrl: heroCampaign.imageUrl,
+                        logoUrl: heroCampaign.logoUrl
+                      } : {
                         id: "promo-bkash",
                         name: "bKash Official",
                         category: "Fintech",
@@ -3798,10 +3877,20 @@ export function MemberDashboard({
                     </button>
                     <button
                       type="button"
-                      onClick={() => copyCodeWithToast('BKASHZERO', 'bKash Zero Interest Week')}
+                      onClick={() => {
+                        if (heroCampaign) {
+                          handleAdClick(heroCampaign.id);
+                          if (heroCampaign.targetUrl) {
+                            try { window.open(heroCampaign.targetUrl, '_blank', 'noopener,noreferrer'); } catch {}
+                          }
+                          copyCodeWithToast(heroCampaign.specialOffer || 'TUTVIP', heroCampaign.companyName);
+                        } else {
+                          copyCodeWithToast('BKASHZERO', 'bKash Zero Interest Week');
+                        }
+                      }}
                       className="px-3.5 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-black tracking-wider uppercase shadow-md transition-all active:scale-95 cursor-pointer"
                     >
-                      Claim
+                      {heroCampaign?.ctaLabel || 'Claim'}
                     </button>
                   </div>
                 </div>
@@ -3948,7 +4037,7 @@ export function MemberDashboard({
                   ref={featuredDropsScrollRef}
                   className="flex gap-3 overflow-x-auto hide-scrollbar pb-1 snap-x snap-mandatory"
                 >
-                  {allOffers.map((offer) => (
+                  {featuredOffers.map((offer) => (
                     <div
                       key={`feat-${offer.id}`}
                       className="snap-start shrink-0 w-[270px] sm:w-[290px] h-[155px] rounded-2xl border border-slate-800/80 relative overflow-hidden shadow-lg shadow-black/40 group flex flex-col justify-between p-3 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950"
@@ -4048,28 +4137,15 @@ export function MemberDashboard({
                     Daraz + Foodpanda bundle extra 10% - next 2h only
                   </div>
                 </div>
-                <div className="flex flex-col items-end gap-1 shrink-0">
-                  <span className="px-2 py-0.5 rounded-md bg-slate-950/80 border border-white/10 font-mono text-[10px] font-bold text-white">
-                    {String(dealCountdown.h).padStart(2, '0')}:{String(dealCountdown.m).padStart(2, '0')}:{String(dealCountdown.s).padStart(2, '0')}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    {/* Back Button on Card */}
-                    <button
-                      type="button"
-                      onClick={() => setMemberTab('dashboard')}
-                      className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-white/10 text-[9.5px] font-semibold flex items-center gap-1 cursor-pointer"
-                      title="Back to Dashboard"
-                    >
-                      <ArrowLeft className="w-2.5 h-2.5" /> Back
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => copyCodeWithToast('FLASH10', 'Flash Sale Bundle')}
-                      className="text-[10px] font-black text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
-                    >
-                      Grab →
-                    </button>
-                  </div>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <DealCountdownBadge />
+                  <button
+                    type="button"
+                    onClick={() => copyCodeWithToast('FLASH10', 'Flash Sale Bundle')}
+                    className="text-xs font-bold text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
+                  >
+                    Grab →
+                  </button>
                 </div>
               </div>
 
@@ -4249,13 +4325,17 @@ export function MemberDashboard({
                           onClick={() => {
                             if (offer.url) {
                               handleAdClick(offer.id);
-                              window.open(offer.url, '_blank');
+                              try {
+                                window.open(offer.url, '_blank', 'noopener,noreferrer');
+                              } catch (e) {
+                                console.warn('Could not open external link:', e);
+                              }
                             }
                             copyCodeWithToast(offer.code, offer.name);
                           }}
                           className="flex-1 py-2 rounded-xl bg-white hover:bg-slate-200 text-slate-950 text-xs font-black uppercase tracking-wider transition-all shadow-md active:scale-98 cursor-pointer flex items-center justify-center gap-1.5"
                         >
-                          <span>Use Now</span>
+                          <span>{(offer as any).ctaLabel || 'Use Now'}</span>
                           <ExternalLink className="w-3 h-3" />
                         </button>
                       </div>
@@ -4497,7 +4577,11 @@ export function MemberDashboard({
                         onClick={() => {
                           if (selectedDealMemo.url) {
                             handleAdClick(selectedDealMemo.id);
-                            window.open(selectedDealMemo.url, '_blank');
+                            try {
+                              window.open(selectedDealMemo.url, '_blank', 'noopener,noreferrer');
+                            } catch (e) {
+                              console.warn('Could not open external link:', e);
+                            }
                           }
                           copyCodeWithToast(selectedDealMemo.code, selectedDealMemo.name);
                         }}
@@ -4791,14 +4875,8 @@ export function MemberDashboard({
                             />
 
                             <div className="flex items-start gap-3.5 min-w-0">
-                              {/* Provider Badge Icon */}
-                              <div 
-                                className="w-10 h-10 rounded-xl flex flex-col items-center justify-center text-white font-black text-[11px] shrink-0 shadow-md"
-                                style={{ backgroundColor: colorClass }}
-                              >
-                                <span>{isbKash ? 'bK' : 'Ng'}</span>
-                                <span className="text-[6.5px] tracking-tighter opacity-80 uppercase leading-none">wallet</span>
-                              </div>
+                              {/* Provider Brand Logo */}
+                              {isbKash ? <BkashLogo size="md" /> : <NagadLogo size="md" />}
 
                               <div className="min-w-0 space-y-1.5 text-left">
                                 <div className="flex flex-wrap items-center gap-1.5">
@@ -4915,13 +4993,35 @@ export function MemberDashboard({
                   <span className="text-[8px] font-mono text-amber-500 font-extrabold uppercase tracking-widest">COMING SOON</span>
                 </div>
 
+                {/* Active Payable T.U.T. Card Security Shortcut */}
+                <div className="p-4 bg-emerald-500/10 border border-emerald-500/25 rounded-2xl flex items-center justify-between gap-3 text-left">
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <h4 className="text-[11px] font-black text-emerald-300 uppercase tracking-wider leading-none">
+                        T.U.T. Member Card & Wallet Pay Active
+                      </h4>
+                      <p className="text-[10px] text-slate-300 font-semibold leading-normal">
+                        Your 16-digit T.U.T. Card is live for paying partner apps using your Card Number & 6-digit Secret Code or direct Wallet balance.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowCardSecurityModal(true)}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 font-black text-[10px] uppercase tracking-wider shrink-0 cursor-pointer transition-colors"
+                  >
+                    Manage Card
+                  </button>
+                </div>
+
                 {/* Professional Beta restriction notification banner */}
                 <div className="p-4 bg-amber-500/5 border border-amber-500/15 rounded-2xl flex gap-3 text-left">
                   <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                   <div className="space-y-1">
-                    <h4 className="text-[10.5px] font-black text-amber-400 uppercase tracking-wider leading-none">Security Beta Restriction</h4>
+                    <h4 className="text-[10.5px] font-black text-amber-400 uppercase tracking-wider leading-none">External Bank Cards Beta</h4>
                     <p className="text-[10px] text-slate-300 font-bold leading-normal">
-                      Card services are currently in Beta and are not yet available for financial transactions. Added cards act as securewaitlist registration for tier authorization.
+                      Third-party Visa/Mastercard linking is in waitlist Beta. Use your T.U.T. Card above for instant verified transactions.
                     </p>
                   </div>
                 </div>
@@ -5137,27 +5237,27 @@ export function MemberDashboard({
                             type="button"
                             onClick={() => setAddWalletProvider('bKash')}
                             className={cn(
-                              "py-2.5 rounded-xl border font-black text-[10.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer",
+                              "py-2.5 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer",
                               addWalletProvider === 'bKash' 
-                                ? "bg-[#e2136e]/15 border-[#e2136e]/40 text-[#e2136e]" 
-                                : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10"
+                                ? "bg-[#e2136e]/15 border-[#e2136e]/50 text-white" 
+                                : "bg-slate-950 border-white/10 text-slate-400 hover:border-white/20"
                             )}
                           >
-                            <span className="w-2 h-2 rounded-full bg-[#e2136e]" />
-                            bKash
+                            <BkashLogo size="xs" />
+                            <span>bKash</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => setAddWalletProvider('Nagad')}
                             className={cn(
-                              "py-2.5 rounded-xl border font-black text-[10.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all cursor-pointer",
+                              "py-2.5 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer",
                               addWalletProvider === 'Nagad' 
-                                ? "bg-[#f64a1e]/15 border-[#f64a1e]/40 text-[#f64a1e]" 
-                                : "bg-slate-950 border-white/5 text-slate-400 hover:border-white/10"
+                                ? "bg-[#f64a1e]/15 border-[#f64a1e]/50 text-white" 
+                                : "bg-slate-950 border-white/10 text-slate-400 hover:border-white/20"
                             )}
                           >
-                            <span className="w-2 h-2 rounded-full bg-[#f64a1e]" />
-                            Nagad
+                            <NagadLogo size="xs" />
+                            <span>Nagad</span>
                           </button>
                         </div>
                       </div>
@@ -5416,8 +5516,8 @@ export function MemberDashboard({
           const usagePercent = limit > 0 ? Math.min(100, Math.round((remainingDebt / limit) * 100)) : 0;
           const joinedDate = profile.createdAt?.toDate ? format(profile.createdAt.toDate(), 'dd MMM yyyy') : '21 Sep 2026';
           
-          const tierDisplayName = profile.subscriptionTier === 'gold' ? 'Gold Sovereign' : profile.subscriptionTier === 'silver' ? 'Silver Executive' : profile.subscriptionTier === 'bronze' ? 'Bronze Premier' : 'Standard Member';
-          const tierColor = profile.subscriptionTier === 'gold' ? '#F59E0B' : profile.subscriptionTier === 'silver' ? '#94A3B8' : profile.subscriptionTier === 'bronze' ? '#D97706' : '#64748B';
+          const tierDisplayName = profile.subscriptionTier === 'gold' ? 'Gold Sovereign' : profile.subscriptionTier === 'silver' ? 'Silver Executive' : profile.subscriptionTier === 'bronze' ? 'Bronze Reserve' : 'Standard Member';
+          const tierColor = profile.subscriptionTier === 'gold' ? '#DFC07C' : profile.subscriptionTier === 'silver' ? '#CBD5E1' : profile.subscriptionTier === 'bronze' ? '#D39D73' : '#64748B';
           const tierEmoji = profile.subscriptionTier === 'gold' ? '🥇' : profile.subscriptionTier === 'silver' ? '🥈' : profile.subscriptionTier === 'bronze' ? '🥉' : '🛡️';
 
           const fields = [profile.name, profile.nid, profile.address, profile.occupation, profile.phone, profile.email, profile.photoUrl, profile.fatherName, profile.motherName, profile.dob, profile.bloodGroup, profile.emergencyContact, profile.nomineeName, profile.nomineeRelation, profile.permanentAddress, profile.referenceContact];
@@ -5426,41 +5526,31 @@ export function MemberDashboard({
           const healthScore = remainingDebt > 0 ? Math.max(60, 100 - Math.floor((remainingDebt / limit) * 40)) : 100;
 
           return (
-            <div className="space-y-3.5 text-left animate-fade-in select-none pb-24 max-w-md mx-auto">
+            <div className="space-y-4 text-left select-none pb-20 md:pb-8 max-w-md lg:max-w-lg mx-auto">
               
-              {/* TOPBAR */}
-              <div className="flex items-center justify-between pb-1 border-b border-white/5">
-                <div className="flex items-center gap-2">
+              {/* Clean Profile Header */}
+              <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+                <div className="flex items-center gap-2.5">
                   <button
+                    type="button"
                     onClick={() => setMemberTab('dashboard')}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-slate-900 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer shadow-sm"
+                    className="md:hidden inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer"
                   >
-                    <ArrowLeft className="w-3.5 h-3.5" /> Back
+                    <ArrowLeft className="w-3.5 h-3.5" />
                   </button>
                   <div>
-                    <h1 className="text-sm font-black text-white tracking-tight leading-none">T.U.T.</h1>
-                    <p className="text-[8px] font-bold tracking-[0.14em] text-slate-400 uppercase mt-0.5">Money Lending Authority</p>
+                    <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">Member Profile</h1>
+                    <p className="text-xs text-slate-400 leading-tight">Identity, security, and linked wallets</p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5">
-                  <a
-                    href="https://wa.me/8801713710607"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-1.5 rounded-xl bg-slate-900 border border-white/10 text-emerald-400 hover:bg-slate-800 transition-all cursor-pointer"
-                    title="Live Support"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                  </a>
-                  <button
-                    onClick={() => setMemberTab('dashboard')}
-                    className="p-1.5 rounded-xl bg-slate-900 border border-white/10 text-slate-400 hover:text-white transition-all cursor-pointer"
-                    title="Home"
-                  >
-                    <Home className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowProfileModal(true)}
+                  className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-white/10 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
+                >
+                  Edit Profile
+                </button>
               </div>
 
               {/* HERO CARD */}
@@ -5498,7 +5588,7 @@ export function MemberDashboard({
                         onClick={() => {
                           if (profile.memberId) {
                             navigator.clipboard.writeText(profile.memberId);
-                            alert('Member ID copied!');
+                            if (addToast) addToast('Copied', `Member ID ${profile.memberId} copied to clipboard!`, 'success');
                           }
                         }}
                         className="inline-flex items-center gap-0.5 text-[8.5px] font-mono text-slate-400 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded-md hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
@@ -5595,16 +5685,18 @@ export function MemberDashboard({
                     <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">QR<br />Verify</span>
                   </button>
 
-                  {/* Action 3: Admin Entrance */}
-                  <button
-                    onClick={() => setShowAdminLogin(true)}
-                    className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-amber-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
-                  >
-                    <div className="w-9 h-9 rounded-full bg-amber-600/15 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
-                      <Cpu className="w-3.5 h-3.5" />
-                    </div>
-                    <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Admin<br />Entrance</span>
-                  </button>
+                  {/* Action 3: Admin Entrance (Visible ONLY for authorized Admin role) */}
+                  {(profile?.role === 'admin' || profile?.email?.toLowerCase() === 'tahsinullahtusher999@gmail.com') && (
+                    <button
+                      onClick={() => setShowAdminLogin(true)}
+                      className="flex flex-col items-center justify-center p-2 rounded-xl bg-slate-900/60 border border-white/5 hover:border-amber-500/30 hover:bg-slate-800/60 transition-all cursor-pointer group active:scale-95 text-center"
+                    >
+                      <div className="w-9 h-9 rounded-full bg-amber-600/15 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:scale-105 transition-transform mb-1 shadow-sm">
+                        <Cpu className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="text-[8.5px] font-bold text-slate-300 group-hover:text-white leading-tight">Admin<br />Entrance</span>
+                    </button>
+                  )}
 
                   {/* Action 4: Download Card */}
                   <button
@@ -5945,9 +6037,7 @@ export function MemberDashboard({
                         return (
                           <div key={w.id} className="flex items-center justify-between py-1 border-b border-white/5">
                             <div className="flex items-center gap-2 min-w-0">
-                              <div className="w-6 h-6 rounded-md flex items-center justify-center text-white font-black text-[9px] shrink-0" style={{ backgroundColor: colorClass }}>
-                                {isbKash ? 'bK' : 'Ng'}
-                              </div>
+                              {isbKash ? <BkashLogo size="xs" /> : <NagadLogo size="xs" />}
                               <div className="min-w-0">
                                 <div className="font-bold text-white truncate text-[10.5px]">
                                   {w.provider} Wallet Node {w.isDefault && <span className="text-amber-400">★</span>}
@@ -6178,14 +6268,15 @@ export function MemberDashboard({
                         onSubmit={(e) => {
                           e.preventDefault();
                           if (newPin.length !== 4 || isNaN(Number(newPin))) {
-                            alert('PIN must be exactly 4 numeric digits.');
+                            if (addToast) addToast('PIN Format Error', 'PIN must be exactly 4 numeric digits.', 'warning');
                             return;
                           }
                           if (newPin !== confirmNewPin) {
-                            alert('PINs do not match!');
+                            if (addToast) addToast('PIN Mismatch', 'PINs do not match! Please re-enter identical codes.', 'danger');
                             return;
                           }
                           setPinChangeSuccess(true);
+                          if (addToast) addToast('PIN Updated', 'Your security authorization PIN has been successfully rotated.', 'success');
                         }}
                         className="space-y-4"
                       >
@@ -6377,7 +6468,9 @@ export function MemberDashboard({
                             </div>
                           </div>
                           <button
-                            onClick={() => alert('Nagad linking has been initiated! Our verification department will complete the handshake within 30 minutes.')}
+                            onClick={() => {
+                              if (addToast) addToast('Wallet Verification', 'Nagad linking has been initiated! Our verification department will complete the handshake within 30 minutes.', 'info');
+                            }}
                             className="text-[7.5px] font-black text-blue-400 bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 px-2 py-1 rounded leading-none cursor-pointer"
                           >
                             LINK WALLET
@@ -6394,7 +6487,9 @@ export function MemberDashboard({
                             </div>
                           </div>
                           <button
-                            onClick={() => alert('Credit card gateway is currently restricted to T.U.T Gold Elite Tier members. Standard tier must use local wallets.')}
+                            onClick={() => {
+                              if (addToast) addToast('Gateway Tier Notice', 'Credit card gateway is currently restricted to T.U.T Gold Elite Tier members. Standard tier must use local wallets.', 'warning');
+                            }}
                             className="text-[7.5px] font-black text-slate-400 bg-white/5 border border-white/5 hover:bg-white/10 px-2 py-1 rounded leading-none cursor-pointer"
                           >
                             RESTRICTED
@@ -6420,10 +6515,10 @@ export function MemberDashboard({
 
       </div>
 
-      {/* Premium Floating Bottom Navigation Dock - Native App Style */}
+      {/* Mobile Floating Bottom Navigation Dock — Desktop uses Top Navigation Bar */}
       <nav 
-        aria-label="User Dashboard Primary Navigation"
-        className="fixed bottom-0 inset-x-0 z-40 bg-slate-950/95 backdrop-blur-2xl border-t border-slate-800/80 py-2 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex justify-around max-w-md sm:max-w-lg md:max-w-xl mx-auto sm:rounded-t-3xl sm:border-x shadow-[0_-12px_40px_rgba(0,0,0,0.9)] select-none transition-all duration-300"
+        aria-label="User Dashboard Mobile Navigation"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-950/92 backdrop-blur-xl border-t border-white/[0.08] py-1.5 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex justify-around max-w-lg mx-auto sm:rounded-t-2xl sm:border-x shadow-[0_-10px_30px_rgba(0,0,0,0.8)] select-none"
       >
         {[
           { id: 'dashboard', label: 'Home', icon: Home },
@@ -6440,26 +6535,26 @@ export function MemberDashboard({
               type="button"
               onClick={() => navigateTab(item.id as any)}
               className={cn(
-                "flex flex-col items-center gap-1 py-1.5 px-3 transition-all duration-200 relative cursor-pointer text-center min-w-[58px] active:scale-95 tap-interactive rounded-2xl",
-                isSelected ? "text-blue-400 bg-blue-500/10 shadow-[inset_0_0_12px_rgba(59,130,246,0.15)]" : "text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]"
+                "flex flex-col items-center justify-center gap-1 min-h-[48px] px-3 transition-colors relative cursor-pointer text-center min-w-[60px] tap-interactive rounded-xl",
+                isSelected ? "text-blue-400 bg-blue-500/10" : "text-slate-400 hover:text-slate-200"
               )}
             >
               {isSelected && (
                 <motion.div 
                   layoutId="activeTabIndicator" 
-                  className="absolute bottom-0 inset-x-3 h-[2.5px] bg-gradient-to-r from-blue-400 to-indigo-500 rounded-full shadow-[0_-2px_10px_rgba(59,130,246,0.8)]" 
-                  transition={{ type: "spring", stiffness: 480, damping: 35 }}
+                  className="absolute bottom-0 inset-x-3 h-[2.5px] bg-blue-400 rounded-full" 
+                  transition={{ type: "spring", stiffness: 520, damping: 38 }}
                 />
               )}
               <div className="relative flex items-center justify-center">
-                <Icon className={cn("w-4.5 h-4.5 transition-transform duration-200", isSelected ? "text-blue-400 scale-110" : "text-current")} />
+                <Icon className={cn("w-4.5 h-4.5 transition-transform duration-150", isSelected ? "text-blue-400 scale-105" : "text-current")} />
                 {item.badge !== undefined && item.badge > 0 && (
-                  <span className="absolute -top-1.5 -right-2.5 bg-rose-600 text-white font-mono text-[8px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-slate-950 animate-pulse shadow-sm">
+                  <span className="absolute -top-1.5 -right-2.5 bg-amber-500 text-slate-950 font-mono text-[9px] font-bold min-w-[16px] h-[16px] px-1 rounded-full flex items-center justify-center border-2 border-slate-950 tabular-nums">
                     {item.badge}
                   </span>
                 )}
               </div>
-              <span className={cn("text-[9px] font-bold tracking-wider uppercase transition-colors", isSelected ? "text-blue-400 font-black" : "text-slate-400")}>
+              <span className={cn("text-[10px] font-semibold tracking-tight transition-colors", isSelected ? "text-blue-300" : "text-slate-400")}>
                 {item.label}
               </span>
             </button>
@@ -6706,11 +6801,19 @@ export function MemberDashboard({
                 <TierEmblem tier={lockedSheenTier} size={28} />
               </div>
               <div className="space-y-1">
-                <span className="text-[10px] font-black uppercase tracking-widest text-amber-400 font-mono">
+                <span
+                  className={`text-[10px] font-black uppercase tracking-widest font-mono ${
+                    lockedSheenTier === 'gold'
+                      ? 'text-[#EAD39C]'
+                      : lockedSheenTier === 'silver'
+                        ? 'text-slate-300'
+                        : 'text-[#E6BFA0]'
+                  }`}
+                >
                   Tier Upgrade Required
                 </span>
                 <h3 className="text-base font-black text-white uppercase">
-                  Unlock {lockedSheenTier === 'gold' ? 'Gold Sovereign' : lockedSheenTier === 'silver' ? 'Silver Executive' : 'Bronze Basic'} Sheen
+                  Unlock {lockedSheenTier === 'gold' ? 'Sovereign Gold' : lockedSheenTier === 'silver' ? 'Executive Silver' : 'Bronze Reserve'} Finish
                 </h3>
                 <p className="text-xs text-slate-300">
                   This card finish and its authorized credit limit of <strong className="text-emerald-400 font-mono">৳{lockedSheenTier === 'gold' ? '2,500' : lockedSheenTier === 'silver' ? '1,500' : '500'} BDT</strong> require an active {lockedSheenTier.toUpperCase()} membership plan.
@@ -6803,6 +6906,40 @@ export function MemberDashboard({
         transactions={transactions}
         onRequestAction={onRequestAction}
       />
+
+      {/* Payable T.U.T. Card Secret Code & Security Controls Modal */}
+      <TutCardSecurityModal
+        isOpen={showCardSecurityModal}
+        onClose={() => setShowCardSecurityModal(false)}
+        db={db}
+        profile={profile}
+        tutCard={tutCard}
+        onLaunchPaymentTerminal={() => {
+          setShowCardSecurityModal(false);
+          setShowPayAppModal(true);
+        }}
+        addToast={addToast}
+      />
+
+      {/* In-App Connected Merchant / Card & Wallet Checkout Terminal */}
+      {showPayAppModal && (
+        <TutPaymentCheckout
+          db={db}
+          user={auth.currentUser}
+          profile={profile}
+          isModal={true}
+          onClose={() => setShowPayAppModal(false)}
+          checkoutRequest={{
+            merchantName: 'Partner App',
+            orderId: `ORD-${Date.now().toString(36).toUpperCase()}`,
+            amount: 49,
+            reference: 'Direct T.U.T. Member Payment'
+          }}
+          onGoogleLogin={async () => {}}
+          sendWorkflowNotification={sendWorkflowNotification}
+          addToast={(title, body, type) => addToast?.(title, body, type || 'info')}
+        />
+      )}
 
     </div>
   );

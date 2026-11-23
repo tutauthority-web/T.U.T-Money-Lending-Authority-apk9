@@ -44,6 +44,7 @@ service cloud.firestore {
         (
           request.auth.uid == "qLF3AOrlPaX4Jv43zy2uOOKeq952" ||
           (request.auth.token.email != null && 
+           request.auth.token.email_verified == true &&
             (request.auth.token.email == "tahsinullahtusher999@gmail.com" || 
              request.auth.token.email.lower() == "tahsinullahtusher999@gmail.com" ||
              request.auth.token.email.lower() == "tahsinullahtusher@gmail.com" ||
@@ -86,7 +87,7 @@ service cloud.firestore {
       return (!('name' in data) || (data.name is string && data.name.size() < 100)) &&
              (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
              (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
-             (!('status' in data) || (data.status is string && data.status in ['pending', 'approved', 'rejected', 'active', 'suspended'])) &&
+             (!('status' in data) || (data.status is string && data.status in ['pending', 'approved', 'rejected', 'active', 'suspended', 'info_requested', 'verification_pending'])) &&
              (!('role' in data) || (data.role is string && data.role in ['admin', 'member', 'moderator', 'staff'])) &&
              (!('nid' in data) || (data.nid is string && data.nid.size() <= 50)) &&
              (!('address' in data) || (data.address is string && data.address.size() <= 500)) &&
@@ -165,7 +166,13 @@ service cloud.firestore {
              (!('receiptReserved' in data) || data.receiptReserved is bool) &&
              (!('dueDate' in data) || (data.dueDate is string || data.dueDate is timestamp)) &&
              (!('approvedAt' in data) || (data.approvedAt is timestamp || data.approvedAt is string || isNumeric(data.approvedAt))) &&
-             (!('allocationStatus' in data) || (data.allocationStatus is string));
+             (!('allocationStatus' in data) || (data.allocationStatus is string && data.allocationStatus.size() <= 50)) &&
+             (!('merchantId' in data) || (data.merchantId is string && data.merchantId.size() <= 100)) &&
+             (!('merchantName' in data) || (data.merchantName is string && data.merchantName.size() <= 150)) &&
+             (!('orderId' in data) || (data.orderId is string && data.orderId.size() <= 120)) &&
+             (!('paymentInstrument' in data) || (data.paymentInstrument is string && data.paymentInstrument in ['tut_card', 'tut_wallet', 'tut_credit'])) &&
+             (!('fundingSource' in data) || (data.fundingSource is string && data.fundingSource in ['wallet_deposit', 'credit_line'])) &&
+             (!('cardLast4' in data) || (data.cardLast4 is string && data.cardLast4.size() <= 8));
     }
 
     function isValidSponsorship(data) {
@@ -183,7 +190,19 @@ service cloud.firestore {
              (!('imageUrl' in data) || data.imageUrl is string) &&
              (!('videoUrl' in data) || data.videoUrl is string) &&
              (!('targetUrl' in data) || data.targetUrl is string) &&
-             (!('specialOffer' in data) || data.specialOffer is string);
+             (!('specialOffer' in data) || data.specialOffer is string) &&
+             (!('placement' in data) || (data.placement is string && data.placement in ['all', 'entrance_popup', 'deals_hero', 'featured_carousel', 'partner_grid'])) &&
+             (!('targetAudience' in data) || (data.targetAudience is string && data.targetAudience in ['all', 'standard', 'bronze', 'silver', 'gold', 'active_borrowers', 'depositors'])) &&
+             (!('priority' in data) || (isNumeric(data.priority) && data.priority >= 1 && data.priority <= 10)) &&
+             (!('isPinned' in data) || data.isPinned is bool) &&
+             (!('category' in data) || (data.category is string && data.category in ['Fintech', 'Shopping', 'Food', 'Mobility', 'Telecom', 'General'])) &&
+             (!('discountBadge' in data) || (data.discountBadge is string && data.discountBadge.size() <= 40)) &&
+             (!('ctaLabel' in data) || (data.ctaLabel is string && data.ctaLabel.size() <= 40)) &&
+             (!('accentColor' in data) || (data.accentColor is string && data.accentColor.size() <= 20)) &&
+             (!('maxImpressions' in data) || (isNumeric(data.maxImpressions) && data.maxImpressions >= 0)) &&
+             (!('frequencyCapHours' in data) || (isNumeric(data.frequencyCapHours) && data.frequencyCapHours >= 0)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string || data.updatedAt is timestamp || isNumeric(data.updatedAt))) &&
+             (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 200));
     }
 
     function isValidAuditLog(data) {
@@ -274,6 +293,43 @@ service cloud.firestore {
              data.status in ['active', 'escalated'];
     }
 
+    function isValidTutCard(data) {
+      return data.keys().hasAll(['userId', 'cardNumber', 'cardLast4', 'cardHash', 'expiryMonth', 'expiryYear', 'secretCodeHash', 'secretCodeSalt', 'isActive', 'isFrozen', 'perTxLimit', 'failedAttempts']) &&
+             data.userId is string && data.userId.size() > 0 && data.userId.size() <= 128 &&
+             data.cardNumber is string && data.cardNumber.size() == 16 &&
+             data.cardLast4 is string && data.cardLast4.size() == 4 &&
+             data.cardHash is string && data.cardHash.size() == 64 &&
+             data.expiryMonth is string && data.expiryMonth.size() == 2 &&
+             data.expiryYear is string && data.expiryYear.size() == 2 &&
+             data.secretCodeHash is string && data.secretCodeHash.size() == 64 &&
+             data.secretCodeSalt is string && data.secretCodeSalt.size() >= 16 && data.secretCodeSalt.size() <= 64 &&
+             data.isActive is bool &&
+             data.isFrozen is bool &&
+             isNumeric(data.perTxLimit) && data.perTxLimit >= 10 && data.perTxLimit <= 500000 &&
+             (!('dailyLimit' in data) || (isNumeric(data.dailyLimit) && data.dailyLimit >= 10 && data.dailyLimit <= 2000000)) &&
+             isNumeric(data.failedAttempts) && data.failedAttempts >= 0 && data.failedAttempts <= 20 &&
+             (!('lockedUntil' in data) || (isNumeric(data.lockedUntil) && data.lockedUntil >= 0)) &&
+             (!('memberId' in data) || (data.memberId is string && data.memberId.size() <= 64)) &&
+             (!('pinSetAt' in data) || (data.pinSetAt is string && data.pinSetAt.size() <= 64)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidMerchantApp(data) {
+      return data.keys().hasAll(['merchantId', 'name', 'apiKeyId', 'apiKeyHash', 'status']) &&
+             data.merchantId is string && data.merchantId.size() > 0 && data.merchantId.size() <= 100 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
+             data.apiKeyId is string && data.apiKeyId.size() > 0 && data.apiKeyId.size() <= 64 &&
+             data.apiKeyHash is string && data.apiKeyHash.size() == 64 &&
+             data.status in ['active', 'paused'] &&
+             (!('ownerEmail' in data) || (data.ownerEmail is string && data.ownerEmail.size() <= 120)) &&
+             (!('allowedOrigins' in data) || data.allowedOrigins is list) &&
+             (!('totalProcessed' in data) || (isNumeric(data.totalProcessed) && data.totalProcessed >= 0)) &&
+             (!('txCount' in data) || (isNumeric(data.txCount) && data.txCount >= 0)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
     match /users/{userId} {
       allow get: if isAuthenticated() && (
         isOwner(userId) || 
@@ -283,20 +339,21 @@ service cloud.firestore {
       allow list: if isAuthenticated();
       allow create: if isAuthenticated() && (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && 
                     ((!('role' in request.resource.data) || request.resource.data.role == 'member') || (request.resource.data.role == 'admin' && isAdmin()));
-      allow update: if isAuthenticated() && (
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (
         isAdmin() ||
         (isOwner(userId) && 
          (!('role' in request.resource.data) || request.resource.data.role == resource.data.role) && 
          (!('status' in request.resource.data) || request.resource.data.status == resource.data.status)
         ) ||
         (
-          // Allow updating debt and repayment fields upon loan settlement
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingDebt', 'totalRepaid'])
+          // Allow updating own debt and repayment fields upon self loan settlement
+          isOwner(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['remainingDebt', 'totalRepaid', 'updatedAt'])
         ) ||
         (
-          // Non-owner can only increment totalDeposit (as in transfer)
+          // Non-owner can only increment totalDeposit (as in P2P transfer credit)
           request.resource.data.totalDeposit > resource.data.totalDeposit &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalDeposit'])
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalDeposit', 'updatedAt'])
         )
       );
       allow delete: if isAuthenticated() && (
@@ -319,7 +376,7 @@ service cloud.firestore {
 
     match /transactions/{transactionId} {
       allow read, list: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isAuthenticated() && (
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data) && (
         isAdmin() ||
         (
           request.resource.data.userId == request.auth.uid && (
@@ -328,7 +385,7 @@ service cloud.firestore {
         ) ||
         (request.resource.data.isTransfer == true && request.resource.data.transferType == 'in' && request.resource.data.status == 'confirmed')
       );
-      allow update: if isAuthenticated() && (
+      allow update: if isAuthenticated() && isValidTransaction(request.resource.data) && (
         isAdmin() ||
         (
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'isPaid']) &&
@@ -345,13 +402,13 @@ service cloud.firestore {
       allow update: if (isAdmin() && isValidSponsorship(request.resource.data)) ||
                        (isAuthenticated() && 
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['impressions', 'clicks']));
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || (isAuthenticated() && sponsorshipId in ['sp-apex', 'sp-tusher', 'sp-bicon']);
     }
 
     match /system_controls/{documentId} {
       allow read, list: if true;
       allow create, update: if isAdmin() || (
-        isAuthenticated() && (documentId == 'funds' || documentId == 'reserves')
+        isAuthenticated() && (documentId == 'funds' || documentId == 'reserves' || documentId == 'sponsorships_seeded')
       );
       allow delete: if isAdmin();
     }
@@ -386,12 +443,45 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /agent_reported_issues/{issueId} {
+      allow read, list, create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
     match /workforce_chats/{chatId} {
       allow read, list, create, update: if isAuthenticated();
       allow delete: if isAdmin();
     }
     match /workforce_p2p_chats/{chatId} {
       allow read, list, create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    match /tut_cards/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && (isOwner(userId) || isAdmin()) &&
+                    isValidTutCard(request.resource.data) &&
+                    request.resource.data.userId == userId;
+      allow update: if isAuthenticated() && isValidTutCard(request.resource.data) && (
+        isAdmin() ||
+        (isOwner(userId) &&
+         request.resource.data.userId == resource.data.userId)
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /merchant_apps/{merchantId} {
+      allow get: if isAuthenticated();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidMerchantApp(request.resource.data);
+      allow update: if isAuthenticated() && isValidMerchantApp(request.resource.data) && (
+        isAdmin() || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalProcessed', 'txCount', 'updatedAt']) &&
+          isNumeric(request.resource.data.totalProcessed) &&
+          request.resource.data.totalProcessed > resource.data.totalProcessed
+        )
+      );
       allow delete: if isAdmin();
     }
 

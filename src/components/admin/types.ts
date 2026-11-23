@@ -1,21 +1,49 @@
 import { Firestore } from 'firebase/firestore';
-import { UserProfile, Transaction } from '../../App';
+import { UserProfile, Transaction, SponsorshipCampaign } from '../../App';
 import { NotificationService } from '../../services/NotificationService';
 
 export type AdminSection = 
   | 'dashboard'
   | 'requests'
   | 'request_detail'
+  | 'active_debts'
   | 'members'
   | 'member_profile'
   | 'transactions'
   | 'reserve'
   | 'deposits'
+  | 'ads'
   | 'notifications'
+  | 'email_hub'
+  | 'gateway'
   | 'settings'
   | 'workforce'
   | 'audit'
   | 'reports';
+
+export interface AdminAllNotificationItem {
+  id: string;
+  category: 'request' | 'overdue' | 'member' | 'system';
+  title: string;
+  message: string;
+  timestamp: any;
+  severity?: 'info' | 'warning' | 'critical';
+  requestId?: string;
+  memberUid?: string;
+  actionLabel?: string;
+}
+
+export type AdPlacement = 'all' | 'entrance_popup' | 'deals_hero' | 'featured_carousel' | 'partner_grid';
+export type AdTargetAudience = 'all' | 'standard' | 'bronze' | 'silver' | 'gold' | 'active_borrowers' | 'depositors';
+export type AdCategory = 'Fintech' | 'Shopping' | 'Food' | 'Mobility' | 'Telecom' | 'General';
+
+export interface AdDeliverySettings {
+  entrancePopupEnabled: boolean;
+  globalCooldownHours: number;
+  allowHeroRotation: boolean;
+  updatedAt?: string;
+  updatedBy?: string;
+}
 
 export interface UnifiedRequestItem {
   id: string;
@@ -37,9 +65,14 @@ export interface UnifiedRequestItem {
   memberNid: string;
   memberOccupation: string;
   memberAddress: string;
+  memberPermanentAddress?: string;
+  memberNomineeName?: string;
+  memberNomineeRelation?: string;
+  memberEmergencyContact?: string;
   memberFatherName?: string;
   memberMotherName?: string;
   memberStatus: string;
+  memberTier?: string;
   
   // Financial metrics
   currentBorrowLimit: number;
@@ -49,6 +82,8 @@ export interface UnifiedRequestItem {
   continuousSubscriptionMonths: number;
   creditScore: number;
   creditScoreLabel: 'Excellent' | 'Good' | 'Fair' | 'Needs Attention';
+  isOverdue?: boolean;
+  maxRepaymentDays?: number;
   
   // Reserve Impact
   reserveBefore: number;
@@ -64,6 +99,8 @@ export interface UnifiedRequestItem {
   // Notes & Assigned
   adminNotes?: string;
   assignedModerator?: string;
+  decidedBy?: string;
+  decidedAt?: string;
   loanReason?: string;
   paymentMethod?: string;
   transactionRefId?: string;
@@ -81,6 +118,16 @@ export interface UnifiedRequestItem {
   rawUser?: UserProfile;
 }
 
+export interface AutoEmailEngineState {
+  status: 'idle' | 'scanning' | 'active' | 'smtp_blocked' | 'paused';
+  lastScanAt: string | null;
+  nextScanAt: string | null;
+  lastSentCount: number;
+  lastEligibleCount: number;
+  totalAutoSentSession: number;
+  lastError: string | null;
+}
+
 export interface AdminPortalV4Props {
   db: Firestore;
   user: any;
@@ -91,8 +138,20 @@ export interface AdminPortalV4Props {
   emailLogs: any[];
   reserveFund: number;
   onUpdateReserveFund?: (newAmount: number) => Promise<void>;
+  sponsorships?: SponsorshipCampaign[];
   notificationService: NotificationService;
-  sendEmail: (to: string, subject: string, body: string, customHtml?: string, recipientName?: string, category?: string) => Promise<void>;
+  sendEmail: (
+    to: string,
+    subject: string,
+    body: string,
+    customHtml?: string,
+    recipientName?: string,
+    category?: string,
+    forceRetry?: boolean,
+    meta?: { memoId?: string; eventType?: string; recipientUid?: string; attachments?: any[] }
+  ) => Promise<boolean | void>;
+  autoEmailState?: AutoEmailEngineState;
+  onRunAutoEmailCycle?: (forceRun?: boolean) => Promise<number>;
   logAuditEvent: (action: string, details: string, severity?: 'info' | 'warning' | 'critical') => Promise<void>;
   addToast: (title: string, body: string, type?: 'info' | 'success' | 'warning') => void;
   onCloseAdmin: () => void;

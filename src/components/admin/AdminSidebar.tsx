@@ -7,10 +7,14 @@ import {
   Landmark, 
   PiggyBank, 
   Bell, 
+  Mail,
   Settings, 
   Shield, 
   X,
-  UserCheck
+  UserCheck,
+  Sparkles,
+  Megaphone,
+  KeyRound
 } from 'lucide-react';
 import { AdminSection } from './types';
 
@@ -18,7 +22,10 @@ interface AdminSidebarProps {
   activeSection: AdminSection;
   onSelectSection: (section: AdminSection) => void;
   pendingRequestsCount: number;
+  activeDebtsCount?: number;
   unreadNotificationsCount: number;
+  failedEmailsCount?: number;
+  activeAdsCount?: number;
   mobileMenuOpen: boolean;
   onCloseMobileMenu: () => void;
   adminName?: string;
@@ -30,7 +37,10 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
   activeSection,
   onSelectSection,
   pendingRequestsCount,
+  activeDebtsCount = 0,
   unreadNotificationsCount,
+  failedEmailsCount = 0,
+  activeAdsCount = 0,
   mobileMenuOpen,
   onCloseMobileMenu,
   adminName = 'Tahsin Ullah',
@@ -39,33 +49,39 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
 }) => {
   const navItems = [
     { id: 'dashboard' as AdminSection, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'requests' as AdminSection, label: 'Requests', icon: FileText, badge: pendingRequestsCount },
+    { id: 'requests' as AdminSection, label: 'Requests Queue', icon: FileText, badge: pendingRequestsCount },
+    { id: 'active_debts' as AdminSection, label: 'Active Debts', icon: UserCheck, badge: activeDebtsCount },
     { id: 'members' as AdminSection, label: 'Members', icon: Users },
     { id: 'transactions' as AdminSection, label: 'Transactions', icon: CreditCard },
-    { id: 'reserve' as AdminSection, label: 'Reserve', icon: Landmark },
+    { id: 'reserve' as AdminSection, label: 'Reserve Pool', icon: Landmark },
     { id: 'deposits' as AdminSection, label: 'Deposits', icon: PiggyBank },
+    { id: 'ads' as AdminSection, label: 'Ad Control', icon: Megaphone, badge: activeAdsCount },
+    { id: 'workforce' as AdminSection, label: 'AI Officers (2)', icon: Sparkles },
     { id: 'notifications' as AdminSection, label: 'Notifications', icon: Bell, badge: unreadNotificationsCount },
+    { id: 'email_hub' as AdminSection, label: 'Email System', icon: Mail, badge: failedEmailsCount },
+    { id: 'gateway' as AdminSection, label: 'Payment Gateway', icon: KeyRound },
     { id: 'settings' as AdminSection, label: 'Settings', icon: Settings },
   ];
 
   const sidebarContent = (
-    <div className="flex flex-col h-full bg-[#0B132B] border-r border-[#152347] w-60 select-none">
+    <div className="flex flex-col h-full bg-[#091022] border-r border-white/[0.08] w-60 select-none">
       {/* Brand Header */}
-      <div className="p-4 sm:p-4.5 border-b border-[#152347]/80 flex items-center justify-between">
+      <div className="p-4 border-b border-white/[0.08] flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500/20 to-amber-600/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-sm">
+          <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
             <Shield className="w-4 h-4 fill-amber-400/20 text-amber-400" />
           </div>
           <div>
-            <div className="text-base font-black tracking-wider text-amber-400 font-sans leading-none">T.U.T</div>
-            <div className="text-[10px] font-semibold tracking-wider text-amber-300/70 uppercase mt-0.5">Admin Console</div>
+            <div className="text-sm font-extrabold tracking-wider text-amber-400 font-sans leading-none">T.U.T</div>
+            <div className="text-[10px] font-semibold tracking-wider text-slate-400 uppercase mt-1">Operations Desk</div>
           </div>
         </div>
 
         {/* Mobile close button */}
         <button
           onClick={onCloseMobileMenu}
-          className="lg:hidden text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800/60"
+          className="lg:hidden text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 cursor-pointer"
+          aria-label="Close navigation menu"
         >
           <X className="w-4 h-4" />
         </button>
@@ -87,19 +103,19 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
                 onSelectSection(item.id);
                 onCloseMobileMenu();
               }}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
                 isActive
-                  ? 'bg-[#132247] text-amber-400 border border-amber-500/35 font-semibold shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-[#101B38] border border-transparent'
+                  ? 'bg-[#132247] text-amber-300 border border-amber-500/35 font-semibold'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] border border-transparent'
               }`}
             >
-              <div className="flex items-center gap-2.5">
-                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
-                <span>{item.label}</span>
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-amber-400' : 'text-slate-400'}`} />
+                <span className="truncate">{item.label}</span>
               </div>
               {item.badge !== undefined && item.badge > 0 && (
-                <span className={`px-1.5 py-0.2 text-[10px] font-bold rounded-full ${
-                  isActive ? 'bg-amber-400 text-slate-950' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                <span className={`px-1.5 py-0.5 text-[10px] font-mono tabular-nums font-bold rounded ${
+                  isActive ? 'bg-amber-400 text-slate-950' : 'bg-amber-500/15 text-amber-300 border border-amber-500/25'
                 }`}>
                   {item.badge}
                 </span>

@@ -61,7 +61,7 @@ export const AdminAuditView: React.FC<AdminAuditViewProps> = ({ auditLogs }) => 
   });
 
   return (
-    <div className="space-y-3.5 max-w-4xl mx-auto animate-fadeIn pb-6">
+    <div className="space-y-3.5 w-full max-w-7xl mx-auto animate-fadeIn pb-6">
       {/* Search Header */}
       <div className="flex items-center justify-between gap-3">
         <div className="relative flex-1 max-w-sm">

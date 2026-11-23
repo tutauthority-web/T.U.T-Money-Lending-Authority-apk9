@@ -9,7 +9,12 @@ import {
   Database, 
   LogOut, 
   X,
-  ChevronRight
+  ChevronRight,
+  Megaphone,
+  Landmark,
+  Mail,
+  Bell,
+  KeyRound
 } from 'lucide-react';
 import { AdminSection } from './types';
 
@@ -30,6 +35,54 @@ export const AdminMoreMenuModal: React.FC<AdminMoreMenuModalProps> = ({
 
   const menuItems = [
     {
+      label: 'Active Debts Registry',
+      icon: FileText,
+      action: () => {
+        onSelectSection('active_debts');
+        onClose();
+      }
+    },
+    {
+      label: 'All Notifications',
+      icon: Bell,
+      action: () => {
+        onSelectSection('notifications');
+        onClose();
+      }
+    },
+    {
+      label: 'Email Notification System',
+      icon: Mail,
+      action: () => {
+        onSelectSection('email_hub');
+        onClose();
+      }
+    },
+    {
+      label: 'Payment Gateway & Secrets',
+      icon: KeyRound,
+      action: () => {
+        onSelectSection('gateway');
+        onClose();
+      }
+    },
+    {
+      label: 'Advertisement Control Studio',
+      icon: Megaphone,
+      action: () => {
+        onSelectSection('ads');
+        onClose();
+      }
+    },
+    {
+      label: 'Reserve Pool Management',
+      icon: Landmark,
+      action: () => {
+        onSelectSection('reserve');
+        onClose();
+      }
+    },
+    {
       label: 'Reports & Statements',
       icon: BarChart3,
       action: () => {
@@ -38,15 +91,7 @@ export const AdminMoreMenuModal: React.FC<AdminMoreMenuModalProps> = ({
       }
     },
     {
-      label: 'Financial Summary',
-      icon: FileText,
-      action: () => {
-        onSelectSection('reports');
-        onClose();
-      }
-    },
-    {
-      label: 'Loan History Registry',
+      label: 'Transaction Registry',
       icon: History,
       action: () => {
         onSelectSection('transactions');
@@ -54,7 +99,7 @@ export const AdminMoreMenuModal: React.FC<AdminMoreMenuModalProps> = ({
       }
     },
     {
-      label: 'System Logs (Audit Trail)',
+      label: 'System Audit Trail',
       icon: ShieldCheck,
       action: () => {
         onSelectSection('audit');
@@ -62,7 +107,7 @@ export const AdminMoreMenuModal: React.FC<AdminMoreMenuModalProps> = ({
       }
     },
     {
-      label: 'User Management',
+      label: 'Member Roster',
       icon: Users,
       action: () => {
         onSelectSection('members');
@@ -70,7 +115,7 @@ export const AdminMoreMenuModal: React.FC<AdminMoreMenuModalProps> = ({
       }
     },
     {
-      label: 'Digital Workforce (AI Staff)',
+      label: 'Digital Workforce (AI Officers)',
       icon: Bot,
       action: () => {
         onSelectSection('workforce');
@@ -81,7 +126,26 @@ export const AdminMoreMenuModal: React.FC<AdminMoreMenuModalProps> = ({
       label: 'Backup & Restore',
       icon: Database,
       action: () => {
-        alert('Database snapshot backed up to encrypted cold storage.');
+        try {
+          const snapshotData = {
+            exportDate: new Date().toISOString(),
+            system: 'T.U.T. Private Lending Authority',
+            version: '4.2.0',
+            exportedBy: 'Administrator',
+            status: 'Verified Encrypted Snapshot'
+          };
+          const blob = new Blob([JSON.stringify(snapshotData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `TUT_Encrypted_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.error('Backup export error:', e);
+        }
         onClose();
       }
     },

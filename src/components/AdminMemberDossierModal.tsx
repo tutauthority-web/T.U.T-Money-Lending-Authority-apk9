@@ -113,6 +113,7 @@ export const AdminMemberDossierModal: React.FC<AdminMemberDossierModalProps> = (
   const [saving, setSaving] = useState(false);
   const [docPreview, setDocPreview] = useState<{ url: string; title: string } | null>(null);
   const [uploadingDocKey, setUploadingDocKey] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [targetUploadKey, setTargetUploadKey] = useState<'photo' | string>('photo');
 
@@ -173,8 +174,9 @@ export const AdminMemberDossierModal: React.FC<AdminMemberDossierModalProps> = (
 
   // Image Upload with client compression
   const handleImageUpload = (file: File, target: 'photo' | string) => {
+    setUploadError(null);
     if (file.size > 8 * 1024 * 1024) {
-      alert("File size must be less than 8MB");
+      setUploadError("File size exceeds 8MB limit. Please select an image under 8MB.");
       return;
     }
 
@@ -215,7 +217,7 @@ export const AdminMemberDossierModal: React.FC<AdminMemberDossierModalProps> = (
         setUploadingDocKey(null);
       };
       img.onerror = () => {
-        alert("Failed to load image file.");
+        setUploadError("Failed to parse and compress image file. Please verify format.");
         setUploadingDocKey(null);
       };
     };
@@ -395,6 +397,13 @@ export const AdminMemberDossierModal: React.FC<AdminMemberDossierModalProps> = (
             </button>
           </div>
         </div>
+
+        {uploadError && (
+          <div className="mx-4 sm:mx-6 mt-3 p-3 bg-rose-500/10 border border-rose-500/25 rounded-xl text-xs text-rose-300 font-semibold flex items-center justify-between">
+            <span>{uploadError}</span>
+            <button type="button" onClick={() => setUploadError(null)} className="text-slate-400 hover:text-white text-xs font-bold">✕</button>
+          </div>
+        )}
 
         {/* ================================================================ */}
         {/* TAB SWITCHER                                                     */}

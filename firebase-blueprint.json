@@ -23,22 +23,28 @@
     },
     "Transaction": {
       "title": "Transaction",
-      "description": "Financial request (Loan, Deposit, Refund, Pay Due)",
+      "description": "Financial request or external payment (Loan, Deposit, Refund, Pay Due, Subscription, Merchant Payment)",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
-        "type": { "type": "string", "enum": ["loan", "deposit", "refund", "pay_due", "subscription"] },
+        "type": { "type": "string", "enum": ["loan", "deposit", "refund", "pay_due", "subscription", "merchant_payment", "card_payment", "wallet_payment"] },
         "amount": { "type": "number" },
-        "method": { "type": "string", "enum": ["Cash", "Bkash", "Nagad", "Recharge", "Account Balance"] },
+        "method": { "type": "string", "enum": ["Cash", "Bkash", "Nagad", "Recharge", "Account Balance", "T.U.T. Card", "T.U.T. Wallet"] },
         "accountNumber": { "type": "string" },
         "transactionId": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "confirmed", "rejected"] },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "rejected", "settled"] },
         "timestamp": { "type": "string", "format": "date-time" },
         "memoId": { "type": "string" },
         "adminNotes": { "type": "string" },
         "decidedBy": { "type": "string" },
         "decidedAt": { "type": "string" },
-        "moreInfoRequested": { "type": "boolean" }
+        "moreInfoRequested": { "type": "boolean" },
+        "merchantId": { "type": "string" },
+        "merchantName": { "type": "string" },
+        "orderId": { "type": "string" },
+        "paymentInstrument": { "type": "string", "enum": ["tut_card", "tut_wallet", "tut_credit"] },
+        "fundingSource": { "type": "string", "enum": ["wallet_deposit", "credit_line"] },
+        "cardLast4": { "type": "string" }
       },
       "required": ["userId", "type", "amount", "method", "status", "timestamp"]
     },
@@ -53,13 +59,26 @@
         "promotionText": { "type": "string" },
         "status": { "type": "string", "enum": ["active", "paused", "completed"] },
         "impressions": { "type": "number" },
+        "clicks": { "type": "number" },
         "startDate": { "type": "string" },
         "endDate": { "type": "string" },
         "logoUrl": { "type": "string" },
         "imageUrl": { "type": "string" },
         "videoUrl": { "type": "string" },
         "targetUrl": { "type": "string" },
-        "specialOffer": { "type": "string" }
+        "specialOffer": { "type": "string" },
+        "placement": { "type": "string", "enum": ["all", "entrance_popup", "deals_hero", "featured_carousel", "partner_grid"] },
+        "targetAudience": { "type": "string", "enum": ["all", "standard", "bronze", "silver", "gold", "active_borrowers", "depositors"] },
+        "priority": { "type": "number" },
+        "isPinned": { "type": "boolean" },
+        "category": { "type": "string", "enum": ["Fintech", "Shopping", "Food", "Mobility", "Telecom", "General"] },
+        "discountBadge": { "type": "string" },
+        "ctaLabel": { "type": "string" },
+        "accentColor": { "type": "string" },
+        "maxImpressions": { "type": "number" },
+        "frequencyCapHours": { "type": "number" },
+        "updatedAt": { "type": "string" },
+        "createdBy": { "type": "string" }
       },
       "required": ["companyName", "dealValue", "campaignType", "promotionText", "status", "impressions", "startDate", "endDate"]
     },
@@ -197,6 +216,82 @@
       "properties": {
         "status": { "type": "string" }
       }
+    },
+    "AgentReportedIssue": {
+      "title": "AgentReportedIssue",
+      "description": "Member issue noted down by AI banking agents",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "agentId": { "type": "string" },
+        "agentName": { "type": "string" },
+        "memberId": { "type": "string" },
+        "memberName": { "type": "string" },
+        "category": { "type": "string" },
+        "summary": { "type": "string" },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "status": { "type": "string", "enum": ["Pending Review", "Investigating", "Resolved"] },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "agentId", "agentName", "memberId", "memberName", "category", "summary", "priority", "status", "timestamp"]
+    },
+    "WorkforceP2PChat": {
+      "title": "WorkforceP2PChat",
+      "description": "Direct chat between administrator and AI banking agents",
+      "type": "object",
+      "properties": {
+        "adminId": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "messages": { "type": "array" },
+        "lastMessage": { "type": "string" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["employeeId", "messages", "lastMessage", "updatedAt"]
+    },
+    "TutPayCard": {
+      "title": "TutPayCard",
+      "description": "Payable T.U.T. virtual card credential (stores salted SHA-256 secret hash only, never plaintext secret codes)",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "memberId": { "type": "string" },
+        "cardNumber": { "type": "string" },
+        "cardLast4": { "type": "string" },
+        "cardHash": { "type": "string" },
+        "expiryMonth": { "type": "string" },
+        "expiryYear": { "type": "string" },
+        "secretCodeHash": { "type": "string" },
+        "secretCodeSalt": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "isFrozen": { "type": "boolean" },
+        "perTxLimit": { "type": "number" },
+        "dailyLimit": { "type": "number" },
+        "failedAttempts": { "type": "number" },
+        "lockedUntil": { "type": "number" },
+        "pinSetAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "cardNumber", "cardLast4", "cardHash", "expiryMonth", "expiryYear", "secretCodeHash", "secretCodeSalt", "isActive", "isFrozen", "perTxLimit", "failedAttempts"]
+    },
+    "MerchantApp": {
+      "title": "MerchantApp",
+      "description": "Connected external merchant application authorized to accept T.U.T. Card and Wallet payments",
+      "type": "object",
+      "properties": {
+        "merchantId": { "type": "string" },
+        "name": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "apiKeyId": { "type": "string" },
+        "apiKeyHash": { "type": "string" },
+        "allowedOrigins": { "type": "array" },
+        "status": { "type": "string", "enum": ["active", "paused"] },
+        "totalProcessed": { "type": "number" },
+        "txCount": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["merchantId", "name", "apiKeyId", "apiKeyHash", "status"]
     }
   },
   "firestore": {
@@ -211,6 +306,14 @@
     "/users/{userId}/cards/{cardId}": {
       "schema": "Card",
       "description": "User added credit/debit cards"
+    },
+    "/tut_cards/{userId}": {
+      "schema": "TutPayCard",
+      "description": "Payable T.U.T. Authority virtual payment card credentials and security controls"
+    },
+    "/merchant_apps/{merchantId}": {
+      "schema": "MerchantApp",
+      "description": "Connected external applications accepted by T.U.T. Payment Gateway"
     },
     "/transactions/{transactionId}": {
       "schema": "Transaction",
@@ -240,9 +343,17 @@
       "schema": "SupportTicket",
       "description": "Escalated customer support tickets"
     },
+    "/agent_reported_issues/{issueId}": {
+      "schema": "AgentReportedIssue",
+      "description": "Member issues logged by AI agents"
+    },
     "/workforce_chats/{chatId}": {
       "schema": "ChatSession",
       "description": "Chat sessions with staff or digital officers"
+    },
+    "/workforce_p2p_chats/{chatId}": {
+      "schema": "WorkforceP2PChat",
+      "description": "Direct communication between admin and AI banking agents"
     },
     "/test/{docId}": {
       "schema": "TestConnection",

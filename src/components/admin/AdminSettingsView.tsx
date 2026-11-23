@@ -90,12 +90,21 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
 
   // App Settings State
   const [isSyncingFinancials, setIsSyncingFinancials] = useState(false);
+  const [confirmReconcileOpen, setConfirmReconcileOpen] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [currencySymbol, setCurrencySymbol] = useState('৳ (BDT)');
 
   // Diagnostics State
   const [isPinging, setIsPinging] = useState(false);
-  const [pingResult, setPingResult] = useState<{ status: 'ok' | 'err'; latency: number; time: string } | null>(null);
+  const [pingResult, setPingResult] = useState<{
+    status: 'ok' | 'err';
+    latency: number;
+    time: string;
+    emailGatewayReady?: boolean;
+    geminiKeyCount?: number;
+    uptimeSeconds?: number;
+    serverStatus?: string;
+  } | null>(null);
 
   // Feedback Banner
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -109,14 +118,23 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
   useEffect(() => {
     const loadCloudSettings = async () => {
       try {
-        const snap = await getDoc(doc(db, 'system_controls', 'admin_settings'));
-        if (snap.exists()) {
-          const d = snap.data();
+        const [adminSnap, autoSnap] = await Promise.all([
+          getDoc(doc(db, 'system_controls', 'admin_settings')),
+          getDoc(doc(db, 'system_controls', 'email_automation'))
+        ]);
+        if (adminSnap.exists()) {
+          const d = adminSnap.data();
           if (d.profileName) setProfileName(d.profileName);
           if (d.profilePhone) setProfilePhone(d.profilePhone);
           if (d.profileTitle) setProfileTitle(d.profileTitle);
           if (d.adminPin) setSavedPin(d.adminPin);
           if (typeof d.gmailAlerts === 'boolean') setGmailAlerts(d.gmailAlerts);
+        }
+        if (autoSnap.exists()) {
+          const ad = autoSnap.data();
+          if (typeof ad.masterEnabled === 'boolean') {
+            setGmailAlerts(ad.masterEnabled);
+          }
         }
       } catch (err) {
         // Fallback to localStorage
@@ -190,26 +208,33 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
   const handleSaveNotifications = async (e: React.FormEvent) => {
     e.preventDefault();
     localStorage.setItem('tut_admin_gmail_alerts', String(gmailAlerts));
+    localStorage.setItem('tut_gmail_notifications', String(gmailAlerts));
     localStorage.setItem('tut_admin_sms_receipts', String(smsReceipts));
     localStorage.setItem('tut_admin_sound_alerts', String(soundAlerts));
     localStorage.setItem('tut_admin_high_thresh', highValueThreshold);
 
     try {
-      await setDoc(doc(db, 'system_controls', 'admin_settings'), {
-        gmailAlerts,
-        smsReceipts,
-        soundAlerts,
-        highValueThreshold: Number(highValueThreshold),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-
-      await setDoc(doc(db, 'system_controls', 'funds'), {
-        gmailNotificationsEnabled: gmailAlerts,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      await Promise.all([
+        setDoc(doc(db, 'system_controls', 'admin_settings'), {
+          gmailAlerts,
+          smsReceipts,
+          soundAlerts,
+          highValueThreshold: Number(highValueThreshold),
+          updatedAt: serverTimestamp()
+        }, { merge: true }),
+        setDoc(doc(db, 'system_controls', 'funds'), {
+          gmailNotificationsEnabled: gmailAlerts,
+          updatedAt: serverTimestamp()
+        }, { merge: true }),
+        setDoc(doc(db, 'system_controls', 'email_automation'), {
+          masterEnabled: gmailAlerts,
+          updatedAt: new Date().toISOString(),
+          updatedBy: adminEmail || 'tahsinullahtusher999@gmail.com'
+        }, { merge: true })
+      ]);
     } catch {}
 
-    showToast('Notification channels updated.');
+    showToast('Notification channels updated & synced with Email Gateway.');
     setActiveModal(null);
   };
 
@@ -234,19 +259,26 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
     }
   };
 
-  // System Diagnostics Latency Ping
+  // System Diagnostics Latency & Backend Service Health Check
   const handleRunDiagnostics = async () => {
     setIsPinging(true);
     const start = performance.now();
     try {
-      await getDoc(doc(db, 'system_controls', 'reserves'));
+      const [_, healthRes] = await Promise.all([
+        getDoc(doc(db, 'system_controls', 'reserves')),
+        fetch('/api/health').then(r => (r.ok ? r.json() : null)).catch(() => null)
+      ]);
       const latency = Math.round(performance.now() - start);
       setPingResult({
         status: 'ok',
         latency,
-        time: new Date().toLocaleTimeString()
+        time: new Date().toLocaleTimeString(),
+        emailGatewayReady: Boolean(healthRes?.config?.emailGatewayReady),
+        geminiKeyCount: typeof healthRes?.geminiAi?.totalKeysInPool === 'number' ? healthRes.geminiAi.totalKeysInPool : 0,
+        uptimeSeconds: typeof healthRes?.uptimeSeconds === 'number' ? healthRes.uptimeSeconds : undefined,
+        serverStatus: healthRes?.status || 'ok'
       });
-      showToast(`Firestore live check successful: ${latency}ms latency`, 'success');
+      showToast(`System health check completed: ${latency}ms latency`, 'success');
     } catch (err) {
       setPingResult({
         status: 'err',
@@ -293,6 +325,14 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
       action: () => onNavigate('workforce')
     },
     {
+      id: 'gateway',
+      title: 'External Payment Gateway & Secrets',
+      description: 'Firebase & Gateway credentials for other apps, Merchant keys & T.U.T. Card/Wallet integration',
+      icon: Key,
+      color: 'text-emerald-400 bg-emerald-500/15 border-emerald-500/30',
+      action: () => onNavigate('gateway')
+    },
+    {
       id: 'app',
       title: 'App Settings',
       description: 'Borrowing parameters, BDT currency, subscription windows & financial sync',
@@ -319,7 +359,7 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
   ];
 
   return (
-    <div className="space-y-2.5 max-w-2xl mx-auto animate-fadeIn pb-6 relative">
+    <div className="space-y-3 w-full max-w-4xl xl:max-w-5xl mx-auto animate-fadeIn pb-6 relative">
       {/* Feedback Toast */}
       {toastMessage && (
         <div className={`fixed bottom-6 right-6 z-50 px-3.5 py-2.5 rounded-lg border shadow-lg flex items-center gap-2 text-xs font-medium animate-scaleUp ${
@@ -675,20 +715,32 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#182C58]">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-[#182C58]">
                 <button
                   type="button"
-                  onClick={() => setActiveModal(null)}
-                  className="px-4 py-2 rounded-xl text-slate-400 hover:text-white transition-colors"
+                  onClick={() => {
+                    setActiveModal(null);
+                    onNavigate('email_hub');
+                  }}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/25 hover:bg-amber-500/20 transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
-                  Cancel
+                  <Mail className="w-3.5 h-3.5" /> Open Email System →
                 </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl font-bold text-slate-950 bg-blue-400 hover:bg-blue-300 transition-all shadow-md shadow-blue-500/20 flex items-center gap-1.5"
-                >
-                  <Save className="w-3.5 h-3.5" /> Save Preferences
-                </button>
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setActiveModal(null)}
+                    className="px-4 py-2 rounded-xl text-slate-400 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 rounded-xl font-bold text-slate-950 bg-blue-400 hover:bg-blue-300 transition-all shadow-md shadow-blue-500/20 flex items-center gap-1.5"
+                  >
+                    <Save className="w-3.5 h-3.5" /> Save Preferences
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -759,15 +811,46 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
                   </div>
                 )}
 
-                <button
-                  type="button"
-                  onClick={handleRunReconciliation}
-                  disabled={isSyncingFinancials}
-                  className="w-full py-2.5 px-4 rounded-xl bg-[#132247] hover:bg-[#1A2E61] border border-[#1E3A7B] text-sky-300 font-bold transition-all flex items-center justify-center gap-2"
-                >
-                  <RefreshCw className={`w-4 h-4 ${isSyncingFinancials ? 'animate-spin' : ''}`} />
-                  <span>{isSyncingFinancials ? 'Reconciling Ledger...' : 'Run Financial Ledger Reconciliation'}</span>
-                </button>
+                {!confirmReconcileOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReconcileOpen(true)}
+                    disabled={isSyncingFinancials}
+                    className="w-full py-2.5 px-4 rounded-xl bg-[#132247] hover:bg-[#1A2E61] border border-[#1E3A7B] text-sky-300 font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isSyncingFinancials ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingFinancials ? 'Reconciling Ledger...' : 'Run Financial Ledger Reconciliation'}</span>
+                  </button>
+                ) : (
+                  <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 space-y-2.5">
+                    <div className="flex items-start gap-2 text-rose-200 text-[11px]">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Confirm Destructive Override:</strong> This resets all member debt/deposit balances to the official charter baseline. Proceed only during scheduled ledger recovery.
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setConfirmReconcileOpen(false)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setConfirmReconcileOpen(false);
+                          await handleRunReconciliation();
+                        }}
+                        disabled={isSyncingFinancials}
+                        className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+                      >
+                        Confirm & Reconcile
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Cache clear action */}
@@ -861,23 +944,47 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
               </div>
 
               {/* Live Diagnostics */}
-              <div className="p-4 rounded-xl bg-[#090F24] border border-[#162952] space-y-2.5">
+              <div className="p-4 rounded-xl bg-[#090F24] border border-[#162952] space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-white">Live System Diagnostics</span>
                   {pingResult && (
-                    <span className="text-[10px] font-mono text-teal-400 font-semibold">
+                    <span className={`text-[10px] font-mono font-semibold ${pingResult.status === 'ok' ? 'text-teal-400' : 'text-rose-400'}`}>
                       {pingResult.latency}ms • {pingResult.time}
                     </span>
                   )}
                 </div>
+
+                {pingResult && (
+                  <div className="grid grid-cols-3 gap-2 text-[10px]">
+                    <div className="p-2 rounded-lg bg-[#070D1F] border border-[#142345]">
+                      <div className="text-slate-400">SMTP Mailer</div>
+                      <div className={`font-bold mt-0.5 ${pingResult.emailGatewayReady ? 'text-emerald-400' : 'text-amber-400'}`}>
+                        {pingResult.emailGatewayReady ? 'Configured' : 'Fallback Mode'}
+                      </div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-[#070D1F] border border-[#142345]">
+                      <div className="text-slate-400">AI Officer Pool</div>
+                      <div className={`font-bold font-mono mt-0.5 ${(pingResult.geminiKeyCount || 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {pingResult.geminiKeyCount ?? 0} keys ready
+                      </div>
+                    </div>
+                    <div className="p-2 rounded-lg bg-[#070D1F] border border-[#142345]">
+                      <div className="text-slate-400">Server Uptime</div>
+                      <div className="font-bold font-mono text-white mt-0.5">
+                        {pingResult.uptimeSeconds !== undefined ? `${pingResult.uptimeSeconds}s` : 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={handleRunDiagnostics}
                   disabled={isPinging}
-                  className="w-full py-2 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold transition-all flex items-center justify-center gap-2"
+                  className="w-full py-2 px-3 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isPinging ? 'animate-spin' : ''}`} />
-                  <span>{isPinging ? 'Testing Connection...' : 'Ping Firestore Database'}</span>
+                  <span>{isPinging ? 'Running Full Health Check...' : 'Run Firestore & Backend Diagnostics'}</span>
                 </button>
               </div>
 
