@@ -42,8 +42,15 @@ import {
   signInWithEmailAndPassword,
   sendPasswordResetEmail,
   setPersistence,
-  browserLocalPersistence
+  browserLocalPersistence,
+  getAdditionalUserInfo,
+  deleteUser
 } from 'firebase/auth';
+
+const isGmailAddress = (addr?: string | null): boolean => {
+  const clean = (addr || '').trim().toLowerCase();
+  return /^[a-z0-9._%+-]+@gmail\.com$/.test(clean);
+};
 import { 
   doc, 
   getDoc, 
@@ -3375,8 +3382,13 @@ export default function App() {
                   console.error("Error writing migrated profile:", e);
                 });
               } else {
-                setProfile(null);
-                localStorage.removeItem('tut_saved_profile');
+                if (!isGmailAddress(user.email)) {
+                  setGlobalError('New member accounts require a valid @gmail.com address.');
+                  signOut(auth).catch(() => {});
+                } else {
+                  setProfile(null);
+                  localStorage.removeItem('tut_saved_profile');
+                }
               }
             }).catch(err => {
               console.error("Error checking pre-created profile:", err);
@@ -3384,8 +3396,8 @@ export default function App() {
               localStorage.removeItem('tut_saved_profile');
             });
           } else {
-            setProfile(null);
-            localStorage.removeItem('tut_saved_profile');
+            setGlobalError('New member accounts require a valid @gmail.com address.');
+            signOut(auth).catch(() => {});
           }
         }
       }
@@ -4330,7 +4342,13 @@ export default function App() {
       let finalEmail = email.toLowerCase().trim();
       let finalPassword = password;
       const isAdminCredentials = finalEmail === 'tahsinullahtusher999@gmail.com' && finalPassword === '9900';
-      
+
+      if (authMode === 'signup' && !isGmailAddress(finalEmail)) {
+        setIsLoggingIn(false);
+        addToast('Gmail Required', 'New user registration requires an official @gmail.com email address.', 'warning');
+        return;
+      }
+
       if (isAdminCredentials) {
         finalPassword = '9900_TUT2026_ADMIN';
       }
@@ -4404,7 +4422,28 @@ export default function App() {
     
     try {
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
       const result = await signInWithPopup(auth, provider);
+      const signedEmail = result.user.email?.toLowerCase().trim() || '';
+
+      if (!isGmailAddress(signedEmail)) {
+        const userSnap = await getDoc(doc(db, 'users', result.user.uid));
+        const preUid = 'pre_email_' + signedEmail.replace(/[^a-zA-Z0-9]/g, '_');
+        const preSnap = signedEmail ? await getDoc(doc(db, 'users', preUid)) : null;
+
+        if (!userSnap.exists() && !preSnap?.exists()) {
+          if (getAdditionalUserInfo(result)?.isNewUser) {
+            await deleteUser(result.user).catch(() => {});
+          }
+          await signOut(auth).catch(() => {});
+          setIsLoggingIn(false);
+          const msg = 'New user sign-in requires a personal @gmail.com account.';
+          setGlobalError(msg);
+          addToast('Gmail Required', msg, 'warning');
+          return;
+        }
+      }
+
       console.log("Login successful for user:", result.user.email);
       if (tutCheckoutRequest) {
         setIsLoggingIn(false);
@@ -4438,6 +4477,7 @@ export default function App() {
         console.warn("Popup blocked by browser. Falling back to redirect...");
         try {
           const provider = new GoogleAuthProvider();
+          provider.setCustomParameters({ prompt: 'select_account' });
           await signInWithRedirect(auth, provider);
           return;
         } catch (redirErr: any) {
@@ -4457,6 +4497,12 @@ export default function App() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+
+    const targetRegEmail = (regData.email || user.email || '').toLowerCase().trim();
+    if (!isGmailAddress(targetRegEmail)) {
+      addToast("Gmail Required", "New member registration requires an official @gmail.com email address.", "warning");
+      return;
+    }
     
     if (regData.phone.length !== 11 || !regData.phone.startsWith('0')) {
       addToast("Invalid Phone", "Phone number must be 11 digits starting with 0", "warning");

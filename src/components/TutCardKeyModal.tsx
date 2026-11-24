@@ -33,6 +33,8 @@ import { UserProfile } from '../App';
 interface TutCardKeyModalProps {
   isOpen: boolean;
   onClose: () => void;
+  mandatoryMode?: boolean;
+  onSignOut?: () => void;
   db: Firestore;
   user: User | null;
   profile: UserProfile;
@@ -50,12 +52,24 @@ const PRESET_SECURITY_QUESTIONS = [
 export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
   isOpen,
   onClose,
+  mandatoryMode = false,
+  onSignOut,
   db,
   user,
   profile,
   tutCard,
   addToast
 }) => {
+  const [enteredViaMandatoryGate, setEnteredViaMandatoryGate] = useState(false);
+
+  useEffect(() => {
+    if (isOpen && mandatoryMode) {
+      setEnteredViaMandatoryGate(true);
+    }
+    if (!isOpen) {
+      setEnteredViaMandatoryGate(false);
+    }
+  }, [isOpen, mandatoryMode]);
   const [secretCode, setSecretCode] = useState('');
   const [confirmCode, setConfirmCode] = useState('');
   const [showCode, setShowCode] = useState(false);
@@ -335,10 +349,12 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
     (recoveryMethod === 'backup_key' && backupKeyInput.trim().length >= 10) ||
     (recoveryMethod === 'security_question' && securityAnswerInput.trim().length >= 2);
 
+  const isStrictLock = Boolean(mandatoryMode && !isKeyAlreadySet);
+
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={onClose}
+      className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4"
+      onClick={!isStrictLock && !revealedBackupKey ? onClose : undefined}
     >
       <div
         className="bg-[#0B132B] border border-[#1E3368] rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar p-6 space-y-5 shadow-2xl text-left"
@@ -352,22 +368,40 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-white">
-                {isKeyAlreadySet ? 'Card Key Management & Recovery' : 'Set Card Payment Key'}
+                {isStrictLock
+                  ? 'Set Your 6-Digit Card PIN'
+                  : isKeyAlreadySet
+                  ? 'Card Key Management & Recovery'
+                  : 'Set Card Payment Key'}
               </h3>
               <p className="text-[11px] text-slate-400">
-                {isKeyAlreadySet
+                {isStrictLock
+                  ? 'Required once to activate your card and access your dashboard'
+                  : isKeyAlreadySet
                   ? 'Locked 6-digit Payment Key · Card controls & smart recovery'
                   : 'Create your mandatory 6-digit Payment Key to activate your card'}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {isStrictLock ? (
+            onSignOut ? (
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="px-2.5 py-1.5 rounded-lg border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer shrink-0"
+              >
+                Sign Out
+              </button>
+            ) : null
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* One-Time Master Recovery Backup Key Banner (shown immediately after initial setup or recovery) */}
@@ -395,10 +429,18 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => setRevealedBackupKey(null)}
-              className="w-full py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold cursor-pointer"
+              onClick={() => {
+                setRevealedBackupKey(null);
+                if (enteredViaMandatoryGate) {
+                  setEnteredViaMandatoryGate(false);
+                  onClose();
+                }
+              }}
+              className="w-full py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold cursor-pointer"
             >
-              I Have Saved My Recovery Key
+              {enteredViaMandatoryGate
+                ? 'I Have Saved My Recovery Key — Continue to Dashboard'
+                : 'I Have Saved My Recovery Key'}
             </button>
           </div>
         )}
@@ -566,19 +608,27 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             )}
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white cursor-pointer"
-              >
-                Close
-              </button>
+              {!isStrictLock && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-white cursor-pointer"
+                >
+                  Close
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={saving}
-                className="px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                className={isStrictLock
+                  ? 'w-full px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50'
+                  : 'px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50'}
               >
-                {saving ? 'Activating Key...' : 'Set Key & Activate Card'}
+                {saving
+                  ? 'Activating PIN...'
+                  : isStrictLock
+                  ? 'Set PIN & Continue to App'
+                  : 'Set Key & Activate Card'}
               </button>
             </div>
           </form>

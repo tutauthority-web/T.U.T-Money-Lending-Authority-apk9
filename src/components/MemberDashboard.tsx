@@ -80,7 +80,10 @@ import { CreditScoreModal } from './CreditScoreModal';
 import { MemberLoanHistoryCard } from './MemberLoanHistoryCard';
 import { BankingTierCard } from './BankingTierCard';
 import { TutCardKeyModal } from './TutCardKeyModal';
-import { TutPayCardRecord } from '../utils/tutPaymentEngine';
+import {
+  TutPayCardRecord,
+  deriveDeterministicCardNumber
+} from '../utils/tutPaymentEngine';
 import { SubscriptionHubView } from './SubscriptionHubView';
 import { TierEmblem } from './TierEmblems';
 import { BkashLogo, NagadLogo } from './PaymentBrandLogos';
@@ -680,6 +683,13 @@ export function MemberDashboard({
   const [tutCard, setTutCard] = useState<TutPayCardRecord | null>(null);
   const [tutCardLoaded, setTutCardLoaded] = useState(false);
   const [showCardSecurityModal, setShowCardSecurityModal] = useState(false);
+  const [pinGateOpen, setPinGateOpen] = useState(false);
+
+  useEffect(() => {
+    if (tutCardLoaded && !tutCard?.secretCodeHash) {
+      setPinGateOpen(true);
+    }
+  }, [tutCardLoaded, tutCard?.secretCodeHash]);
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -1836,50 +1846,8 @@ export function MemberDashboard({
               showDetailsToggle={true}
               hideBalances={hideBalances}
               onCardClick={() => setMemberTab('subscription')}
-              onManageSecurity={() => setShowCardSecurityModal(true)}
+              onManageSecurity={() => setMemberTab('memos')}
             />
-
-            {/* Single Card Key Setup & Smart Recovery Control */}
-            <button
-              type="button"
-              onClick={() => setShowCardSecurityModal(true)}
-              className={cn(
-                "w-full px-3.5 py-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer group",
-                tutCardLoaded && !tutCard?.secretCodeHash
-                  ? "bg-amber-500/15 hover:bg-amber-500/25 border-amber-400/45"
-                  : "bg-slate-900/90 hover:bg-slate-800 border-white/10 hover:border-amber-400/35"
-              )}
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className={cn(
-                  "w-8 h-8 rounded-lg border flex items-center justify-center shrink-0",
-                  tutCard?.isFrozen
-                    ? "bg-rose-500/10 border-rose-500/25 text-rose-400"
-                    : tutCard?.secretCodeHash
-                    ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
-                    : "bg-amber-500/15 border-amber-400/35 text-amber-300"
-                )}>
-                  <KeyRound className="w-4 h-4" />
-                </div>
-                <div className="min-w-0">
-                  <span className="text-xs font-bold text-white block truncate">
-                    {tutCard?.isFrozen
-                      ? 'Card Frozen · Manage Key'
-                      : tutCard?.secretCodeHash
-                      ? 'Card Key Management & Recovery'
-                      : 'Set Card Payment Key (Required)'}
-                  </span>
-                  <span className="text-[10.5px] text-slate-400 block truncate">
-                    {tutCard?.isFrozen
-                      ? 'Tap to unfreeze or recover card key'
-                      : tutCard?.secretCodeHash
-                      ? 'Key locked · Freeze, spend limits & smart recovery'
-                      : 'Create your 6-digit Payment Key & recovery backup'}
-                  </span>
-                </div>
-              </div>
-              <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-white shrink-0" />
-            </button>
 
             {/* Membership & Limits Box - Smart Color-Changing Borrowing Limit System */}
             {(() => {
@@ -2415,6 +2383,68 @@ export function MemberDashboard({
                   <span className="text-[9px] font-bold text-purple-300 underline uppercase tracking-wider hidden sm:inline ml-1">Details →</span>
                 </div>
               </div>
+
+              {/* 2. CARD KEY MANAGEMENT SECTION (DIRECTLY UNDER REPAYMENT CARD) */}
+              {(() => {
+                const pan =
+                  tutCard?.cardNumber || deriveDeterministicCardNumber(profile.uid, profile.memberId);
+                const last4 = pan.slice(-4);
+                const hasPin = Boolean(tutCard?.secretCodeHash);
+                return (
+                  <div className="p-3.5 rounded-xl bg-[#0B1222] border border-white/10 hover:border-amber-400/35 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={cn(
+                          'w-8 h-8 rounded-lg border flex items-center justify-center shrink-0',
+                          tutCard?.isFrozen
+                            ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                            : hasPin
+                            ? 'bg-amber-500/10 border-amber-400/30 text-amber-300'
+                            : 'bg-amber-500/15 border-amber-400/45 text-amber-300'
+                        )}
+                      >
+                        <KeyRound className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <h3 className="font-bold text-white">Card Key Management</h3>
+                          <span aria-hidden="true" className="text-slate-600">·</span>
+                          <span className="font-mono tabular-nums text-[11px] text-slate-300">
+                            •••• {last4}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-600">·</span>
+                          <span
+                            className={cn(
+                              'text-[11px] font-semibold',
+                              tutCard?.isFrozen
+                                ? 'text-rose-400'
+                                : hasPin
+                                ? 'text-emerald-400'
+                                : 'text-amber-300'
+                            )}
+                          >
+                            {tutCard?.isFrozen ? 'Frozen' : hasPin ? 'PIN Active & Locked' : 'PIN Required'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 truncate">
+                          {hasPin
+                            ? `Per-transaction cap ৳${(tutCard?.perTxLimit || 50000).toLocaleString()} · Direct overwrite locked, smart recovery available`
+                            : 'Set your mandatory 6-digit Card PIN and save a Master Recovery Key'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowCardSecurityModal(true)}
+                      className="w-full sm:w-auto py-2 px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                    >
+                      <span>{hasPin ? 'Manage Key & Recovery' : 'Set Card PIN'}</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* Grid 1: 3-COLUMN STATS OVERVIEW (TOTAL LOAN, TOTAL DEPOSITS, CREDIT SCORE) */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
@@ -6902,10 +6932,24 @@ export function MemberDashboard({
         onRequestAction={onRequestAction}
       />
 
+      {/* Initial Card PIN Verification Loading Guard */}
+      {!tutCardLoaded && (
+        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+          <div className="w-6 h-6 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-medium text-slate-300">Verifying card security...</p>
+        </div>
+      )}
+
       {/* T.U.T. Card Key Setup & Smart Recovery Modal */}
       <TutCardKeyModal
-        isOpen={showCardSecurityModal}
-        onClose={() => setShowCardSecurityModal(false)}
+        isOpen={showCardSecurityModal || pinGateOpen}
+        onClose={() => {
+          if (!tutCard?.secretCodeHash) return;
+          setShowCardSecurityModal(false);
+          setPinGateOpen(false);
+        }}
+        mandatoryMode={tutCardLoaded && !tutCard?.secretCodeHash}
+        onSignOut={() => signOut(auth)}
         db={db}
         user={auth.currentUser}
         profile={profile}
