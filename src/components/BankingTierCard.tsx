@@ -668,7 +668,7 @@ export const BankingTierCard: React.FC<BankingTierCardProps> = ({
                       }}
                       className="px-2.5 py-1 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-md text-[9px] font-semibold text-amber-300 transition-colors cursor-pointer"
                     >
-                      {tutCard?.isActive ? 'Security & PIN' : 'Activate Card'}
+                      {tutCard?.isActive ? 'Key & Recovery' : 'Set Card Key'}
                     </button>
                   )}
                   <button

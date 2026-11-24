@@ -1218,13 +1218,29 @@ export const EVENT_REGISTRY: Record<string, EventDefinition> = {
   },
 };
 
+export const PRIMARY_PUBLIC_APP_URL = 'https://t-u-t-money-lending-authority-apkma.vercel.app';
+
+export const resolvePublicAppUrl = (origin?: string): string => {
+  const candidate = origin || (typeof window !== 'undefined' ? window.location.origin : '');
+  if (
+    !candidate ||
+    candidate.includes('localhost') ||
+    candidate.includes('127.0.0.1') ||
+    candidate.includes('ais-dev-') ||
+    candidate.includes('ais-pre-')
+  ) {
+    return PRIMARY_PUBLIC_APP_URL;
+  }
+  return candidate;
+};
+
 // High-craft editorial banking HTML template (safe for Gmail Web, Mobile & Dark Mode clients)
 export const generateBrandedEmailHtml = (
   title: string,
   summary: string,
   details: Record<string, string>,
   referenceId: string,
-  appUrl: string = typeof window !== 'undefined' ? window.location.origin : '',
+  appUrl: string = resolvePublicAppUrl(),
   options: {
     accentTone?: 'neutral' | 'success' | 'warning' | 'danger';
     ctaLabel?: string;
@@ -1285,7 +1301,8 @@ export const generateBrandedEmailHtml = (
     )
     .join('');
 
-  const safeHref = appUrl && appUrl.startsWith('http') ? appUrl : '#';
+  const normalizedAppUrl = resolvePublicAppUrl(appUrl);
+  const safeHref = normalizedAppUrl && normalizedAppUrl.startsWith('http') ? normalizedAppUrl : PRIMARY_PUBLIC_APP_URL;
   const showButton = Boolean(options.ctaLabel && safeHref !== '#');
   const logoSrc = safeHref !== '#' ? `${safeHref.replace(/\/$/, '')}/assets/tut-authority-logo.jpg` : '';
 
@@ -1436,7 +1453,7 @@ export function generateDirectMemoEmailHtml(
   receipt: OfficialReceiptData,
   acceptedHeading: string,
   acceptedMessage: string,
-  appUrl: string = typeof window !== 'undefined' ? window.location.origin : ''
+  appUrl: string = resolvePublicAppUrl()
 ): string {
   const memoCode = normalizeMemoCode(receipt.id, receipt.memoId);
   const checksum = computeLedgerChecksum(receipt);
@@ -1473,7 +1490,8 @@ export function generateDirectMemoEmailHtml(
     )
     .join('');
 
-  const safeHref = appUrl && appUrl.startsWith('http') ? appUrl : '#';
+  const normalizedAppUrl = resolvePublicAppUrl(appUrl);
+  const safeHref = normalizedAppUrl && normalizedAppUrl.startsWith('http') ? normalizedAppUrl : PRIMARY_PUBLIC_APP_URL;
 
   return `
   <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f1f5f9; padding: 24px 12px; color: #0f172a; margin: 0;">
@@ -1654,7 +1672,7 @@ export class NotificationService {
       return false;
     }
 
-    const appUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    const appUrl = resolvePublicAppUrl();
     let deliveredAnyOrSkippedCleanly = true;
 
     for (const role of eventDef.recipients) {

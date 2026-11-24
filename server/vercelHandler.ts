@@ -1,4 +1,4 @@
-import { createApiApp } from "../server/createApiApp";
+import { createApiApp } from "./createApiApp";
 
 const app = createApiApp({ serverless: true });
 

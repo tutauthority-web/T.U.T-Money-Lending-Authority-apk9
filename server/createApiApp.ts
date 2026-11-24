@@ -6,6 +6,7 @@ import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { generateHumanEmployeeResponse } from "../src/utils/workforceKnowledge";
+import embeddedFirebaseConfig from "../firebase-applet-config.json";
 
 dotenv.config();
 
@@ -35,14 +36,14 @@ const loadFirebasePublicConfig = (): FirebasePublicConfig => {
       : [])
   ];
 
-  let fromFile: FirebasePublicConfig = {};
+  let fromFile: FirebasePublicConfig = (embeddedFirebaseConfig as FirebasePublicConfig) || {};
   for (const candidatePath of candidates) {
     try {
       if (fs.existsSync(candidatePath)) {
         const raw = fs.readFileSync(candidatePath, "utf8");
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") {
-          fromFile = parsed;
+          fromFile = { ...fromFile, ...parsed };
           break;
         }
       }
@@ -479,8 +480,9 @@ export function mountApiRoutes(
   );
 
   // ==============================================================================
-  // T.U.T. PAYMENT GATEWAY: PUBLIC DISCOVERY, ID TOKEN GUARDED RECEIPT SIGNING & VERIFY
+  // T.U.T. CARD-ONLY PAYMENT GATEWAY v2 (VERCEL-PRIMARY, FIRESTORE-VERIFIED)
   // ==============================================================================
+  const PRIMARY_VERCEL_ORIGIN = "https://t-u-t-money-lending-authority-apkma.vercel.app";
   const gatewayRateBuckets = new Map<string, { count: number; resetAt: number }>();
   const checkGatewayRateLimit = (ipKey: string, maxPerMin = 40): boolean => {
     const now = Date.now();
@@ -504,11 +506,12 @@ export function mountApiRoutes(
     currency: string;
     payerUid: string;
     payerMemberId?: string;
+    cardLast4?: string;
     method: string;
     timestamp: string;
   }) => {
     return [
-      "TUT-RECEIPT-V1",
+      "TUT-CARD-RECEIPT-V2",
       String(p.txId || "").trim(),
       String(p.memoId || "").trim(),
       String(p.merchantId || "").trim(),
@@ -518,7 +521,8 @@ export function mountApiRoutes(
       String(p.currency || "BDT").toUpperCase(),
       String(p.payerUid || "").trim(),
       String(p.payerMemberId || "").trim(),
-      String(p.method || "").trim(),
+      String(p.cardLast4 || "").trim(),
+      String(p.method || "T.U.T. Card").trim(),
       String(p.timestamp || "").trim()
     ].join("|");
   };
@@ -528,20 +532,177 @@ export function mountApiRoutes(
     return crypto.createHmac("sha256", GATEWAY_SIGNING_SECRET).update(msg).digest("hex");
   };
 
+  const signCompactData = (data: unknown): string => {
+    const bodyB64 = Buffer.from(JSON.stringify(data), "utf8").toString("base64url");
+    const sig = crypto
+      .createHmac("sha256", GATEWAY_SIGNING_SECRET)
+      .update(bodyB64)
+      .digest("base64url");
+    return `${bodyB64}.${sig}`;
+  };
+
+  const verifyCompactData = <T = any>(token: string): T | null => {
+    if (typeof token !== "string") return null;
+    const parts = token.trim().split(".");
+    if (parts.length !== 2) return null;
+    const [bodyB64, providedSig] = parts;
+    if (!bodyB64 || !providedSig) return null;
+    const expectedSig = crypto
+      .createHmac("sha256", GATEWAY_SIGNING_SECRET)
+      .update(bodyB64)
+      .digest("base64url");
+    const a = Buffer.from(providedSig, "utf8");
+    const b = Buffer.from(expectedSig, "utf8");
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    try {
+      return JSON.parse(Buffer.from(bodyB64, "base64url").toString("utf8")) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const verifyFirebaseIdToken = async (idToken: string) => {
+    const firebaseApiKey = FIREBASE_PUBLIC_CONFIG.apiKey;
+    if (!firebaseApiKey) {
+      throw new Error("Firebase public configuration missing.");
+    }
+    const verifyResp = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(
+        firebaseApiKey
+      )}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken })
+      }
+    );
+    const verifyData = await verifyResp.json().catch(() => ({}));
+    const tokenUser = Array.isArray(verifyData?.users) ? verifyData.users[0] : null;
+    if (!verifyResp.ok || !tokenUser?.localId) {
+      return null;
+    }
+    return tokenUser as { localId: string; email?: string; displayName?: string };
+  };
+
+  const decodeFirestoreValue = (val: any): any => {
+    if (!val || typeof val !== "object") return undefined;
+    if ("stringValue" in val) return val.stringValue;
+    if ("integerValue" in val) return Number(val.integerValue);
+    if ("doubleValue" in val) return Number(val.doubleValue);
+    if ("booleanValue" in val) return Boolean(val.booleanValue);
+    if ("timestampValue" in val) return val.timestampValue;
+    if ("nullValue" in val) return null;
+    if ("arrayValue" in val) {
+      const values = Array.isArray(val.arrayValue?.values) ? val.arrayValue.values : [];
+      return values.map(decodeFirestoreValue);
+    }
+    if ("mapValue" in val) {
+      const fields = val.mapValue?.fields || {};
+      const out: Record<string, any> = {};
+      for (const [k, v] of Object.entries(fields)) {
+        out[k] = decodeFirestoreValue(v);
+      }
+      return out;
+    }
+    return undefined;
+  };
+
+  const readFirestoreDocWithUserToken = async (
+    collectionPath: string,
+    docId: string,
+    idToken: string
+  ): Promise<Record<string, any> | null> => {
+    const projectId = FIREBASE_PUBLIC_CONFIG.projectId;
+    const databaseId = FIREBASE_PUBLIC_CONFIG.firestoreDatabaseId || "(default)";
+    if (!projectId) {
+      throw new Error("Firebase projectId missing.");
+    }
+    const safeCol = collectionPath.replace(/^\/+|\/+$/g, "");
+    const safeId = encodeURIComponent(docId.trim());
+    const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+      projectId
+    )}/databases/${encodeURIComponent(databaseId)}/documents/${safeCol}/${safeId}`;
+
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+    if (resp.status === 404) return null;
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => "");
+      throw new Error(`Firestore read rejected (${resp.status}): ${errBody.slice(0, 200)}`);
+    }
+    const docJson = await resp.json().catch(() => null);
+    const fields = docJson?.fields;
+    if (!fields || typeof fields !== "object") return null;
+    const result: Record<string, any> = {};
+    for (const [k, v] of Object.entries(fields)) {
+      result[k] = decodeFirestoreValue(v);
+    }
+    return result;
+  };
+
+  const isSafeWebhookUrl = (rawUrl: string): boolean => {
+    try {
+      const parsed = new URL(rawUrl.trim());
+      if (parsed.protocol !== "https:") return false;
+      const host = parsed.hostname.toLowerCase();
+      if (
+        !host ||
+        host === "localhost" ||
+        host.endsWith(".local") ||
+        host.endsWith(".internal") ||
+        host === "::1" ||
+        host === "[::1]"
+      ) {
+        return false;
+      }
+      // Block IPv4 loopback, private RFC1918, link-local / cloud metadata ranges
+      const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (ipv4Match) {
+        const [, a, b] = ipv4Match.map(Number);
+        if (
+          a === 10 ||
+          a === 127 ||
+          a === 0 ||
+          (a === 169 && b === 254) ||
+          (a === 172 && b >= 16 && b <= 31) ||
+          (a === 192 && b === 168)
+        ) {
+          return false;
+        }
+      }
+      return host.includes(".");
+    } catch {
+      return false;
+    }
+  };
+
   const resolveRequestBaseUrl = (req: express.Request): string => {
-    const rawProto = req.headers["x-forwarded-proto"];
-    const hostProto =
-      String(Array.isArray(rawProto) ? rawProto[0] : rawProto || req.protocol || "https")
-        .split(",")[0]
-        .trim() || "https";
     const rawHost = req.headers["x-forwarded-host"] || req.get("host") || "";
     const host = String(Array.isArray(rawHost) ? rawHost[0] : rawHost)
       .split(",")[0]
-      .trim();
-    return host ? `${hostProto}://${host}` : "";
+      .trim()
+      .toLowerCase();
+    if (host.includes("vercel.app")) {
+      return `https://${host}`;
+    }
+    const envUrl = process.env.APP_URL?.trim().replace(/\/+$/, "") || "";
+    if (
+      envUrl &&
+      !envUrl.includes("ais-") &&
+      !envUrl.includes(".run.app") &&
+      !envUrl.includes("localhost")
+    ) {
+      return envUrl;
+    }
+    return PRIMARY_VERCEL_ORIGIN;
   };
 
-  // Public Gateway Config (zero secrets, strictly Firebase public client keys + gateway URLs)
+  // Public Gateway Discovery (no secrets; Card-Only)
   app.options("/api/gateway/public-config", (_req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -557,9 +718,11 @@ export function mountApiRoutes(
 
     res.json({
       provider: "T.U.T. Private Lending Authority",
+      gatewayVersion: "2.0-card-only",
       currency: "BDT",
       hostingMode: isServerless ? "vercel-serverless" : "node-server",
       persistentSigningSecretConfigured: HAS_PERSISTENT_SIGNING_SECRET,
+      primaryUrl: PRIMARY_VERCEL_ORIGIN,
       firebase: {
         projectId: FIREBASE_PUBLIC_CONFIG.projectId || "",
         firestoreDatabaseId: FIREBASE_PUBLIC_CONFIG.firestoreDatabaseId || "",
@@ -571,32 +734,126 @@ export function mountApiRoutes(
       },
       gateway: {
         checkoutUrl: `${baseUrl}/pay`,
-        queryCheckoutUrl: `${baseUrl}/?tut_pay=1`,
-        verifyReceiptUrl: `${baseUrl}/api/gateway/verify-receipt`,
+        createSessionUrl: `${baseUrl}/api/gateway/create-session`,
+        parseSessionUrl: `${baseUrl}/api/gateway/parse-session`,
+        confirmPaymentUrl: `${baseUrl}/api/gateway/confirm-payment`,
+        verifyPaymentUrl: `${baseUrl}/api/gateway/verify-payment`,
+        verifyReceiptUrl: `${baseUrl}/api/gateway/verify-payment`,
         publicConfigUrl: `${baseUrl}/api/gateway/public-config`,
-        supportedInstruments: ["tut_card", "tut_wallet", "tut_credit"]
+        supportedInstruments: ["tut_card"]
       }
     });
   });
 
-  app.options("/api/gateway/sign-receipt", (_req, res) => {
+  // Creates a tamper-proof signed checkout session URL so orderId & amount cannot be modified in browser URL
+  app.options("/api/gateway/create-session", (_req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.setHeader("Access-Control-Max-Age", "86400");
     res.status(204).end();
   });
 
-  // Issues an unforgeable HMAC-SHA256 signed receipt after Firebase ID token verification
   app.post(
-    "/api/gateway/sign-receipt",
+    "/api/gateway/create-session",
     safeAsync(async (req, res) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       const clientIp = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
-      if (!checkGatewayRateLimit(`sign:${clientIp}`, 30)) {
+      if (!checkGatewayRateLimit(`sess:${clientIp}`, 60)) {
+        return res.status(429).json({ success: false, error: "Too many checkout session requests." });
+      }
+
+      const {
+        amount,
+        merchantId = "",
+        merchantName,
+        orderId,
+        returnUrl = "",
+        reference = ""
+      } = req.body || {};
+
+      const parsedAmount = Number(amount);
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0 || parsedAmount > 500000) {
+        return res.status(400).json({ success: false, error: "Amount must be between 1 and 500,000 BDT." });
+      }
+      if (!merchantName || typeof merchantName !== "string" || !merchantName.trim()) {
+        return res.status(400).json({ success: false, error: "merchantName is required." });
+      }
+      const cleanOrderId = String(orderId || `ORD-${Date.now().toString(36).toUpperCase()}`)
+        .trim()
+        .slice(0, 100);
+
+      let safeReturnUrl = "";
+      if (typeof returnUrl === "string" && returnUrl.trim()) {
+        try {
+          const parsedRet = new URL(returnUrl.trim());
+          if (parsedRet.protocol === "https:" || parsedRet.protocol === "http:") {
+            safeReturnUrl = parsedRet.toString();
+          }
+        } catch {
+          return res.status(400).json({ success: false, error: "Invalid returnUrl format." });
+        }
+      }
+
+      const exp = Date.now() + 60 * 60 * 1000; // 1 hour expiry
+      const sessionPayload = {
+        v: 2,
+        amount: Math.round(parsedAmount * 100) / 100,
+        merchantId: String(merchantId || "").trim().slice(0, 100),
+        merchantName: merchantName.trim().slice(0, 120),
+        orderId: cleanOrderId,
+        returnUrl: safeReturnUrl,
+        reference: String(reference || "").trim().slice(0, 200),
+        exp
+      };
+
+      const sessionToken = signCompactData(sessionPayload);
+      const baseUrl = resolveRequestBaseUrl(req);
+      const checkoutUrl = `${baseUrl}/pay?session=${encodeURIComponent(sessionToken)}`;
+
+      res.json({
+        success: true,
+        sessionToken,
+        checkoutUrl,
+        expiresAt: new Date(exp).toISOString()
+      });
+    })
+  );
+
+  app.get("/api/gateway/parse-session", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    const rawSession = String(req.query.session || "").trim();
+    const parsed = verifyCompactData<{
+      v: number;
+      amount: number;
+      merchantId?: string;
+      merchantName: string;
+      orderId: string;
+      returnUrl?: string;
+      reference?: string;
+      exp: number;
+    }>(rawSession);
+
+    if (!parsed || parsed.v !== 2) {
+      return res.status(400).json({ valid: false, error: "Invalid checkout session signature." });
+    }
+    if (!parsed.exp || Date.now() > Number(parsed.exp)) {
+      return res.status(410).json({ valid: false, error: "Checkout session has expired." });
+    }
+    res.json({ valid: true, session: parsed });
+  });
+
+  // Authoritative Server Confirmation: verifies Firebase ID Token AND reads the real Firestore transaction
+  // before issuing an HMAC receipt token or dispatching a merchant webhook.
+  app.post(
+    "/api/gateway/confirm-payment",
+    safeAsync(async (req, res) => {
+      const clientIp = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
+      if (!checkGatewayRateLimit(`confirm:${clientIp}`, 40)) {
         return res
           .status(429)
-          .json({ success: false, error: "Too many gateway requests. Please wait a minute." });
+          .json({ success: false, error: "Too many gateway confirmation requests." });
       }
 
       const authHeader = String(req.headers.authorization || "");
@@ -607,76 +864,205 @@ export function mountApiRoutes(
           .json({ success: false, error: "Missing Firebase Authorization Bearer token." });
       }
 
-      const {
-        txId,
-        memoId,
-        merchantId = "",
-        merchantName,
-        orderId,
-        amount,
-        payerUid,
-        payerMemberId = "",
-        method
-      } = req.body || {};
-      if (
-        !txId ||
-        !memoId ||
-        !merchantName ||
-        !orderId ||
-        !Number.isFinite(Number(amount)) ||
-        Number(amount) <= 0 ||
-        !payerUid
-      ) {
-        return res.status(400).json({ success: false, error: "Invalid receipt payload." });
+      const txId = String(req.body?.txId || "").trim();
+      if (!txId || !/^[a-zA-Z0-9_-]{6,128}$/.test(txId)) {
+        return res.status(400).json({ success: false, error: "Valid txId is required." });
       }
 
-      const firebaseApiKey = FIREBASE_PUBLIC_CONFIG.apiKey;
-      if (!firebaseApiKey) {
-        return res
-          .status(500)
-          .json({ success: false, error: "Firebase public configuration missing." });
-      }
-
-      const verifyResp = await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(
-          firebaseApiKey
-        )}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ idToken })
-        }
-      );
-      const verifyData = await verifyResp.json().catch(() => ({}));
-      const tokenUser = Array.isArray(verifyData?.users) ? verifyData.users[0] : null;
-      if (!verifyResp.ok || !tokenUser || tokenUser.localId !== payerUid) {
+      const tokenUser = await verifyFirebaseIdToken(idToken);
+      if (!tokenUser) {
         return res
           .status(403)
           .json({ success: false, error: "Caller identity could not be verified." });
       }
 
-      const timestamp = new Date().toISOString();
+      // Fetch authoritative transaction record directly from Firestore using caller's verified token
+      const txDoc = await readFirestoreDocWithUserToken("transactions", txId, idToken);
+      if (!txDoc) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Transaction record not found in ledger." });
+      }
+      if (txDoc.userId !== tokenUser.localId) {
+        return res
+          .status(403)
+          .json({ success: false, error: "Transaction does not belong to authenticated user." });
+      }
+      if (txDoc.type !== "merchant_payment" || txDoc.paymentInstrument !== "tut_card") {
+        return res
+          .status(400)
+          .json({ success: false, error: "Only confirmed T.U.T. Card payments can be certified." });
+      }
+      if (txDoc.status !== "confirmed") {
+        return res
+          .status(409)
+          .json({ success: false, error: "Transaction is not in confirmed state." });
+      }
+
+      const amount = Number(txDoc.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return res.status(400).json({ success: false, error: "Invalid transaction amount." });
+      }
+
+      const timestamp =
+        typeof txDoc.timestamp === "string" && txDoc.timestamp
+          ? txDoc.timestamp
+          : new Date().toISOString();
+
       const receipt = {
-        txId: String(txId),
-        memoId: String(memoId),
-        merchantId: String(merchantId || ""),
-        merchantName: String(merchantName).slice(0, 120),
-        orderId: String(orderId).slice(0, 120),
-        amount: Number(amount),
+        txId,
+        memoId: String(txDoc.memoId || txId),
+        merchantId: String(txDoc.merchantId || ""),
+        merchantName: String(txDoc.merchantName || "Authorized Partner App").slice(0, 120),
+        orderId: String(txDoc.orderId || txDoc.transactionId || txId).slice(0, 120),
+        amount,
         currency: "BDT",
-        payerUid: String(payerUid),
+        payerUid: String(tokenUser.localId),
         payerEmail: String(tokenUser.email || ""),
-        payerMemberId: String(payerMemberId || ""),
-        method: String(method || "T.U.T. Wallet"),
+        payerMemberId: String(req.body?.payerMemberId || ""),
+        cardLast4: String(txDoc.cardLast4 || ""),
+        method: "T.U.T. Card",
         timestamp
       };
 
       const signature = signReceiptPayload(receipt);
-      res.json({ success: true, receipt, signature });
+      const receiptToken = signCompactData({ v: 2, receipt, sig: signature });
+
+      // Read merchant configuration (safe public fields only) & dispatch SSRF-guarded webhook if configured
+      let webhookDelivered = false;
+      let webhookAttempted = false;
+      let allowedOrigins: string[] = [];
+
+      if (receipt.merchantId && /^[a-zA-Z0-9_-]{4,100}$/.test(receipt.merchantId)) {
+        try {
+          const merchantDoc = await readFirestoreDocWithUserToken(
+            "merchant_apps",
+            receipt.merchantId,
+            idToken
+          );
+          if (merchantDoc && merchantDoc.status === "active") {
+            if (Array.isArray(merchantDoc.allowedOrigins)) {
+              allowedOrigins = merchantDoc.allowedOrigins.filter(
+                (o: any) => typeof o === "string" && o.startsWith("http")
+              );
+            }
+            const webhookUrl = typeof merchantDoc.webhookUrl === "string" ? merchantDoc.webhookUrl.trim() : "";
+            if (webhookUrl && isSafeWebhookUrl(webhookUrl)) {
+              webhookAttempted = true;
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 5000);
+              try {
+                const hookResp = await fetch(webhookUrl, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "X-TUT-Event": "payment.confirmed",
+                    "X-TUT-Signature": signature
+                  },
+                  body: JSON.stringify({
+                    event: "payment.confirmed",
+                    receipt,
+                    signature,
+                    token: receiptToken
+                  }),
+                  redirect: "error",
+                  signal: controller.signal
+                });
+                webhookDelivered = hookResp.ok;
+              } catch (hookErr: any) {
+                console.warn("[Gateway Webhook] Delivery failed:", hookErr?.message);
+              } finally {
+                clearTimeout(timer);
+              }
+            }
+          }
+        } catch (mErr: any) {
+          console.warn("[Gateway Confirm] Merchant lookup skipped:", mErr?.message);
+        }
+      }
+
+      res.json({
+        success: true,
+        receipt,
+        signature,
+        token: receiptToken,
+        webhookAttempted,
+        webhookDelivered,
+        allowedOrigins
+      });
     })
   );
 
-  // Allows external apps to cryptographically verify a T.U.T. payment receipt
+  // Unified receipt / token verifier for external Merchant apps (/api/gateway/verify-payment & legacy alias)
+  const handleVerifyGatewayPayment: express.RequestHandler = safeAsync(async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const clientIp = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
+    if (!checkGatewayRateLimit(`verify:${clientIp}`, 90)) {
+      return res.status(429).json({ valid: false, error: "Rate limit exceeded." });
+    }
+
+    const { token, receipt, signature } = req.body || {};
+
+    let targetReceipt: any = null;
+    let targetSignature: string = "";
+
+    if (typeof token === "string" && token.trim()) {
+      const parsed = verifyCompactData<{ v: number; receipt: any; sig: string }>(token.trim());
+      if (!parsed || parsed.v !== 2 || !parsed.receipt || typeof parsed.sig !== "string") {
+        return res.status(401).json({ valid: false, error: "Invalid or tampered payment token." });
+      }
+      targetReceipt = parsed.receipt;
+      targetSignature = parsed.sig;
+    } else if (
+      receipt &&
+      typeof signature === "string" &&
+      /^[a-f0-9]{64}$/i.test(signature.trim())
+    ) {
+      targetReceipt = receipt;
+      targetSignature = signature.trim();
+    } else {
+      return res.status(400).json({
+        valid: false,
+        error: "Provide either { token } or { receipt, signature }."
+      });
+    }
+
+    const expectedSig = signReceiptPayload(targetReceipt);
+    const sigBuf = Buffer.from(targetSignature.toLowerCase(), "hex");
+    const expectedBuf = Buffer.from(expectedSig.toLowerCase(), "hex");
+    const isMatch =
+      sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf);
+
+    if (!isMatch) {
+      return res.status(401).json({ valid: false, error: "Invalid payment signature." });
+    }
+
+    res.json({
+      valid: true,
+      status: "paid",
+      verifiedAt: new Date().toISOString(),
+      txId: targetReceipt.txId,
+      memoId: targetReceipt.memoId,
+      amount: targetReceipt.amount,
+      currency: targetReceipt.currency || "BDT",
+      orderId: targetReceipt.orderId,
+      merchantId: targetReceipt.merchantId || "",
+      merchantName: targetReceipt.merchantName,
+      cardLast4: targetReceipt.cardLast4 || "",
+      method: targetReceipt.method || "T.U.T. Card",
+      payerEmail: targetReceipt.payerEmail || null
+    });
+  });
+
+  app.options("/api/gateway/verify-payment", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Max-Age", "86400");
+    res.status(204).end();
+  });
+  app.post("/api/gateway/verify-payment", handleVerifyGatewayPayment);
+
   app.options("/api/gateway/verify-receipt", (_req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -684,45 +1070,7 @@ export function mountApiRoutes(
     res.setHeader("Access-Control-Max-Age", "86400");
     res.status(204).end();
   });
-
-  app.post(
-    "/api/gateway/verify-receipt",
-    safeAsync(async (req, res) => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      const clientIp = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
-      if (!checkGatewayRateLimit(`verify:${clientIp}`, 60)) {
-        return res.status(429).json({ valid: false, error: "Rate limit exceeded." });
-      }
-
-      const { receipt, signature } = req.body || {};
-      if (!receipt || typeof signature !== "string" || !/^[a-f0-9]{64}$/i.test(signature.trim())) {
-        return res
-          .status(400)
-          .json({ valid: false, error: "Receipt payload and 64-char hex signature are required." });
-      }
-
-      const expectedSig = signReceiptPayload(receipt);
-      const sigBuf = Buffer.from(signature.trim().toLowerCase(), "hex");
-      const expectedBuf = Buffer.from(expectedSig.toLowerCase(), "hex");
-      const isMatch =
-        sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf);
-
-      if (!isMatch) {
-        return res.status(401).json({ valid: false, error: "Invalid receipt signature." });
-      }
-
-      res.json({
-        valid: true,
-        verifiedAt: new Date().toISOString(),
-        memoId: receipt.memoId,
-        amount: receipt.amount,
-        currency: receipt.currency || "BDT",
-        orderId: receipt.orderId,
-        merchantName: receipt.merchantName,
-        payerEmail: receipt.payerEmail || null
-      });
-    })
-  );
+  app.post("/api/gateway/verify-receipt", handleVerifyGatewayPayment);
 
   // Optional secondary HTTP relay if RESEND_API_KEY is configured
   const tryResendFallback = async (params: {
@@ -775,6 +1123,173 @@ export function mountApiRoutes(
       };
     }
   };
+
+  // Smart Card Key Recovery: Email OTP Challenge + Verification (stateless HMAC-bound)
+  app.post(
+    "/api/gateway/card-recovery/send-otp",
+    safeAsync(async (req, res) => {
+      const clientIp = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
+      if (!checkGatewayRateLimit(`otp-send:${clientIp}`, 10)) {
+        return res.status(429).json({
+          success: false,
+          error: "Too many recovery OTP requests. Please wait a minute."
+        });
+      }
+
+      const authHeader = String(req.headers.authorization || "");
+      const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      if (!idToken) {
+        return res.status(401).json({ success: false, error: "Authentication required." });
+      }
+
+      const tokenUser = await verifyFirebaseIdToken(idToken);
+      if (!tokenUser?.localId || !tokenUser?.email) {
+        return res
+          .status(403)
+          .json({ success: false, error: "Verified account email required for Email OTP recovery." });
+      }
+
+      const otp = String(crypto.randomInt(100000, 1000000));
+      const expiresAt = Date.now() + 10 * 60 * 1000;
+      const otpHash = crypto
+        .createHmac("sha256", GATEWAY_SIGNING_SECRET)
+        .update(`otp:${tokenUser.localId}:${expiresAt}:${otp}`)
+        .digest("hex");
+
+      const subject = "T.U.T. Card Key Recovery Verification Code";
+      const text = `Your T.U.T. Card Payment Key recovery code is: ${otp}\n\nThis code expires in 10 minutes. If you did not request a key recovery, freeze your card immediately from your dashboard.`;
+      const html = `
+        <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0b132b;color:#f8fafc;border-radius:12px;">
+          <h2 style="margin:0 0 12px;color:#fbbf24;">T.U.T. Authority — Card Key Recovery</h2>
+          <p style="font-size:14px;color:#cbd5e1;line-height:1.5;">Use the one-time verification code below to reset your 6-digit T.U.T. Card Payment Key:</p>
+          <div style="margin:20px 0;padding:16px;background:#070d1f;border:1px solid #334155;border-radius:10px;text-align:center;font-size:28px;font-weight:bold;letter-spacing:8px;color:#fde68a;font-family:monospace;">
+            ${otp}
+          </div>
+          <p style="font-size:12px;color:#94a3b8;">Valid for 10 minutes. Never share this code with anyone.</p>
+        </div>
+      `;
+
+      const { gmailUser, gmailPass } = getGmailCreds();
+      let sent = false;
+      if (gmailUser && gmailPass) {
+        try {
+          const transporter = nodemailer.createTransport({
+            service: "gmail",
+            auth: { user: gmailUser, pass: gmailPass }
+          });
+          await transporter.sendMail({
+            from: `"T.U.T Authority" <${gmailUser}>`,
+            to: tokenUser.email,
+            subject,
+            text,
+            html
+          });
+          sent = true;
+        } catch (mailErr: any) {
+          console.warn("[Card Recovery OTP] Gmail send failed:", mailErr?.message);
+        }
+      }
+
+      if (!sent) {
+        const relay = await tryResendFallback({
+          to: tokenUser.email,
+          subject,
+          text,
+          html
+        });
+        if (relay?.success) {
+          sent = true;
+        }
+      }
+
+      if (!sent) {
+        return res.status(503).json({
+          success: false,
+          code: "EMAIL_NOT_CONFIGURED",
+          error:
+            "Email delivery is not configured on the server right now. Use your Master Recovery Backup Key or Security Question instead."
+        });
+      }
+
+      const challengeToken = signCompactData({
+        purpose: "card-recovery-challenge",
+        uid: tokenUser.localId,
+        expiresAt,
+        otpHash
+      });
+
+      res.json({
+        success: true,
+        challengeToken,
+        maskedEmail: maskEmail(tokenUser.email),
+        expiresAt: new Date(expiresAt).toISOString()
+      });
+    })
+  );
+
+  app.post(
+    "/api/gateway/card-recovery/verify-otp",
+    safeAsync(async (req, res) => {
+      const clientIp = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
+      if (!checkGatewayRateLimit(`otp-verify:${clientIp}`, 20)) {
+        return res.status(429).json({ success: false, error: "Too many verification attempts." });
+      }
+
+      const authHeader = String(req.headers.authorization || "");
+      const idToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+      if (!idToken) {
+        return res.status(401).json({ success: false, error: "Authentication required." });
+      }
+
+      const tokenUser = await verifyFirebaseIdToken(idToken);
+      if (!tokenUser?.localId) {
+        return res.status(403).json({ success: false, error: "Invalid user session." });
+      }
+
+      const { challengeToken, otp } = req.body || {};
+      const cleanOtp = String(otp || "").trim();
+      if (!/^\d{6}$/.test(cleanOtp)) {
+        return res.status(400).json({ success: false, error: "Enter the 6-digit verification code." });
+      }
+
+      const challenge = verifyCompactData<{
+        purpose: string;
+        uid: string;
+        expiresAt: number;
+        otpHash: string;
+      }>(String(challengeToken || ""));
+
+      if (
+        !challenge ||
+        challenge.purpose !== "card-recovery-challenge" ||
+        challenge.uid !== tokenUser.localId
+      ) {
+        return res.status(400).json({ success: false, error: "Invalid or mismatched recovery challenge." });
+      }
+      if (!challenge.expiresAt || Date.now() > Number(challenge.expiresAt)) {
+        return res.status(410).json({ success: false, error: "Verification code expired. Request a new code." });
+      }
+
+      const candidateHash = crypto
+        .createHmac("sha256", GATEWAY_SIGNING_SECRET)
+        .update(`otp:${tokenUser.localId}:${challenge.expiresAt}:${cleanOtp}`)
+        .digest("hex");
+
+      const a = Buffer.from(candidateHash, "hex");
+      const b = Buffer.from(challenge.otpHash, "hex");
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        return res.status(401).json({ success: false, error: "Incorrect 6-digit verification code." });
+      }
+
+      const proofToken = signCompactData({
+        purpose: "card-recovery-proof",
+        uid: tokenUser.localId,
+        exp: Date.now() + 10 * 60 * 1000
+      });
+
+      res.json({ success: true, recoveryAuthToken: proofToken });
+    })
+  );
 
   // API Route for sending emails
   app.post(

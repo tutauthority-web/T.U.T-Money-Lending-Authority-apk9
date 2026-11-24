@@ -250,7 +250,7 @@
     },
     "TutPayCard": {
       "title": "TutPayCard",
-      "description": "Payable T.U.T. virtual card credential (stores salted SHA-256 secret hash only, never plaintext secret codes)",
+      "description": "Payable T.U.T. virtual card credential (stores salted PBKDF2/SHA-256 key & recovery digests, never plaintext secrets)",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
@@ -262,6 +262,14 @@
         "expiryYear": { "type": "string" },
         "secretCodeHash": { "type": "string" },
         "secretCodeSalt": { "type": "string" },
+        "recoveryKeyHash": { "type": "string" },
+        "recoveryKeySalt": { "type": "string" },
+        "securityQuestion": { "type": "string" },
+        "securityAnswerHash": { "type": "string" },
+        "securityAnswerSalt": { "type": "string" },
+        "recoveryCount": { "type": "number" },
+        "lastRecoveryMethod": { "type": "string", "enum": ["email_otp", "backup_key", "security_question", "admin_unlock"] },
+        "lastRecoveryAt": { "type": "string" },
         "isActive": { "type": "boolean" },
         "isFrozen": { "type": "boolean" },
         "perTxLimit": { "type": "number" },
@@ -276,22 +284,35 @@
     },
     "MerchantApp": {
       "title": "MerchantApp",
-      "description": "Connected external merchant application authorized to accept T.U.T. Card and Wallet payments",
+      "description": "Registered partner application metadata for T.U.T. Card-Only Gateway v2",
       "type": "object",
       "properties": {
         "merchantId": { "type": "string" },
         "name": { "type": "string" },
         "ownerEmail": { "type": "string" },
         "apiKeyId": { "type": "string" },
-        "apiKeyHash": { "type": "string" },
         "allowedOrigins": { "type": "array" },
+        "webhookUrl": { "type": "string" },
         "status": { "type": "string", "enum": ["active", "paused"] },
         "totalProcessed": { "type": "number" },
         "txCount": { "type": "number" },
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
       },
-      "required": ["merchantId", "name", "apiKeyId", "apiKeyHash", "status"]
+      "required": ["merchantId", "name", "apiKeyId", "status"]
+    },
+    "MerchantSecret": {
+      "title": "MerchantSecret",
+      "description": "Admin-only cryptographic API key hashes for registered partner apps",
+      "type": "object",
+      "properties": {
+        "merchantId": { "type": "string" },
+        "apiKeyId": { "type": "string" },
+        "apiKeyHash": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["merchantId", "apiKeyId", "apiKeyHash"]
     }
   },
   "firestore": {
@@ -309,11 +330,15 @@
     },
     "/tut_cards/{userId}": {
       "schema": "TutPayCard",
-      "description": "Payable T.U.T. Authority virtual payment card credentials and security controls"
+      "description": "Payable T.U.T. Authority virtual payment card credentials and recovery controls"
     },
     "/merchant_apps/{merchantId}": {
       "schema": "MerchantApp",
-      "description": "Connected external applications accepted by T.U.T. Payment Gateway"
+      "description": "Connected partner applications accepted by T.U.T. Card Payment Gateway"
+    },
+    "/merchant_secrets/{merchantId}": {
+      "schema": "MerchantSecret",
+      "description": "Admin-only API key hashes for registered merchant apps"
     },
     "/transactions/{transactionId}": {
       "schema": "Transaction",

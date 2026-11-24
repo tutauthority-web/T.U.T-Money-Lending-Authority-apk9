@@ -79,8 +79,7 @@ import { downloadReceiptPng, normalizeMemoCode } from '../utils/receiptGenerator
 import { CreditScoreModal } from './CreditScoreModal';
 import { MemberLoanHistoryCard } from './MemberLoanHistoryCard';
 import { BankingTierCard } from './BankingTierCard';
-import { TutCardSecurityModal } from './TutCardSecurityModal';
-import { TutPaymentCheckout } from './TutPaymentCheckout';
+import { TutCardKeyModal } from './TutCardKeyModal';
 import { TutPayCardRecord } from '../utils/tutPaymentEngine';
 import { SubscriptionHubView } from './SubscriptionHubView';
 import { TierEmblem } from './TierEmblems';
@@ -679,8 +678,8 @@ export function MemberDashboard({
   const [cards, setCards] = useState<any[]>([]);
   const [walletLoading, setWalletLoading] = useState(true);
   const [tutCard, setTutCard] = useState<TutPayCardRecord | null>(null);
+  const [tutCardLoaded, setTutCardLoaded] = useState(false);
   const [showCardSecurityModal, setShowCardSecurityModal] = useState(false);
-  const [showPayAppModal, setShowPayAppModal] = useState(false);
 
   useEffect(() => {
     if (!profile?.uid) return;
@@ -743,8 +742,10 @@ export function MemberDashboard({
       } else {
         setTutCard(null);
       }
+      setTutCardLoaded(true);
     }, (error) => {
       console.warn("Notice listening to T.U.T. Card:", error);
+      setTutCardLoaded(true);
     });
 
     return () => {
@@ -1838,53 +1839,47 @@ export function MemberDashboard({
               onManageSecurity={() => setShowCardSecurityModal(true)}
             />
 
-            {/* Payable Card & Connected App Controls */}
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setShowCardSecurityModal(true)}
-                className="px-3 py-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-white/10 hover:border-amber-400/35 text-left flex items-center justify-between gap-2 transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className={cn(
-                    "w-7 h-7 rounded-lg border flex items-center justify-center shrink-0",
-                    tutCard?.isFrozen
-                      ? "bg-rose-500/10 border-rose-500/25 text-rose-400"
+            {/* Single Card Key Setup & Smart Recovery Control */}
+            <button
+              type="button"
+              onClick={() => setShowCardSecurityModal(true)}
+              className={cn(
+                "w-full px-3.5 py-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer group",
+                tutCardLoaded && !tutCard?.secretCodeHash
+                  ? "bg-amber-500/15 hover:bg-amber-500/25 border-amber-400/45"
+                  : "bg-slate-900/90 hover:bg-slate-800 border-white/10 hover:border-amber-400/35"
+              )}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={cn(
+                  "w-8 h-8 rounded-lg border flex items-center justify-center shrink-0",
+                  tutCard?.isFrozen
+                    ? "bg-rose-500/10 border-rose-500/25 text-rose-400"
+                    : tutCard?.secretCodeHash
+                    ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
+                    : "bg-amber-500/15 border-amber-400/35 text-amber-300"
+                )}>
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs font-bold text-white block truncate">
+                    {tutCard?.isFrozen
+                      ? 'Card Frozen · Manage Key'
                       : tutCard?.secretCodeHash
-                      ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400"
-                      : "bg-amber-500/10 border-amber-500/25 text-amber-300"
-                  )}>
-                    <KeyRound className="w-3.5 h-3.5" />
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-[11px] font-bold text-white block truncate">
-                      {tutCard?.isFrozen ? 'Card Frozen' : tutCard?.secretCodeHash ? 'Card & PIN' : 'Set Card PIN'}
-                    </span>
-                    <span className="text-[9.5px] text-slate-400 block truncate">
-                      {tutCard?.isFrozen ? 'Tap to unfreeze' : tutCard?.secretCodeHash ? 'Active for payments' : 'Activate card pay'}
-                    </span>
-                  </div>
+                      ? 'Card Key Management & Recovery'
+                      : 'Set Card Payment Key (Required)'}
+                  </span>
+                  <span className="text-[10.5px] text-slate-400 block truncate">
+                    {tutCard?.isFrozen
+                      ? 'Tap to unfreeze or recover card key'
+                      : tutCard?.secretCodeHash
+                      ? 'Key locked · Freeze, spend limits & smart recovery'
+                      : 'Create your 6-digit Payment Key & recovery backup'}
+                  </span>
                 </div>
-                <ChevronRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-white shrink-0" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowPayAppModal(true)}
-                className="px-3 py-2.5 rounded-xl bg-gradient-to-r from-amber-500/15 to-blue-600/15 hover:from-amber-500/25 hover:to-blue-600/25 border border-amber-400/25 hover:border-amber-400/50 text-left flex items-center justify-between gap-2 transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-7 h-7 rounded-lg bg-amber-400/15 border border-amber-400/30 flex items-center justify-center text-amber-300 shrink-0">
-                    <Zap className="w-3.5 h-3.5" />
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-[11px] font-bold text-white block truncate">Pay App / Order</span>
-                    <span className="text-[9.5px] text-amber-200/80 block truncate">Card or Wallet</span>
-                  </div>
-                </div>
-                <ChevronRight className="w-3.5 h-3.5 text-amber-300/70 group-hover:text-white shrink-0" />
-              </button>
-            </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400 group-hover:text-white shrink-0" />
+            </button>
 
             {/* Membership & Limits Box - Smart Color-Changing Borrowing Limit System */}
             {(() => {
@@ -6907,39 +6902,16 @@ export function MemberDashboard({
         onRequestAction={onRequestAction}
       />
 
-      {/* Payable T.U.T. Card Secret Code & Security Controls Modal */}
-      <TutCardSecurityModal
+      {/* T.U.T. Card Key Setup & Smart Recovery Modal */}
+      <TutCardKeyModal
         isOpen={showCardSecurityModal}
         onClose={() => setShowCardSecurityModal(false)}
         db={db}
+        user={auth.currentUser}
         profile={profile}
         tutCard={tutCard}
-        onLaunchPaymentTerminal={() => {
-          setShowCardSecurityModal(false);
-          setShowPayAppModal(true);
-        }}
         addToast={addToast}
       />
-
-      {/* In-App Connected Merchant / Card & Wallet Checkout Terminal */}
-      {showPayAppModal && (
-        <TutPaymentCheckout
-          db={db}
-          user={auth.currentUser}
-          profile={profile}
-          isModal={true}
-          onClose={() => setShowPayAppModal(false)}
-          checkoutRequest={{
-            merchantName: 'Partner App',
-            orderId: `ORD-${Date.now().toString(36).toUpperCase()}`,
-            amount: 49,
-            reference: 'Direct T.U.T. Member Payment'
-          }}
-          onGoogleLogin={async () => {}}
-          sendWorkflowNotification={sendWorkflowNotification}
-          addToast={(title, body, type) => addToast?.(title, body, type || 'info')}
-        />
-      )}
 
     </div>
   );

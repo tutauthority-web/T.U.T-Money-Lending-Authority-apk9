@@ -1,5 +1,13 @@
 import { Firestore, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 
+export const PRIMARY_VERCEL_GATEWAY_URL = 'https://t-u-t-money-lending-authority-apkma.vercel.app';
+
+export type RecoveryMethodType =
+  | 'email_otp'
+  | 'backup_key'
+  | 'security_question'
+  | 'admin_unlock';
+
 export interface TutPayCardRecord {
   userId: string;
   memberId?: string;
@@ -10,6 +18,14 @@ export interface TutPayCardRecord {
   expiryYear: string; // YY
   secretCodeHash: string;
   secretCodeSalt: string;
+  recoveryKeyHash?: string;
+  recoveryKeySalt?: string;
+  securityQuestion?: string;
+  securityAnswerHash?: string;
+  securityAnswerSalt?: string;
+  recoveryCount?: number;
+  lastRecoveryMethod?: RecoveryMethodType;
+  lastRecoveryAt?: string;
   isActive: boolean;
   isFrozen: boolean;
   perTxLimit: number;
@@ -26,14 +42,25 @@ export interface MerchantAppRecord {
   name: string;
   ownerEmail?: string;
   apiKeyId: string;
-  apiKeyHash: string;
   allowedOrigins?: string[];
+  webhookUrl?: string;
   status: 'active' | 'paused';
   totalProcessed: number;
   txCount: number;
   createdAt?: string;
   updatedAt?: string;
 }
+
+export interface MerchantSecretRecord {
+  merchantId: string;
+  apiKeyId: string;
+  apiKeyHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const PBKDF2_PREFIX = 'pbkdf2-v2:';
+const PBKDF2_ITERATIONS = 120000;
 
 /**
  * Computes Luhn check digit for a 15-digit card prefix.
@@ -102,20 +129,90 @@ export async function sha256Hex(input: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function hashSecretCode(salt: string, secretCode: string): Promise<string> {
-  return sha256Hex(`tut-card-v1:${salt}:${secretCode.trim()}`);
-}
-
-export async function verifySecretCode(salt: string, expectedHash: string, candidateCode: string): Promise<boolean> {
-  if (!salt || !expectedHash || !candidateCode) return false;
-  const candidateHash = await hashSecretCode(salt, candidateCode);
-  if (candidateHash.length !== expectedHash.length) return false;
-  // Constant-time string comparison
+function constantTimeEquals(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < candidateHash.length; i++) {
-    diff |= candidateHash.charCodeAt(i) ^ expectedHash.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return diff === 0;
+}
+
+async function derivePbkdf2Hex(domain: string, salt: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(`${domain}:${secret}`),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt: encoder.encode(salt),
+      iterations: PBKDF2_ITERATIONS
+    },
+    baseKey,
+    256
+  );
+  const hex = Array.from(new Uint8Array(bits), (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${PBKDF2_PREFIX}${hex}`;
+}
+
+export async function hashSecretCode(salt: string, secretCode: string): Promise<string> {
+  return derivePbkdf2Hex('tut-card-key-v2', salt, secretCode.trim());
+}
+
+export async function verifySecretCode(
+  salt: string,
+  expectedHash: string,
+  candidateCode: string
+): Promise<boolean> {
+  if (!salt || !expectedHash || !candidateCode) return false;
+  const trimmed = candidateCode.trim();
+  if (expectedHash.startsWith(PBKDF2_PREFIX)) {
+    const derived = await derivePbkdf2Hex('tut-card-key-v2', salt, trimmed);
+    return constantTimeEquals(derived, expectedHash);
+  }
+  // Legacy compatibility for cards activated prior to v2
+  const legacyHash = await sha256Hex(`tut-card-v1:${salt}:${trimmed}`);
+  return constantTimeEquals(legacyHash, expectedHash);
+}
+
+/**
+ * Generates a high-entropy human-readable Master Recovery Backup Key (TUT-REC-XXXX-XXXX-XXXX).
+ */
+export function generateRecoveryBackupKey(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  const chars = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+  return `TUT-REC-${chars.slice(0, 4)}-${chars.slice(4, 8)}-${chars.slice(8, 12)}`;
+}
+
+export async function hashRecoverySecret(
+  domain: 'backup_key' | 'security_answer',
+  salt: string,
+  rawValue: string
+): Promise<string> {
+  const normalized =
+    domain === 'backup_key'
+      ? rawValue.trim().toUpperCase().replace(/\s+/g, '')
+      : rawValue.trim().toLowerCase().replace(/\s+/g, ' ');
+  return derivePbkdf2Hex(`tut-recovery-${domain}-v2`, salt, normalized);
+}
+
+export async function verifyRecoverySecret(
+  domain: 'backup_key' | 'security_answer',
+  salt: string,
+  expectedHash: string,
+  candidateValue: string
+): Promise<boolean> {
+  if (!salt || !expectedHash || !candidateValue) return false;
+  const derived = await hashRecoverySecret(domain, salt, candidateValue);
+  return constantTimeEquals(derived, expectedHash);
 }
 
 export async function generateMerchantCredentials(): Promise<{
@@ -147,15 +244,16 @@ export function normalizeExpiry(subscriptionExpiresAt?: string | null): { month:
   future.setFullYear(future.getFullYear() + 3);
   return {
     month: String(future.getMonth() + 1).padStart(2, '0'),
-    year: String(future.getFullYear()).slice(-2),
+    year: String(future.getFullYear()).slice(-2)
   };
 }
 
 /**
- * Activates or rotates the 6-digit Secret Payment Code for a member's T.U.T. Card.
- * Never persists the plaintext Secret Code to Firestore — only the salted SHA-256 digest.
+ * First-time mandatory Card Key activation.
+ * Enforces one-time creation: throws if a Card Payment Key has already been set.
+ * Returns the saved card record plus the one-time plaintext Master Recovery Key.
  */
-export async function saveTutCardSecuritySetup(
+export async function activateCardWithInitialKey(
   db: Firestore,
   params: {
     uid: string;
@@ -163,27 +261,58 @@ export async function saveTutCardSecuritySetup(
     secretCode: string;
     perTxLimit?: number;
     subscriptionExpiresAt?: string | null;
+    securityQuestion?: string;
+    securityAnswer?: string;
   }
-): Promise<TutPayCardRecord> {
-  const { uid, memberId, secretCode, perTxLimit = 50000, subscriptionExpiresAt } = params;
+): Promise<{ card: TutPayCardRecord; rawBackupKey: string }> {
+  const {
+    uid,
+    memberId,
+    secretCode,
+    perTxLimit = 50000,
+    subscriptionExpiresAt,
+    securityQuestion,
+    securityAnswer
+  } = params;
+
   const cleanCode = secretCode.trim();
   if (!/^\d{6}$/.test(cleanCode)) {
-    throw new Error('Secret Payment Code must be exactly 6 numeric digits.');
+    throw new Error('Card Payment Key must be exactly 6 numeric digits.');
   }
   if (perTxLimit < 10 || perTxLimit > 500000) {
     throw new Error('Per-transaction limit must be between ৳10 and ৳500,000.');
   }
 
+  const cardRef = doc(db, 'tut_cards', uid);
+  const existing = await getDoc(cardRef);
+  if (existing.exists() && existing.data()?.secretCodeHash) {
+    throw new Error(
+      'Your Card Payment Key is already set and locked. Use Smart Key Recovery if you forgot your code.'
+    );
+  }
+
   const cardNumber = deriveDeterministicCardNumber(uid, memberId);
   const cardLast4 = cardNumber.slice(-4);
   const cardHash = await sha256Hex(`tut-pan-v1:${uid}:${cardNumber}`);
-  const salt = generateSaltHex(16);
-  const secretCodeHash = await hashSecretCode(salt, cleanCode);
+
+  const secretCodeSalt = generateSaltHex(16);
+  const secretCodeHash = await hashSecretCode(secretCodeSalt, cleanCode);
+
+  const rawBackupKey = generateRecoveryBackupKey();
+  const recoveryKeySalt = generateSaltHex(16);
+  const recoveryKeyHash = await hashRecoverySecret('backup_key', recoveryKeySalt, rawBackupKey);
+
+  let cleanQuestion: string | undefined;
+  let securityAnswerSalt: string | undefined;
+  let securityAnswerHash: string | undefined;
+  if (securityQuestion?.trim() && securityAnswer?.trim()) {
+    cleanQuestion = securityQuestion.trim().slice(0, 140);
+    securityAnswerSalt = generateSaltHex(16);
+    securityAnswerHash = await hashRecoverySecret('security_answer', securityAnswerSalt, securityAnswer);
+  }
+
   const { month, year } = normalizeExpiry(subscriptionExpiresAt);
   const nowIso = new Date().toISOString();
-
-  const cardRef = doc(db, 'tut_cards', uid);
-  const existing = await getDoc(cardRef);
 
   const payload: TutPayCardRecord = {
     userId: uid,
@@ -194,20 +323,130 @@ export async function saveTutCardSecuritySetup(
     expiryMonth: month,
     expiryYear: year,
     secretCodeHash,
-    secretCodeSalt: salt,
+    secretCodeSalt,
+    recoveryKeyHash,
+    recoveryKeySalt,
+    ...(cleanQuestion ? { securityQuestion: cleanQuestion } : {}),
+    ...(securityAnswerHash ? { securityAnswerHash, securityAnswerSalt } : {}),
+    recoveryCount: 0,
     isActive: true,
-    isFrozen: existing.exists() ? Boolean(existing.data()?.isFrozen) : false,
+    isFrozen: false,
     perTxLimit: Number(perTxLimit),
     dailyLimit: Math.max(Number(perTxLimit) * 3, 100000),
     failedAttempts: 0,
     lockedUntil: 0,
     pinSetAt: nowIso,
-    createdAt: existing.exists() ? existing.data()?.createdAt || nowIso : nowIso,
-    updatedAt: nowIso,
+    createdAt: nowIso,
+    updatedAt: nowIso
   };
 
-  await setDoc(cardRef, payload, { merge: true });
-  return payload;
+  await setDoc(cardRef, payload);
+  return { card: payload, rawBackupKey };
+}
+
+/**
+ * Smart Key Recovery: resets a forgotten Card Payment Key only after verifying
+ * a recovery proof (Email OTP verified token, Master Backup Key, or Security Answer).
+ * Automatically rotates the Master Backup Key and clears lockouts.
+ */
+export async function recoverCardPaymentKey(
+  db: Firestore,
+  params: {
+    uid: string;
+    newSecretCode: string;
+    method: 'email_otp' | 'backup_key' | 'security_question';
+    backupKey?: string;
+    securityAnswer?: string;
+    emailOtpProofToken?: string;
+  }
+): Promise<{ card: TutPayCardRecord; newRawBackupKey: string }> {
+  const { uid, newSecretCode, method, backupKey, securityAnswer, emailOtpProofToken } = params;
+  const cleanCode = newSecretCode.trim();
+  if (!/^\d{6}$/.test(cleanCode)) {
+    throw new Error('New Card Payment Key must be exactly 6 numeric digits.');
+  }
+
+  const cardRef = doc(db, 'tut_cards', uid);
+  const snap = await getDoc(cardRef);
+  if (!snap.exists()) {
+    throw new Error('No T.U.T. Card key record found. Please complete initial setup first.');
+  }
+  const existing = snap.data() as TutPayCardRecord;
+
+  if (method === 'email_otp') {
+    if (!emailOtpProofToken || emailOtpProofToken.length < 20) {
+      throw new Error('Email OTP verification is required before resetting your Card Key.');
+    }
+  } else if (method === 'backup_key') {
+    if (!existing.recoveryKeyHash || !existing.recoveryKeySalt) {
+      throw new Error('No Master Recovery Backup Key is registered on this card.');
+    }
+    const ok = await verifyRecoverySecret(
+      'backup_key',
+      existing.recoveryKeySalt,
+      existing.recoveryKeyHash,
+      backupKey || ''
+    );
+    if (!ok) {
+      throw new Error('Invalid Master Recovery Backup Key. Check every character and try again.');
+    }
+  } else if (method === 'security_question') {
+    if (!existing.securityAnswerHash || !existing.securityAnswerSalt) {
+      throw new Error('No personal security question was configured for this card.');
+    }
+    const ok = await verifyRecoverySecret(
+      'security_answer',
+      existing.securityAnswerSalt,
+      existing.securityAnswerHash,
+      securityAnswer || ''
+    );
+    if (!ok) {
+      throw new Error('Security answer does not match your registered recovery response.');
+    }
+  } else {
+    throw new Error('Unsupported recovery method.');
+  }
+
+  const secretCodeSalt = generateSaltHex(16);
+  const secretCodeHash = await hashSecretCode(secretCodeSalt, cleanCode);
+
+  const newRawBackupKey = generateRecoveryBackupKey();
+  const recoveryKeySalt = generateSaltHex(16);
+  const recoveryKeyHash = await hashRecoverySecret('backup_key', recoveryKeySalt, newRawBackupKey);
+
+  const nowIso = new Date().toISOString();
+  const nextRecoveryCount = (Number(existing.recoveryCount) || 0) + 1;
+
+  await updateDoc(cardRef, {
+    secretCodeHash,
+    secretCodeSalt,
+    recoveryKeyHash,
+    recoveryKeySalt,
+    recoveryCount: nextRecoveryCount,
+    lastRecoveryMethod: method,
+    lastRecoveryAt: nowIso,
+    pinSetAt: nowIso,
+    failedAttempts: 0,
+    lockedUntil: 0,
+    updatedAt: nowIso
+  });
+
+  const updated: TutPayCardRecord = {
+    ...existing,
+    secretCodeHash,
+    secretCodeSalt,
+    recoveryKeyHash,
+    recoveryKeySalt,
+    recoveryCount: nextRecoveryCount,
+    lastRecoveryMethod: method,
+    lastRecoveryAt: nowIso,
+    pinSetAt: nowIso,
+    failedAttempts: 0,
+    lockedUntil: 0,
+    updatedAt: nowIso
+  };
+
+  return { card: updated, newRawBackupKey };
 }
 
 export async function toggleTutCardFreeze(
@@ -218,7 +457,7 @@ export async function toggleTutCardFreeze(
   const cardRef = doc(db, 'tut_cards', uid);
   await updateDoc(cardRef, {
     isFrozen: freeze,
-    updatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   });
 }
 
@@ -234,7 +473,7 @@ export async function updateTutCardLimit(
   await updateDoc(cardRef, {
     perTxLimit: Number(perTxLimit),
     dailyLimit: Math.max(Number(perTxLimit) * 3, 100000),
-    updatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   });
 }
 
@@ -249,7 +488,7 @@ export async function recordCardVerificationFailure(
     await updateDoc(doc(db, 'tut_cards', uid), {
       failedAttempts: nextAttempts,
       lockedUntil,
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     });
   } catch (err) {
     console.warn('Unable to increment failed card attempt counter:', err);

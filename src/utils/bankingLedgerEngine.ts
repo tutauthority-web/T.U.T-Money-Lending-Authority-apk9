@@ -385,10 +385,10 @@ export interface MerchantPaymentParams {
   merchantId?: string;
   merchantName: string;
   orderId?: string;
-  paymentInstrument: 'tut_card' | 'tut_wallet' | 'tut_credit';
+  paymentInstrument: 'tut_card';
   fundingSource: 'wallet_deposit' | 'credit_line';
-  cardNumber?: string;
-  secretCode?: string;
+  cardNumber: string;
+  secretCode: string;
   reference?: string;
 }
 
@@ -398,14 +398,14 @@ export interface MerchantPaymentResult {
   memoId: string;
   amount: number;
   methodLabel: string;
-  cardLast4?: string;
+  cardLast4: string;
   newTotalDeposit: number;
   newRemainingDebt: number;
 }
 
 /**
- * Executes an atomic payment from a member's T.U.T. Card or Direct T.U.T. Wallet
- * (Vault Savings or Approved Credit Line) to an external merchant / app.
+ * Executes an atomic Card-Only payment from a member's T.U.T. Card
+ * (funded by Vault Savings or Approved Credit Line) to an external merchant / app.
  */
 export async function executeAtomicMerchantPayment(
   db: Firestore,
@@ -431,7 +431,10 @@ export async function executeAtomicMerchantPayment(
   } = await import('./tutPaymentEngine');
 
   if (!userId) {
-    throw new Error('Authentication required to process T.U.T. payment.');
+    throw new Error('Authentication required to process T.U.T. Card payment.');
+  }
+  if (paymentInstrument !== 'tut_card') {
+    throw new Error('Only T.U.T. Card payments are accepted by this gateway.');
   }
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('Payment amount must be greater than ৳0.');
@@ -446,78 +449,55 @@ export async function executeAtomicMerchantPayment(
   const cleanMerchantId = merchantId ? merchantId.trim().slice(0, 80) : '';
   const merchantRef = cleanMerchantId ? doc(db, 'merchant_apps', cleanMerchantId) : null;
 
-  // Pre-verify Secret Code outside transaction if tut_card or card document exists & code provided,
-  // so failed attempts can safely increment failedAttempts even when throwing an error.
-  let verifiedCardLast4: string | undefined;
-  let shouldResetFailedAttempts = false;
-
   const { getDoc } = await import('firebase/firestore');
   const preCardSnap = await getDoc(cardRef);
-  if (paymentInstrument === 'tut_card') {
-    if (!preCardSnap.exists()) {
-      throw new Error('Your T.U.T. Card is not activated yet. Please set up your Card & Secret Code in Member Dashboard first.');
-    }
-    const cardData = preCardSnap.data() as any;
-    if (!cardData.isActive) {
-      throw new Error('This T.U.T. Card is currently inactive.');
-    }
-    if (cardData.isFrozen) {
-      throw new Error('This T.U.T. Card is currently frozen. Unfreeze it from your Member Dashboard to pay.');
-    }
-    if (cardData.lockedUntil && Number(cardData.lockedUntil) > Date.now()) {
-      const minsLeft = Math.max(1, Math.ceil((Number(cardData.lockedUntil) - Date.now()) / 60000));
-      throw new Error(`Card temporarily locked after repeated incorrect Secret Code attempts. Try again in ${minsLeft} min.`);
-    }
-    const cleanPan = (cardNumber || '').replace(/\D/g, '');
-    if (cleanPan.length !== 16) {
-      throw new Error('Enter your valid 16-digit T.U.T. Card Number.');
-    }
-    const candidatePanHash = await sha256Hex(`tut-pan-v1:${userId}:${cleanPan}`);
-    if (candidatePanHash !== cardData.cardHash) {
-      await recordCardVerificationFailure(db, userId, Number(cardData.failedAttempts) || 0);
-      throw new Error('Card Number does not match your T.U.T. Authority Card.');
-    }
-    if (!secretCode || !/^\d{6}$/.test(secretCode.trim())) {
-      throw new Error('Enter your 6-digit Secret Payment Code.');
-    }
-    const codeOk = await verifySecretCode(cardData.secretCodeSalt, cardData.secretCodeHash, secretCode);
-    if (!codeOk) {
-      const failRes = await recordCardVerificationFailure(db, userId, Number(cardData.failedAttempts) || 0);
-      if (failRes.lockedUntil > 0) {
-        throw new Error('Too many incorrect Secret Code attempts. Card locked for 15 minutes for security.');
-      }
-      throw new Error(`Incorrect Secret Code (${5 - failRes.nextAttempts} attempts remaining).`);
-    }
-    if (amount > (Number(cardData.perTxLimit) || 50000)) {
-      throw new Error(`Amount exceeds your Card per-transaction limit of ৳${Number(cardData.perTxLimit).toLocaleString()}.`);
-    }
-    verifiedCardLast4 = cardData.cardLast4;
-    shouldResetFailedAttempts = true;
-  } else if (preCardSnap.exists()) {
-    const cardData = preCardSnap.data() as any;
-    if (cardData.lockedUntil && Number(cardData.lockedUntil) > Date.now()) {
-      const minsLeft = Math.max(1, Math.ceil((Number(cardData.lockedUntil) - Date.now()) / 60000));
-      throw new Error(`Wallet security temporarily locked. Try again in ${minsLeft} min.`);
-    }
-    if (secretCode !== undefined) {
-      if (!/^\d{6}$/.test(secretCode.trim())) {
-        throw new Error('Enter your 6-digit Secret Payment Code to authorize payment.');
-      }
-      const codeOk = await verifySecretCode(cardData.secretCodeSalt, cardData.secretCodeHash, secretCode);
-      if (!codeOk) {
-        const failRes = await recordCardVerificationFailure(db, userId, Number(cardData.failedAttempts) || 0);
-        if (failRes.lockedUntil > 0) {
-          throw new Error('Too many incorrect Secret Code attempts. Payment temporarily locked for 15 minutes.');
-        }
-        throw new Error(`Incorrect Secret Code (${5 - failRes.nextAttempts} attempts remaining).`);
-      }
-      shouldResetFailedAttempts = true;
-    }
+  if (!preCardSnap.exists()) {
+    throw new Error('Your T.U.T. Card Key is not set up yet. Set your 6-digit Payment Key first.');
   }
+  const cardData = preCardSnap.data() as any;
+  if (!cardData.isActive || !cardData.secretCodeHash) {
+    throw new Error('This T.U.T. Card is not active yet.');
+  }
+  if (cardData.isFrozen) {
+    throw new Error('This T.U.T. Card is currently frozen. Unfreeze it from Card Key Management to pay.');
+  }
+  if (cardData.lockedUntil && Number(cardData.lockedUntil) > Date.now()) {
+    const minsLeft = Math.max(1, Math.ceil((Number(cardData.lockedUntil) - Date.now()) / 60000));
+    throw new Error(`Card temporarily locked after repeated incorrect Key attempts. Try again in ${minsLeft} min or use Smart Recovery.`);
+  }
+
+  const cleanPan = (cardNumber || '').replace(/\D/g, '');
+  if (cleanPan.length !== 16) {
+    throw new Error('Enter your valid 16-digit T.U.T. Card Number.');
+  }
+  const candidatePanHash = await sha256Hex(`tut-pan-v1:${userId}:${cleanPan}`);
+  if (candidatePanHash !== cardData.cardHash) {
+    await recordCardVerificationFailure(db, userId, Number(cardData.failedAttempts) || 0);
+    throw new Error('Card Number does not match your T.U.T. Authority Card.');
+  }
+
+  if (!secretCode || !/^\d{6}$/.test(secretCode.trim())) {
+    throw new Error('Enter your 6-digit Card Payment Key.');
+  }
+  const codeOk = await verifySecretCode(cardData.secretCodeSalt, cardData.secretCodeHash, secretCode);
+  if (!codeOk) {
+    const failRes = await recordCardVerificationFailure(db, userId, Number(cardData.failedAttempts) || 0);
+    if (failRes.lockedUntil > 0) {
+      throw new Error('Too many incorrect Card Key attempts. Card locked for 15 minutes.');
+    }
+    throw new Error(`Incorrect Card Payment Key (${5 - failRes.nextAttempts} attempts remaining).`);
+  }
+
+  if (amount > (Number(cardData.perTxLimit) || 50000)) {
+    throw new Error(`Amount exceeds your Card per-transaction limit of ৳${Number(cardData.perTxLimit).toLocaleString()}.`);
+  }
+
+  const verifiedCardLast4: string = cardData.cardLast4 || cleanPan.slice(-4);
+  const shouldResetFailedAttempts = (Number(cardData.failedAttempts) || 0) > 0;
 
   let newTotalDeposit = 0;
   let newRemainingDebt = 0;
-  const methodLabel = paymentInstrument === 'tut_card' ? 'T.U.T. Card' : 'T.U.T. Wallet';
+  const methodLabel = 'T.U.T. Card';
 
   await runTransaction(db, async (t) => {
     const userSnap = await t.get(userRef);
@@ -526,7 +506,7 @@ export async function executeAtomicMerchantPayment(
     }
     const userData = userSnap.data() as UserProfile;
     if (userData.status !== 'approved') {
-      throw new Error('Your T.U.T. membership must be approved before making payments.');
+      throw new Error('Your T.U.T. membership must be approved before making Card payments.');
     }
 
     const merchantSnap = merchantRef ? await t.get(merchantRef) : null;
@@ -541,7 +521,7 @@ export async function executeAtomicMerchantPayment(
     if (fundingSource === 'wallet_deposit') {
       if (currentDeposit < amount) {
         throw new Error(
-          `Insufficient Vault Wallet balance (Available: ৳${currentDeposit.toLocaleString()}, Needed: ৳${amount.toLocaleString()}). Deposit funds or pay via Credit Line.`
+          `Insufficient Vault balance (Available: ৳${currentDeposit.toLocaleString()}, Needed: ৳${amount.toLocaleString()}). Deposit funds or pay via 0% Credit Line.`
         );
       }
       newTotalDeposit = currentDeposit - amount;
@@ -557,7 +537,7 @@ export async function executeAtomicMerchantPayment(
       const borrowCap = subActive ? (Number(userData.borrowingLimit) || fallbackCap) : 0;
       const availableCredit = Math.max(0, borrowCap - currentDebt);
       if (!subActive || borrowCap <= 0) {
-        throw new Error('An active T.U.T. Membership Charter is required to use T.U.T. Credit Line.');
+        throw new Error('An active T.U.T. Membership Charter is required to use 0% Credit Line funding.');
       }
       if (availableCredit < amount) {
         throw new Error(
@@ -596,7 +576,7 @@ export async function executeAtomicMerchantPayment(
         : undefined;
     const creditReason =
       fundingSource === 'credit_line'
-        ? `${methodLabel} Credit Pay — ${cleanMerchantName} (Order: ${orderId})`
+        ? `T.U.T. Card Credit Pay — ${cleanMerchantName} (Order: ${orderId})`
         : undefined;
     const normalizedReference =
       fundingSource === 'credit_line'
@@ -613,16 +593,16 @@ export async function executeAtomicMerchantPayment(
       type: 'merchant_payment',
       amount,
       method: methodLabel,
-      accountNumber: verifiedCardLast4 ? `****-${verifiedCardLast4}` : (userData.memberId || 'T.U.T-WALLET'),
+      accountNumber: `****-${verifiedCardLast4}`,
       transactionId: orderId,
       memoId,
       status: 'confirmed',
       ...(cleanMerchantId ? { merchantId: cleanMerchantId } : {}),
       merchantName: cleanMerchantName,
       orderId,
-      paymentInstrument,
+      paymentInstrument: 'tut_card',
       fundingSource,
-      ...(verifiedCardLast4 ? { cardLast4: verifiedCardLast4 } : {}),
+      cardLast4: verifiedCardLast4,
       ...(dueDateIso ? { estimatedRepaymentDate: dueDateIso } : {}),
       ...(creditReason ? { loanReason: creditReason, purpose: `${cleanMerchantName} (${orderId})` } : {}),
       reference: normalizedReference,
@@ -633,8 +613,8 @@ export async function executeAtomicMerchantPayment(
       timestamp: serverTimestamp(),
       actorEmail: userData.email || 'member@tut.org',
       actorName: userData.name || 'Member',
-      action: 'EXTERNAL_MERCHANT_PAYMENT',
-      details: `Paid ৳${amount.toLocaleString()} to "${cleanMerchantName}" (Order: ${orderId}) via ${methodLabel}${verifiedCardLast4 ? ` ****${verifiedCardLast4}` : ''} [${fundingSource}]. Memo: ${memoId}`,
+      action: 'EXTERNAL_CARD_PAYMENT',
+      details: `Paid ৳${amount.toLocaleString()} to "${cleanMerchantName}" (Order: ${orderId}) via T.U.T. Card ****${verifiedCardLast4} [${fundingSource}]. Memo: ${memoId}`,
       severity: 'info'
     });
   });

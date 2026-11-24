@@ -785,7 +785,7 @@ export interface Transaction {
   merchantId?: string;
   merchantName?: string;
   orderId?: string;
-  paymentInstrument?: 'tut_card' | 'tut_wallet' | 'tut_credit';
+  paymentInstrument?: 'tut_card';
   cardLast4?: string;
 }
 
@@ -2905,7 +2905,9 @@ export default function App() {
     const tutPayParam = (params.get('tut_pay') || '').toLowerCase();
     const actionParam = (params.get('action') || '').toLowerCase();
 
+    const sessionToken = params.get('session') || undefined;
     const isPayRoute =
+      Boolean(sessionToken) ||
       tutPayParam === '1' ||
       tutPayParam === 'true' ||
       params.get('pay') === '1' ||
@@ -2933,6 +2935,7 @@ export default function App() {
       orderId: params.get('orderId') || `ORD-${Date.now().toString(36).toUpperCase()}`,
       returnUrl: params.get('returnUrl') || params.get('callback') || undefined,
       reference: refLabel || undefined,
+      sessionToken,
       payerEmailHint: params.get('email') || undefined
     };
   }, []);
@@ -4395,7 +4398,7 @@ export default function App() {
     
     // REMINDER: Ensure your current domain is added to the 'Authorized Domains' list 
     // in the Firebase Console (Authentication > Settings > Authorized Domains).
-    // Current Domain: ais-dev-bo5opclp4lvfjrzc2bxtnd-813806389941.asia-southeast1.run.app
+    // Primary Domain: t-u-t-money-lending-authority-apkma.vercel.app
     
     console.log(`${isRetry ? 'Retrying' : 'Initiating'} Google Login via Popup...`);
     

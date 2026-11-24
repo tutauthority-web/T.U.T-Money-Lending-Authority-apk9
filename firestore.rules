@@ -301,8 +301,16 @@ service cloud.firestore {
              data.cardHash is string && data.cardHash.size() == 64 &&
              data.expiryMonth is string && data.expiryMonth.size() == 2 &&
              data.expiryYear is string && data.expiryYear.size() == 2 &&
-             data.secretCodeHash is string && data.secretCodeHash.size() == 64 &&
+             data.secretCodeHash is string && data.secretCodeHash.size() >= 64 && data.secretCodeHash.size() <= 128 &&
              data.secretCodeSalt is string && data.secretCodeSalt.size() >= 16 && data.secretCodeSalt.size() <= 64 &&
+             (!('recoveryKeyHash' in data) || (data.recoveryKeyHash is string && data.recoveryKeyHash.size() >= 64 && data.recoveryKeyHash.size() <= 128)) &&
+             (!('recoveryKeySalt' in data) || (data.recoveryKeySalt is string && data.recoveryKeySalt.size() >= 16 && data.recoveryKeySalt.size() <= 64)) &&
+             (!('securityQuestion' in data) || (data.securityQuestion is string && data.securityQuestion.size() <= 160)) &&
+             (!('securityAnswerHash' in data) || (data.securityAnswerHash is string && data.securityAnswerHash.size() >= 64 && data.securityAnswerHash.size() <= 128)) &&
+             (!('securityAnswerSalt' in data) || (data.securityAnswerSalt is string && data.securityAnswerSalt.size() >= 16 && data.securityAnswerSalt.size() <= 64)) &&
+             (!('recoveryCount' in data) || (isNumeric(data.recoveryCount) && data.recoveryCount >= 0 && data.recoveryCount <= 1000)) &&
+             (!('lastRecoveryMethod' in data) || (data.lastRecoveryMethod is string && data.lastRecoveryMethod in ['email_otp', 'backup_key', 'security_question', 'admin_unlock'])) &&
+             (!('lastRecoveryAt' in data) || (data.lastRecoveryAt is string && data.lastRecoveryAt.size() <= 64)) &&
              data.isActive is bool &&
              data.isFrozen is bool &&
              isNumeric(data.perTxLimit) && data.perTxLimit >= 10 && data.perTxLimit <= 500000 &&
@@ -316,16 +324,25 @@ service cloud.firestore {
     }
 
     function isValidMerchantApp(data) {
-      return data.keys().hasAll(['merchantId', 'name', 'apiKeyId', 'apiKeyHash', 'status']) &&
+      return data.keys().hasAll(['merchantId', 'name', 'apiKeyId', 'status']) &&
              data.merchantId is string && data.merchantId.size() > 0 && data.merchantId.size() <= 100 &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 150 &&
              data.apiKeyId is string && data.apiKeyId.size() > 0 && data.apiKeyId.size() <= 64 &&
-             data.apiKeyHash is string && data.apiKeyHash.size() == 64 &&
              data.status in ['active', 'paused'] &&
              (!('ownerEmail' in data) || (data.ownerEmail is string && data.ownerEmail.size() <= 120)) &&
-             (!('allowedOrigins' in data) || data.allowedOrigins is list) &&
+             (!('allowedOrigins' in data) || (data.allowedOrigins is list && data.allowedOrigins.size() <= 20)) &&
+             (!('webhookUrl' in data) || (data.webhookUrl is string && data.webhookUrl.size() <= 300)) &&
              (!('totalProcessed' in data) || (isNumeric(data.totalProcessed) && data.totalProcessed >= 0)) &&
              (!('txCount' in data) || (isNumeric(data.txCount) && data.txCount >= 0)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidMerchantSecret(data) {
+      return data.keys().hasAll(['merchantId', 'apiKeyId', 'apiKeyHash']) &&
+             data.merchantId is string && data.merchantId.size() > 0 && data.merchantId.size() <= 100 &&
+             data.apiKeyId is string && data.apiKeyId.size() > 0 && data.apiKeyId.size() <= 64 &&
+             data.apiKeyHash is string && data.apiKeyHash.size() == 64 &&
              (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
              (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
@@ -379,9 +396,12 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidTransaction(request.resource.data) && (
         isAdmin() ||
         (
-          request.resource.data.userId == request.auth.uid && (
-            request.resource.data.status in ['pending', 'confirmed', 'approved']
-          )
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.status in ['pending', 'confirmed', 'approved'] &&
+          (request.resource.data.type != 'merchant_payment' || (
+            request.resource.data.paymentInstrument == 'tut_card' &&
+            request.resource.data.status == 'confirmed'
+          ))
         ) ||
         (request.resource.data.isTransfer == true && request.resource.data.transferType == 'in' && request.resource.data.status == 'confirmed')
       );
@@ -462,11 +482,49 @@ service cloud.firestore {
       allow list: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
       allow create: if isAuthenticated() && (isOwner(userId) || isAdmin()) &&
                     isValidTutCard(request.resource.data) &&
-                    request.resource.data.userId == userId;
-      allow update: if isAuthenticated() && isValidTutCard(request.resource.data) && (
+                    request.resource.data.userId == userId &&
+                    request.resource.data.failedAttempts == 0 &&
+                    (!('lockedUntil' in request.resource.data) || request.resource.data.lockedUntil == 0) &&
+                    (!('recoveryCount' in request.resource.data) || request.resource.data.recoveryCount == 0);
+      allow update: if isAuthenticated() &&
+                    isValidTutCard(request.resource.data) &&
+                    request.resource.data.userId == resource.data.userId && (
         isAdmin() ||
-        (isOwner(userId) &&
-         request.resource.data.userId == resource.data.userId)
+        (
+          // Action 1: Freeze toggle & per-transaction spend cap (cannot alter Payment Key or lock state)
+          isOwner(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isFrozen', 'perTxLimit', 'dailyLimit', 'updatedAt'])
+        ) ||
+        (
+          // Action 2: Failed attempt increment only (cannot lower failures or unlock)
+          isOwner(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['failedAttempts', 'lockedUntil', 'updatedAt']) &&
+          request.resource.data.failedAttempts == resource.data.failedAttempts + 1
+        ) ||
+        (
+          // Action 3: Reset failed attempt counter after valid payment ONLY when not currently locked
+          isOwner(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['failedAttempts', 'lockedUntil', 'updatedAt']) &&
+          resource.data.failedAttempts > 0 &&
+          request.resource.data.failedAttempts == 0 &&
+          request.resource.data.lockedUntil == 0 &&
+          (!('lockedUntil' in resource.data) || resource.data.lockedUntil == 0 || request.time.toMillis() >= resource.data.lockedUntil)
+        ) ||
+        (
+          // Action 4: Smart Key Recovery (must increment recoveryCount & rotate recovery key)
+          isOwner(userId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'secretCodeHash', 'secretCodeSalt', 'recoveryKeyHash', 'recoveryKeySalt',
+            'recoveryCount', 'lastRecoveryMethod', 'lastRecoveryAt', 'pinSetAt',
+            'failedAttempts', 'lockedUntil', 'updatedAt'
+          ]) &&
+          (
+            ('recoveryCount' in resource.data && request.resource.data.recoveryCount == resource.data.recoveryCount + 1) ||
+            (!('recoveryCount' in resource.data) && request.resource.data.recoveryCount == 1)
+          ) &&
+          request.resource.data.failedAttempts == 0 &&
+          request.resource.data.lockedUntil == 0
+        )
       );
       allow delete: if isAdmin();
     }
@@ -482,6 +540,12 @@ service cloud.firestore {
           request.resource.data.totalProcessed > resource.data.totalProcessed
         )
       );
+      allow delete: if isAdmin();
+    }
+
+    match /merchant_secrets/{merchantId} {
+      allow read, list: if isAdmin();
+      allow create, update: if isAdmin() && isValidMerchantSecret(request.resource.data);
       allow delete: if isAdmin();
     }
 
