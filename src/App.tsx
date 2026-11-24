@@ -4441,7 +4441,8 @@ export default function App() {
           errorMessage += "The login popup was blocked and redirect fallback failed.";
         }
       } else if (error.code === 'auth/unauthorized-domain') {
-        errorMessage += "This domain is not authorized in Firebase. Please add it to 'Authorized Domains' in the Firebase Console.";
+        const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+        errorMessage += `Domain "${currentHost}" is not authorized in Firebase. Add "${currentHost}" under Firebase Console → Authentication → Settings → Authorized Domains.`;
       } else {
         errorMessage += error.message || "Unknown error occurred.";
       }

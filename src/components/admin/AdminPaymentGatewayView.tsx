@@ -56,29 +56,34 @@ export const AdminPaymentGatewayView: React.FC<AdminPaymentGatewayViewProps> = (
     rawKey: string;
   } | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [gatewayUrls, setGatewayUrls] = useState<{
-    checkoutUrl: string;
-    verifyReceiptUrl: string;
-    publicConfigUrl: string;
-  }>(() => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    return {
-      checkoutUrl: `${origin}/?tut_pay=1`,
-      verifyReceiptUrl: `${origin}/api/gateway/verify-receipt`,
-      publicConfigUrl: `${origin}/api/gateway/public-config`
-    };
+  const VERCEL_PRODUCTION_ORIGIN = 'https://tut-money-lending-authority-apk9.vercel.app';
+  const [selectedOriginMode, setSelectedOriginMode] = useState<'current' | 'vercel'>(() => {
+    if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+      return 'vercel';
+    }
+    return 'vercel';
   });
+  const [signingSecretPersistent, setSigningSecretPersistent] = useState<boolean | null>(null);
+
+  const detectedOrigin = typeof window !== 'undefined' ? window.location.origin : VERCEL_PRODUCTION_ORIGIN;
+  const activeBaseOrigin =
+    selectedOriginMode === 'vercel' ? VERCEL_PRODUCTION_ORIGIN : detectedOrigin;
+
+  const gatewayUrls = useMemo(
+    () => ({
+      checkoutUrl: `${activeBaseOrigin}/pay`,
+      verifyReceiptUrl: `${activeBaseOrigin}/api/gateway/verify-receipt`,
+      publicConfigUrl: `${activeBaseOrigin}/api/gateway/public-config`
+    }),
+    [activeBaseOrigin]
+  );
 
   useEffect(() => {
     fetch('/api/gateway/public-config')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (data?.gateway) {
-          setGatewayUrls({
-            checkoutUrl: data.gateway.checkoutUrl || gatewayUrls.checkoutUrl,
-            verifyReceiptUrl: data.gateway.verifyReceiptUrl || gatewayUrls.verifyReceiptUrl,
-            publicConfigUrl: data.gateway.publicConfigUrl || gatewayUrls.publicConfigUrl
-          });
+        if (typeof data?.persistentSigningSecretConfigured === 'boolean') {
+          setSigningSecretPersistent(data.persistentSigningSecretConfigured);
         }
       })
       .catch(() => {});
@@ -265,33 +270,61 @@ window.addEventListener("message", async (e) => {
         </button>
       </div>
 
-      {/* Diagnostic Fix Notice for Other Apps */}
+      {/* Diagnostic Fix Notice for Other Apps & Vercel */}
       <div className="p-4 rounded-2xl bg-blue-500/10 border border-blue-500/25 flex items-start gap-3">
         <ShieldCheck className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
         <div className="space-y-1.5 text-xs">
           <p className="font-bold text-blue-200">
-            How to Connect Other Apps Cleanly (Avoids Blank Pages &amp; Firestore Permission Blocks):
+            Vercel Production &amp; External App Connection Guide:
           </p>
           <p className="text-slate-300 leading-relaxed">
-            1. Open <code className="text-amber-300 font-mono">TUT_PAYMENT_CHECKOUT_URL</code> (<code className="text-amber-300 font-mono">/pay</code> or <code className="text-amber-300 font-mono">/?tut_pay=1</code>) in a <strong>new tab or top-level window</strong> — do not embed it inside an <code className="text-rose-300 font-mono">&lt;iframe&gt;</code>, as cross-origin framing and Google Sign-In cookies are restricted by browsers inside embedded previews.
+            1. Open <code className="text-amber-300 font-mono">TUT_PAYMENT_CHECKOUT_URL</code> (<code className="text-amber-300 font-mono">/pay</code> or <code className="text-amber-300 font-mono">/?tut_pay=1</code>) in a <strong>new tab or top-level window</strong> — never embed it inside an <code className="text-rose-300 font-mono">&lt;iframe&gt;</code>.
           </p>
           <p className="text-slate-300 leading-relaxed">
-            2. If you point another app at the <strong>Shared App URL</strong> (<code className="text-slate-200 font-mono">ais-pre-...</code>), be sure to publish/share your latest T.U.T. updates first so both apps see the live payment page.
+            2. On Vercel (<code className="text-emerald-300 font-mono">tut-money-lending-authority-apk9.vercel.app</code>), add the domain under <strong>Firebase Console → Authentication → Settings → Authorized Domains</strong> and set <code className="text-amber-300 font-mono">TUT_GATEWAY_SIGNING_SECRET</code>, <code className="text-amber-300 font-mono">GMAIL_USER</code>, <code className="text-amber-300 font-mono">GMAIL_APP_PASSWORD</code>, and <code className="text-amber-300 font-mono">GEMINI_API_KEY</code> in Vercel Environment Variables.
           </p>
+          {signingSecretPersistent === false && (
+            <p className="text-amber-300 font-medium">
+              Note: Set a persistent 32+ char <code className="font-mono">TUT_GATEWAY_SIGNING_SECRET</code> in Vercel Environment Variables so signed receipts verify reliably across serverless functions.
+            </p>
+          )}
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Required Secrets & Connection Details */}
         <div className="lg:col-span-7 p-5 rounded-2xl bg-[#0C152E]/95 border border-[#182C58] space-y-4">
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
             <div className="flex items-center gap-2">
               <KeyRound className="w-4 h-4 text-amber-400" />
               <h3 className="text-xs font-black uppercase tracking-wider text-white">
                 External App Configuration Credentials
               </h3>
             </div>
-            <span className="text-[10px] text-slate-400 font-mono">Public Client IDs Only</span>
+            <div className="flex items-center gap-1.5 bg-[#070D1F] p-1 rounded-lg border border-white/10">
+              <button
+                type="button"
+                onClick={() => setSelectedOriginMode('vercel')}
+                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+                  selectedOriginMode === 'vercel'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Vercel URL
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedOriginMode('current')}
+                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+                  selectedOriginMode === 'current'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                Current Host
+              </button>
+            </div>
           </div>
 
           <div className="space-y-2.5">

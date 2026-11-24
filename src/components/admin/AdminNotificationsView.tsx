@@ -1211,7 +1211,7 @@ export const AdminNotificationsView: React.FC<AdminNotificationsViewProps> = ({
               <p className="text-[11px] text-slate-300 leading-relaxed">
                 Generate a fresh App Password under{' '}
                 <span className="text-white font-semibold">Google Account → Security → 2-Step Verification → App Passwords</span> and update{' '}
-                <code className="text-amber-300 font-mono">TUT_AUTHORITY_GMAIL_APP_PASSWORD</code> (or <code className="text-amber-300 font-mono">GMAIL_APP_PASSWORD</code>) in AI Studio Secrets (or configure{' '}
+                <code className="text-amber-300 font-mono">TUT_AUTHORITY_GMAIL_APP_PASSWORD</code> (or <code className="text-amber-300 font-mono">GMAIL_APP_PASSWORD</code>) in AI Studio Secrets or Vercel Environment Variables (or configure{' '}
                 <code className="text-amber-300 font-mono">RESEND_API_KEY</code> fallback). Once saved, click <span className="font-semibold text-white">Verify SMTP</span> and retry failed logs.
               </p>
             </div>

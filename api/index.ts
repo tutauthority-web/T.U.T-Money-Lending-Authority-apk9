@@ -1,0 +1,10 @@
+import { createApiApp } from "../server/createApiApp";
+
+const app = createApiApp({ serverless: true });
+
+export default function handler(req: any, res: any) {
+  if (req && typeof req.url === "string" && !req.url.startsWith("/api")) {
+    req.url = `/api${req.url.startsWith("/") ? "" : "/"}${req.url}`;
+  }
+  return app(req, res);
+}
