@@ -353,21 +353,21 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 bg-[#02050E]/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in"
       onClick={!isStrictLock && !revealedBackupKey ? onClose : undefined}
     >
       <div
-        className="bg-[#0B132B] border border-[#1E3368] rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar p-6 space-y-5 shadow-2xl text-left"
+        className="gold-rim-card rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar p-6 space-y-5 text-left"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-white/10">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-300">
+        <div className="flex items-center justify-between pb-3.5 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#DFC07C]/15 border border-[#DFC07C]/35 flex items-center justify-center text-[#EAD39C] shrink-0">
               <KeyRound className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">
+              <h3 className="text-sm font-bold text-white tracking-tight">
                 {isStrictLock
                   ? 'Set Your 6-Digit Card PIN'
                   : isKeyAlreadySet
@@ -388,7 +388,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
               <button
                 type="button"
                 onClick={onSignOut}
-                className="px-2.5 py-1.5 rounded-lg border border-white/10 text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer shrink-0"
+                className="px-2.5 py-1.5 rounded-lg border border-white/12 text-[11px] font-semibold text-slate-300 hover:text-white hover:bg-white/5 cursor-pointer shrink-0 tap-interactive"
               >
                 Sign Out
               </button>
@@ -397,7 +397,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 cursor-pointer tap-interactive"
             >
               <X className="w-4 h-4" />
             </button>
@@ -414,14 +414,14 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             <p className="text-[11px] text-slate-300 leading-relaxed">
               Store this backup key somewhere safe. If you ever forget your 6-digit Payment Key, you can recover your card instantly with this code. It will not be shown again.
             </p>
-            <div className="p-2.5 rounded-lg bg-[#070D1F] border border-white/10 flex items-center justify-between gap-2">
-              <span className="font-mono text-xs font-bold text-amber-300 tracking-wider tabular-nums">
+            <div className="p-2.5 rounded-lg bg-[#050A16] border border-white/10 flex items-center justify-between gap-2">
+              <span className="font-mono text-xs font-bold text-[#EAD39C] tracking-wider tabular-nums">
                 {revealedBackupKey}
               </span>
               <button
                 type="button"
                 onClick={() => handleCopyBackup(revealedBackupKey)}
-                className="px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/15 text-[11px] font-semibold text-white flex items-center gap-1 cursor-pointer shrink-0"
+                className="px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/15 text-[11px] font-semibold text-white flex items-center gap-1 cursor-pointer shrink-0 tap-interactive"
               >
                 {copiedBackup ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                 <span>{copiedBackup ? 'Copied' : 'Copy'}</span>
@@ -436,7 +436,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   onClose();
                 }
               }}
-              className="w-full py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold cursor-pointer"
+              className="w-full py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold cursor-pointer tap-interactive"
             >
               {enteredViaMandatoryGate
                 ? 'I Have Saved My Recovery Key — Continue to Dashboard'
@@ -446,7 +446,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
         )}
 
         {/* Live Card Credential Summary */}
-        <div className="p-4 rounded-xl bg-[#070D1F] border border-white/10 space-y-3">
+        <div className="p-4 rounded-xl bg-[#050A16] border border-white/10 space-y-3">
           <div className="flex items-center justify-between text-[11px]">
             <span className="font-semibold text-slate-400">Your T.U.T. Card Number</span>
             <span
@@ -455,7 +455,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   ? 'text-rose-400'
                   : isKeyAlreadySet
                   ? 'text-emerald-400'
-                  : 'text-amber-300'
+                  : 'text-[#EAD39C]'
               }`}
             >
               {tutCard?.isFrozen ? 'Frozen' : isKeyAlreadySet ? 'Key Active' : 'Setup Required'}
@@ -470,7 +470,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowPan((p) => !p)}
-                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 cursor-pointer"
+                className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 cursor-pointer tap-interactive"
                 title={showPan ? 'Mask Number' : 'Reveal Number'}
               >
                 {showPan ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -478,7 +478,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
               <button
                 type="button"
                 onClick={handleCopyPan}
-                className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-semibold text-slate-200 flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-semibold text-slate-200 flex items-center gap-1 cursor-pointer tap-interactive"
               >
                 {copiedPan ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                 <span>{copiedPan ? 'Copied' : 'Copy'}</span>
@@ -499,7 +499,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             </div>
             <div>
               <span className="text-slate-500 block text-[10px]">Per-Tx Cap</span>
-              <span className="font-mono tabular-nums font-bold text-amber-300">
+              <span className="font-mono tabular-nums font-bold text-[#EAD39C]">
                 ৳{(tutCard?.perTxLimit || perTxLimit).toLocaleString()}
               </span>
             </div>
@@ -514,7 +514,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  <Lock className="w-3.5 h-3.5 text-[#DFC07C]" />
                   <span>Create 6-Digit Card Payment Key</span>
                 </label>
                 <button
@@ -535,7 +535,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   value={secretCode}
                   onChange={(e) => setSecretCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   placeholder="6-digit Key"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#070D1F] border border-white/10 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-amber-400/60"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/12 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-[#DFC07C]/70"
                   required
                 />
                 <input
@@ -545,7 +545,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   value={confirmCode}
                   onChange={(e) => setConfirmCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   placeholder="Confirm Key"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#070D1F] border border-white/10 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-amber-400/60"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/12 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-[#DFC07C]/70"
                   required
                 />
               </div>
@@ -562,10 +562,10 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                     key={preset}
                     type="button"
                     onClick={() => setPerTxLimit(preset)}
-                    className={`py-2 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition-colors cursor-pointer ${
+                    className={`py-2 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition-colors cursor-pointer tap-interactive ${
                       perTxLimit === preset
-                        ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
-                        : 'bg-[#070D1F] border-white/10 text-slate-400 hover:text-white'
+                        ? 'bg-[#DFC07C]/20 border-[#DFC07C]/65 text-[#FFF2CC]'
+                        : 'bg-[#050A16] border-white/10 text-slate-400 hover:text-white'
                     }`}
                   >
                     ৳{preset.toLocaleString()}
@@ -575,7 +575,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             </div>
 
             {/* Optional Security Question for Smart Recovery */}
-            <div className="p-3.5 rounded-xl bg-[#070D1F] border border-white/10 space-y-2.5">
+            <div className="p-3.5 rounded-xl bg-[#050A16] border border-white/10 space-y-2.5">
               <div className="flex items-center gap-1.5 text-xs font-bold text-slate-200">
                 <HelpCircle className="w-3.5 h-3.5 text-sky-400" />
                 <span>Smart Recovery Security Question (Optional)</span>
@@ -583,7 +583,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
               <select
                 value={securityQuestion}
                 onChange={(e) => setSecurityQuestion(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-[#0B132B] border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-amber-400/60"
+                className="w-full px-3 py-2 rounded-lg bg-[#091124] border border-white/10 text-xs text-slate-200 focus:outline-none focus:border-[#DFC07C]/65"
               >
                 {PRESET_SECURITY_QUESTIONS.map((q) => (
                   <option key={q} value={q}>
@@ -596,7 +596,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                 value={securityAnswer}
                 onChange={(e) => setSecurityAnswer(e.target.value)}
                 placeholder="Your recovery answer (leave blank to skip)"
-                className="w-full px-3 py-2 rounded-lg bg-[#0B132B] border border-white/10 text-xs text-white focus:outline-none focus:border-amber-400/60"
+                className="w-full px-3 py-2 rounded-lg bg-[#091124] border border-white/10 text-xs text-white focus:outline-none focus:border-[#DFC07C]/65"
               />
             </div>
 
@@ -621,8 +621,8 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                 type="submit"
                 disabled={saving}
                 className={isStrictLock
-                  ? 'w-full px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50'
-                  : 'px-5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50'}
+                  ? 'w-full px-5 py-3 rounded-xl gold-cta-gradient text-[#090E1A] text-xs font-bold transition-all active:scale-[0.99] cursor-pointer disabled:opacity-50'
+                  : 'px-5 py-2.5 rounded-xl gold-cta-gradient text-[#090E1A] text-xs font-bold transition-all active:scale-[0.99] cursor-pointer disabled:opacity-50'}
               >
                 {saving
                   ? 'Activating PIN...'
@@ -638,7 +638,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
           /* =================================================================== */
           <div className="space-y-4">
             {/* Key Locked Status & Smart Recovery Trigger */}
-            <div className="p-3.5 rounded-xl bg-slate-900/70 border border-white/10 flex items-center justify-between gap-3">
+            <div className="p-3.5 rounded-xl bg-[#050A16] border border-white/10 flex items-center justify-between gap-3">
               <div className="flex items-start gap-2.5">
                 <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                 <div>
@@ -654,7 +654,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   setErrorMsg(null);
                   setRecoveryOpen(true);
                 }}
-                className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-200 text-xs font-bold shrink-0 cursor-pointer flex items-center gap-1.5"
+                className="px-3 py-1.5 rounded-lg bg-[#DFC07C]/15 hover:bg-[#DFC07C]/25 border border-[#DFC07C]/35 text-[#EAD39C] text-xs font-bold shrink-0 cursor-pointer flex items-center gap-1.5 tap-interactive"
               >
                 <LifeBuoy className="w-3.5 h-3.5" />
                 <span>Recover Key</span>
@@ -662,7 +662,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             </div>
 
             {/* Instant Freeze Toggle */}
-            <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-900/60 border border-white/10">
+            <div className="flex items-center justify-between p-3.5 rounded-xl bg-[#050A16] border border-white/10">
               <div className="flex items-center gap-2.5">
                 {tutCard?.isFrozen ? (
                   <Lock className="w-4 h-4 text-rose-400" />
@@ -682,7 +682,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                 type="button"
                 disabled={togglingFreeze}
                 onClick={handleFreezeToggle}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer tap-interactive ${
                   tutCard?.isFrozen
                     ? 'bg-emerald-500/15 hover:bg-emerald-500/25 border-emerald-500/30 text-emerald-300'
                     : 'bg-rose-500/15 hover:bg-rose-500/25 border-rose-500/30 text-rose-300'
@@ -701,10 +701,10 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                     key={preset}
                     type="button"
                     onClick={() => setPerTxLimit(preset)}
-                    className={`py-2 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition-colors cursor-pointer ${
+                    className={`py-2 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition-colors cursor-pointer tap-interactive ${
                       perTxLimit === preset
-                        ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
-                        : 'bg-[#070D1F] border-white/10 text-slate-400 hover:text-white'
+                        ? 'bg-[#DFC07C]/20 border-[#DFC07C]/65 text-[#FFF2CC]'
+                        : 'bg-[#050A16] border-white/10 text-slate-400 hover:text-white'
                     }`}
                   >
                     ৳{preset.toLocaleString()}
@@ -730,7 +730,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                  className="px-5 py-2.5 rounded-xl gold-cta-gradient text-[#090E1A] text-xs font-bold transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
                 >
                   {saving ? 'Saving...' : 'Update Spend Cap'}
                 </button>
@@ -751,20 +751,20 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                 <ArrowLeft className="w-3.5 h-3.5" />
                 <span>Back to Card Controls</span>
               </button>
-              <span className="text-[11px] text-amber-300 font-semibold">Smart Key Recovery</span>
+              <span className="text-[11px] text-[#EAD39C] font-semibold">Smart Key Recovery</span>
             </div>
 
             {/* Method Picker */}
-            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[#070D1F] border border-white/10">
+            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[#050A16] border border-white/10">
               <button
                 type="button"
                 onClick={() => {
                   setRecoveryMethod('email_otp');
                   setErrorMsg(null);
                 }}
-                className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors tap-interactive ${
                   recoveryMethod === 'email_otp'
-                    ? 'bg-amber-400 text-slate-950'
+                    ? 'gold-cta-gradient text-[#090E1A]'
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
@@ -778,9 +778,9 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   setRecoveryMethod('backup_key');
                   setErrorMsg(null);
                 }}
-                className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors disabled:opacity-40 ${
+                className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors disabled:opacity-40 tap-interactive ${
                   recoveryMethod === 'backup_key'
-                    ? 'bg-amber-400 text-slate-950'
+                    ? 'gold-cta-gradient text-[#090E1A]'
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
@@ -794,9 +794,9 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   setRecoveryMethod('security_question');
                   setErrorMsg(null);
                 }}
-                className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors disabled:opacity-40 ${
+                className={`py-2 px-2 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors disabled:opacity-40 tap-interactive ${
                   recoveryMethod === 'security_question'
-                    ? 'bg-amber-400 text-slate-950'
+                    ? 'gold-cta-gradient text-[#090E1A]'
                     : 'text-slate-300 hover:text-white'
                 }`}
               >
@@ -807,7 +807,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
 
             {/* Step 1: Verification per chosen Smart Recovery Method */}
             {recoveryMethod === 'email_otp' && (
-              <div className="p-3.5 rounded-xl bg-[#070D1F] border border-white/10 space-y-3">
+              <div className="p-3.5 rounded-xl bg-[#050A16] border border-white/10 space-y-3">
                 {!emailOtpProofToken ? (
                   <>
                     <p className="text-[11px] text-slate-300 leading-relaxed">
@@ -818,7 +818,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                         type="button"
                         disabled={sendingOtp}
                         onClick={handleSendRecoveryOtp}
-                        className="w-full py-2.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-bold text-white cursor-pointer disabled:opacity-50"
+                        className="w-full py-2.5 rounded-lg bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-bold text-white cursor-pointer disabled:opacity-50 tap-interactive"
                       >
                         {sendingOtp ? 'Sending Code...' : 'Send Recovery Code to Email'}
                       </button>
@@ -835,13 +835,13 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                             value={otpInput}
                             onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
                             placeholder="6-digit OTP"
-                            className="flex-1 px-3 py-2 rounded-lg bg-[#0B132B] border border-white/15 text-white font-mono text-sm text-center tracking-[0.25em]"
+                            className="flex-1 px-3 py-2 rounded-lg bg-[#091124] border border-white/15 text-white font-mono text-sm text-center tracking-[0.25em] focus:outline-none focus:border-[#DFC07C]/70"
                           />
                           <button
                             type="button"
                             disabled={verifyingOtp}
                             onClick={handleVerifyRecoveryOtp}
-                            className="px-4 py-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold cursor-pointer disabled:opacity-50"
+                            className="px-4 py-2 rounded-lg gold-cta-gradient text-[#090E1A] text-xs font-bold cursor-pointer disabled:opacity-50"
                           >
                             {verifyingOtp ? 'Checking...' : 'Verify'}
                           </button>
@@ -859,7 +859,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
             )}
 
             {recoveryMethod === 'backup_key' && (
-              <div className="p-3.5 rounded-xl bg-[#070D1F] border border-white/10 space-y-2">
+              <div className="p-3.5 rounded-xl bg-[#050A16] border border-white/10 space-y-2">
                 <label className="text-xs font-bold text-slate-200 block">
                   Enter Saved Master Recovery Backup Key
                 </label>
@@ -868,14 +868,14 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   value={backupKeyInput}
                   onChange={(e) => setBackupKeyInput(e.target.value.toUpperCase())}
                   placeholder="TUT-REC-XXXX-XXXX-XXXX"
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-[#0B132B] border border-white/15 text-amber-300 font-mono text-xs tracking-wider focus:outline-none focus:border-amber-400/60"
+                  className="w-full px-3.5 py-2.5 rounded-lg bg-[#091124] border border-white/15 text-[#EAD39C] font-mono text-xs tracking-wider focus:outline-none focus:border-[#DFC07C]/70"
                   required
                 />
               </div>
             )}
 
             {recoveryMethod === 'security_question' && (
-              <div className="p-3.5 rounded-xl bg-[#070D1F] border border-white/10 space-y-2">
+              <div className="p-3.5 rounded-xl bg-[#050A16] border border-white/10 space-y-2">
                 <span className="text-[11px] text-slate-400 block">Your Security Question</span>
                 <p className="text-xs font-bold text-white">{tutCard?.securityQuestion}</p>
                 <input
@@ -883,7 +883,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                   value={securityAnswerInput}
                   onChange={(e) => setSecurityAnswerInput(e.target.value)}
                   placeholder="Enter your recovery answer"
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-[#0B132B] border border-white/15 text-white text-xs focus:outline-none focus:border-amber-400/60"
+                  className="w-full px-3.5 py-2.5 rounded-lg bg-[#091124] border border-white/15 text-white text-xs focus:outline-none focus:border-[#DFC07C]/70"
                   required
                 />
               </div>
@@ -903,7 +903,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                     value={newKeyInput}
                     onChange={(e) => setNewKeyInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="New 6-digit Key"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#070D1F] border border-white/15 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-amber-400/60"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/15 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-[#DFC07C]/70"
                     required
                   />
                   <input
@@ -913,7 +913,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
                     value={newKeyConfirm}
                     onChange={(e) => setNewKeyConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="Confirm New Key"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#070D1F] border border-white/15 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-amber-400/60"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/15 text-white font-mono text-sm tracking-[0.25em] text-center focus:outline-none focus:border-[#DFC07C]/70"
                     required
                   />
                 </div>
@@ -931,7 +931,7 @@ export const TutCardKeyModal: React.FC<TutCardKeyModalProps> = ({
               <button
                 type="submit"
                 disabled={saving}
-                className="w-full py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                className="w-full py-3 rounded-xl gold-cta-gradient text-[#090E1A] text-xs font-bold transition-all active:scale-[0.99] cursor-pointer disabled:opacity-50"
               >
                 {saving ? 'Restoring Card Key...' : 'Verify & Reset Card Key'}
               </button>

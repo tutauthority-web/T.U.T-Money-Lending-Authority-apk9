@@ -19,7 +19,6 @@ import {
   AlertCircle,
   ArrowRight,
   Smartphone,
-  Fingerprint,
   Info,
   HelpCircle,
   ChevronDown,
@@ -1049,14 +1048,59 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
   const ringCircumference = 2 * Math.PI * ringRadius;
   const ringOffset = ringCircumference * (1 - holdProgress / 100);
 
+  const isValidBDPhone = (val: string) => /^01[3-9]\d{8}$/.test(val.replace(/[\s-]/g, ''));
+
+  const projectedOutcome = useMemo(() => {
+    if (parsedAmount <= 0 || step1ValidationError || type === 'subscription') return null;
+    if (type === 'loan') {
+      const nextDebt = remainingDebt + parsedAmount;
+      const nextCap = Math.max(0, borrowingLimit - nextDebt);
+      return {
+        label: 'After Loan Approval',
+        primaryText: `New Debt: ৳${nextDebt.toLocaleString()}`,
+        secondaryText: `Remaining Limit: ৳${nextCap.toLocaleString()}`,
+        tone: 'blue' as const,
+      };
+    }
+    if (type === 'pay_due') {
+      const nextDebt = Math.max(0, remainingDebt - parsedAmount);
+      return {
+        label: 'After Repayment',
+        primaryText: nextDebt === 0 ? 'Debt Cleared in Full' : `Remaining Debt: ৳${nextDebt.toLocaleString()}`,
+        secondaryText: `Limit Restored: +৳${parsedAmount.toLocaleString()}`,
+        tone: 'emerald' as const,
+      };
+    }
+    if (type === 'deposit') {
+      const nextVault = (profile.totalDeposit || 0) + parsedAmount;
+      return {
+        label: 'After Deposit',
+        primaryText: `New Vault: ৳${nextVault.toLocaleString()}`,
+        secondaryText: 'Boosts borrowing trust score',
+        tone: 'emerald' as const,
+      };
+    }
+    if (type === 'refund' || type === 'transfer') {
+      const nextVault = Math.max(0, (profile.totalDeposit || 0) - parsedAmount);
+      return {
+        label: type === 'transfer' ? 'After Transfer' : 'After Withdrawal',
+        primaryText: `Remaining Vault: ৳${nextVault.toLocaleString()}`,
+        secondaryText: type === 'transfer' ? 'Instant ledger settlement' : 'Processed to receiving channel',
+        tone: 'amber' as const,
+      };
+    }
+    return null;
+  }, [parsedAmount, step1ValidationError, type, remainingDebt, borrowingLimit, profile.totalDeposit]);
+
   return (
-    <div className="fixed inset-0 z-50 w-full h-screen bg-[#020612] flex flex-col text-slate-100 overflow-hidden font-sans">
-      {/* Subtle Ambient Depth */}
-      <div className="absolute -top-24 left-1/3 w-[380px] h-[380px] bg-blue-600/[0.06] rounded-full blur-[110px] pointer-events-none" />
-      <div className="absolute bottom-0 right-1/4 w-[320px] h-[320px] bg-emerald-600/[0.04] rounded-full blur-[110px] pointer-events-none" />
+    <div className="fixed inset-0 z-50 w-full h-screen bg-vault-mesh flex flex-col text-slate-100 overflow-hidden font-sans">
+      {/* Subtle Architectural Vault Grid & Atmospheric Depth */}
+      <div className="absolute inset-0 vault-grid-pattern opacity-40 pointer-events-none" />
+      <div className="absolute -top-28 left-1/4 w-[420px] h-[420px] bg-[#DFC07C]/[0.05] rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute bottom-0 right-1/5 w-[360px] h-[360px] bg-blue-600/[0.06] rounded-full blur-[120px] pointer-events-none" />
 
       {/* HEADER BAR */}
-      <header className="w-full bg-[#050b1c]/95 backdrop-blur-xl border-b border-white/[0.07] py-3 px-4 sm:px-6 flex items-center justify-between shrink-0 z-30">
+      <header className="w-full bg-[#060C1B]/92 backdrop-blur-xl border-b border-white/[0.08] py-3 px-4 sm:px-6 flex items-center justify-between shrink-0 z-30">
         <button
           type="button"
           onClick={() => {
@@ -1069,9 +1113,9 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
             }
           }}
           className={cn(
-            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer',
+            'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer tap-interactive',
             step > 1
-              ? 'border-white/10 bg-white/5 hover:bg-white/10 text-slate-200'
+              ? 'border-white/12 bg-white/[0.05] hover:bg-white/[0.1] text-slate-200'
               : 'border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300'
           )}
         >
@@ -1083,7 +1127,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
           <h1 className="text-sm sm:text-base font-bold tracking-tight text-white leading-none">
             {getTransactionLabel()}
           </h1>
-          <p className="text-[11px] text-slate-400 font-medium mt-1">
+          <p className="text-[11px] text-[#EAD39C]/85 font-medium mt-1 font-mono tabular-nums">
             Step {type === 'transfer' ? (step === 3 ? 2 : 1) : step} of {type === 'transfer' ? 2 : 3}
           </p>
         </div>
@@ -1092,16 +1136,16 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
           href="https://wa.me/8801713710607"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-medium text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/12 text-xs font-medium text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0 tap-interactive"
         >
-          <HelpCircle className="w-3.5 h-3.5 text-blue-400" />
+          <HelpCircle className="w-3.5 h-3.5 text-[#DFC07C]" />
           <span className="hidden sm:inline">Support</span>
         </a>
       </header>
 
-      {/* CLEAN STEPPER INDICATOR */}
+      {/* CLEAN ANIMATED STEPPER INDICATOR */}
       {!transferSuccess && (
-        <div className="w-full max-w-md mx-auto px-5 pt-3 pb-2 shrink-0 z-20">
+        <div className="w-full max-w-md mx-auto px-5 pt-3.5 pb-2 shrink-0 z-20">
           <div className="flex items-center justify-between gap-2">
             {[
               { id: 1, label: 'Details' },
@@ -1127,12 +1171,12 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   <div className="flex items-center gap-2 shrink-0">
                     <span
                       className={cn(
-                        'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border transition-all duration-200',
+                        'w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border transition-all duration-300 font-mono tabular-nums',
                         isCompleted
-                          ? 'bg-emerald-500 border-emerald-400 text-slate-950'
+                          ? 'bg-emerald-500 border-emerald-400 text-slate-950 shadow-[0_0_12px_rgba(16,185,129,0.35)]'
                           : isCurrent
-                            ? 'bg-blue-600 border-blue-400 text-white shadow-[0_0_12px_rgba(37,99,235,0.4)]'
-                            : 'bg-slate-900 border-white/10 text-slate-500'
+                            ? 'bg-gradient-to-br from-[#F5DC9B] to-[#DFB459] border-[#F9E6B3] text-[#090E1A] shadow-[0_0_16px_rgba(223,192,124,0.45)]'
+                            : 'bg-[#091124] border-white/12 text-slate-500'
                       )}
                     >
                       {isCompleted ? <Check className="w-3.5 h-3.5 stroke-[3]" /> : displayIdx}
@@ -1147,12 +1191,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                     </span>
                   </div>
                   {idx < arr.length - 1 && (
-                    <div
-                      className={cn(
-                        'flex-1 h-[2px] rounded-full transition-colors duration-300',
-                        isCompleted ? 'bg-emerald-500/80' : 'bg-white/10'
-                      )}
-                    />
+                    <div className="flex-1 h-[2px] rounded-full bg-white/10 overflow-hidden">
+                      <div
+                        className={cn(
+                          'h-full rounded-full transition-all duration-500 ease-out',
+                          isCompleted ? 'w-full bg-emerald-400' : 'w-0 bg-emerald-400'
+                        )}
+                      />
+                    </div>
                   )}
                 </React.Fragment>
               );
@@ -1164,15 +1210,15 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
       {/* MAIN CONTENT CONTAINER */}
       <div className="flex-1 w-full max-w-md mx-auto px-4 sm:px-5 pb-4 overflow-hidden flex flex-col z-10">
         {transferSuccess ? (
-          <div className="w-full flex-1 flex flex-col justify-center py-2 overflow-y-auto">
+          <div className="w-full flex-1 flex flex-col justify-center py-2 overflow-y-auto custom-scrollbar">
             <motion.div
               initial={{ scale: 0.96, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ duration: 0.25 }}
-              className="w-full bg-[#070d1e] border border-white/10 rounded-2xl p-5 shadow-2xl flex flex-col items-center text-center space-y-4"
+              className="w-full gold-rim-card rounded-2xl p-5 sm:p-6 flex flex-col items-center text-center space-y-4"
             >
-              <div className="w-12 h-12 bg-emerald-500/15 rounded-full flex items-center justify-center border border-emerald-500/30 text-emerald-400">
-                <CheckCircle2 className="w-6 h-6" />
+              <div className="w-13 h-13 bg-emerald-500/15 rounded-full flex items-center justify-center border border-emerald-400/40 text-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.25)]">
+                <CheckCircle2 className="w-7 h-7" />
               </div>
 
               <div>
@@ -1185,14 +1231,16 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                 <p className="text-xs text-slate-400 mt-1">Ledger balances updated immediately</p>
               </div>
 
-              <div className="w-full p-4 bg-slate-950/80 rounded-xl border border-white/[0.07] text-xs text-left space-y-3">
+              <div className="w-full ticket-divider h-3" />
+
+              <div className="w-full p-4 bg-[#060B18]/90 rounded-xl border border-white/[0.08] text-xs text-left space-y-3">
                 <div className="flex justify-between items-center border-b border-white/[0.06] pb-2">
                   <span className="text-slate-400 font-medium">Recipient</span>
                   <span className="text-white font-semibold">{transferSuccess.recipientName}</span>
                 </div>
                 <div className="flex justify-between items-center border-b border-white/[0.06] pb-2">
                   <span className="text-slate-400 font-medium">Member ID</span>
-                  <span className="text-amber-300 font-mono font-semibold">{transferSuccess.recipientId}</span>
+                  <span className="text-[#EAD39C] font-mono font-semibold">{transferSuccess.recipientId}</span>
                 </div>
                 <div className="flex justify-between items-center border-b border-white/[0.06] pb-2">
                   <span className="text-slate-400 font-medium">Reference ID</span>
@@ -1206,14 +1254,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                 )}
                 <div className="flex justify-between items-center">
                   <span className="text-slate-400 font-medium">Date & Time</span>
-                  <span className="text-slate-200 font-mono">{format(transferSuccess.date, 'dd MMM yyyy, HH:mm')}</span>
+                  <span className="text-slate-200 font-mono tabular-nums">{format(transferSuccess.date, 'dd MMM yyyy, HH:mm')}</span>
                 </div>
               </div>
 
               <button
                 type="button"
                 onClick={onClose}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl uppercase tracking-wider transition-all cursor-pointer"
+                className="w-full py-3.5 gold-cta-gradient text-[#090E1A] font-bold text-xs rounded-xl uppercase tracking-wider transition-all active:scale-[0.99] cursor-pointer"
               >
                 Done
               </button>
@@ -1227,17 +1275,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  className="absolute inset-0 bg-[#020612]/95 backdrop-blur-md z-50 flex flex-col items-center justify-center space-y-3"
+                  className="absolute inset-0 bg-[#040814]/92 backdrop-blur-md z-50 flex flex-col items-center justify-center space-y-3 rounded-2xl"
                 >
-                  <div className="w-12 h-12 rounded-full border-3 border-blue-500/20 border-t-blue-500 animate-spin" />
-                  <p className="text-xs font-bold text-white uppercase tracking-wider">Processing Request...</p>
+                  <div className="w-12 h-12 rounded-full border-2 border-[#DFC07C]/25 border-t-[#DFC07C] animate-spin" />
+                  <p className="text-xs font-bold text-[#EAD39C] uppercase tracking-wider">Processing Request...</p>
                 </motion.div>
               )}
             </AnimatePresence>
 
             <AnimatePresence mode="wait">
               {/* ============================================================
-                  STEP 1: AMOUNT, PURPOSE & DYNAMIC REPAYMENT TERM
+                  STEP 1: AMOUNT, LIVE FORECAST & PURPOSE
                  ============================================================ */}
               {step === 1 && (
                 <motion.div
@@ -1245,14 +1293,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   initial={{ x: -16, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
                   exit={{ x: 16, opacity: 0 }}
-                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                   className="flex-1 flex flex-col justify-between overflow-hidden"
                 >
-                  <div className="flex-1 overflow-y-auto space-y-3 pr-0.5 pb-2">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 pr-0.5 pb-2">
                     {/* CONTEXTUAL CAPACITY / BALANCE SUMMARY */}
-                    <div className="p-4 bg-[#070d1e] border border-white/[0.07] rounded-2xl flex items-center justify-between gap-3">
+                    <div className="p-4 bg-[#081022]/90 border border-white/[0.09] rounded-2xl flex items-center justify-between gap-3 shadow-lg">
                       <div className="space-y-1 min-w-0">
-                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                        <span className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wider block">
                           {balanceCard.title}
                         </span>
                         <div className="text-2xl font-black text-emerald-400 font-mono tabular-nums leading-tight">
@@ -1287,11 +1335,11 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                       )}
                     </div>
 
-                    {/* AMOUNT CARD */}
-                    <div className="bg-[#070d1e] border border-white/[0.07] rounded-2xl p-4 space-y-3">
+                    {/* HERO AMOUNT ENTRY CARD */}
+                    <div className="gold-rim-card rounded-2xl p-4 sm:p-5 space-y-3.5">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <Wallet className="w-4 h-4 text-blue-400" />
+                          <Wallet className="w-4 h-4 text-[#DFC07C]" />
                           <h3 className="text-xs font-bold uppercase text-white tracking-wider">
                             {type === 'loan' ? 'Loan Amount (BDT)' : 'Amount (BDT)'}
                           </h3>
@@ -1311,8 +1359,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                               if (maxVal > 0) handlePresetSelect(maxVal);
                             }}
                             className={cn(
-                              type === 'deposit' ? 'hidden' : 'px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase border transition-all cursor-pointer',
-                              'bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 border-blue-500/25'
+                              type === 'deposit' ? 'hidden' : 'px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase border transition-all cursor-pointer tap-interactive',
+                              'bg-[#DFC07C]/12 hover:bg-[#DFC07C]/22 text-[#EAD39C] border-[#DFC07C]/30'
                             )}
                           >
                             Use Max
@@ -1321,22 +1369,26 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                       </div>
 
                       {type !== 'subscription' ? (
-                        <div className="space-y-2.5">
-                          <div className="relative">
-                            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-lg font-bold text-slate-400">৳</span>
+                        <div className="space-y-3">
+                          <div
+                            className={cn(
+                              'relative rounded-xl bg-[#050A16] border transition-colors px-4 py-3 flex items-baseline gap-2',
+                              step1ValidationError
+                                ? 'border-rose-500/60 focus-within:border-rose-400'
+                                : 'border-white/12 focus-within:border-[#DFC07C]/70'
+                            )}
+                          >
+                            <span className="text-2xl font-bold text-[#EAD39C] select-none leading-none">৳</span>
                             <input
                               type="number"
+                              inputMode="decimal"
                               min="1"
                               value={amount}
                               onChange={(e) => setAmount(e.target.value)}
-                              placeholder="Enter amount"
-                              className={cn(
-                                'w-full bg-slate-950/90 border rounded-xl pl-8 pr-4 py-2.5 text-base text-white font-mono tabular-nums font-bold focus:outline-none transition-all placeholder:text-slate-500',
-                                step1ValidationError
-                                  ? 'border-rose-500/60 focus:border-rose-400'
-                                  : 'border-white/10 focus:border-blue-500'
-                              )}
+                              placeholder="0"
+                              className="w-full bg-transparent text-2xl sm:text-3xl text-white font-mono tabular-nums font-extrabold focus:outline-none placeholder:text-slate-600"
                             />
+                            <span className="text-[11px] font-mono font-semibold text-slate-500 shrink-0">BDT</span>
                           </div>
 
                           {step1ValidationError && (
@@ -1345,6 +1397,36 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                               <span>{step1ValidationError}</span>
                             </p>
                           )}
+
+                          {/* Live Upfront Financial Forecast */}
+                          <AnimatePresence initial={false}>
+                            {projectedOutcome && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="overflow-hidden"
+                              >
+                                <div
+                                  className={cn(
+                                    'px-3 py-2 rounded-xl border text-[11px] flex items-center justify-between gap-2',
+                                    projectedOutcome.tone === 'emerald'
+                                      ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300'
+                                      : projectedOutcome.tone === 'blue'
+                                        ? 'bg-blue-500/10 border-blue-500/25 text-blue-300'
+                                        : 'bg-amber-500/10 border-amber-500/25 text-amber-200'
+                                  )}
+                                >
+                                  <span className="font-mono font-semibold tabular-nums">
+                                    {projectedOutcome.primaryText}
+                                  </span>
+                                  <span className="text-slate-300/80 font-medium truncate">
+                                    {projectedOutcome.secondaryText}
+                                  </span>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
 
                           <div className="grid grid-cols-4 gap-2">
                             {amountPresets.map((val) => {
@@ -1355,10 +1437,10 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   type="button"
                                   onClick={() => handlePresetSelect(val)}
                                   className={cn(
-                                    'py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer font-mono tabular-nums',
+                                    'py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer font-mono tabular-nums tap-interactive',
                                     isSelected
-                                      ? 'bg-blue-600 border-blue-400 text-white shadow-[0_0_12px_rgba(37,99,235,0.28)]'
-                                      : 'bg-slate-950/80 border-white/[0.08] text-slate-300 hover:border-white/20 hover:text-white'
+                                      ? 'bg-[#DFC07C]/20 border-[#DFC07C]/70 text-[#FFF2CC] shadow-[0_0_12px_rgba(223,192,124,0.2)]'
+                                      : 'bg-[#060C1A] border-white/[0.09] text-slate-300 hover:border-white/25 hover:text-white'
                                   )}
                                 >
                                   ৳{val.toLocaleString()}
@@ -1368,14 +1450,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           </div>
                         </div>
                       ) : (
-                        <div className="p-3 bg-slate-950/70 rounded-xl border border-white/[0.07] flex justify-between items-center">
+                        <div className="p-3.5 bg-[#060C1A] rounded-xl border border-white/[0.08] flex justify-between items-center">
                           <div>
                             <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Selected Tier</p>
                             <h4 className="text-xs font-bold text-white mt-0.5">
                               {getSubscriptionPricing(selectedSubTier || 'bronze', profile).label}
                             </h4>
                           </div>
-                          <span className="text-sm font-bold text-blue-400 font-mono tabular-nums">
+                          <span className="text-base font-extrabold text-[#EAD39C] font-mono tabular-nums">
                             ৳{getSubscriptionPricing(selectedSubTier || 'bronze', profile).price.toLocaleString()}
                           </span>
                         </div>
@@ -1383,12 +1465,12 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                     </div>
 
                     {/* PURPOSE OR RECIPIENT CARD */}
-                    <div className="bg-[#070d1e] border border-white/[0.07] rounded-2xl p-4 space-y-3">
+                    <div className="bg-[#081022]/90 border border-white/[0.09] rounded-2xl p-4 space-y-3">
                       <div className="flex items-center gap-2">
                         {type === 'loan' ? (
-                          <FileText className="w-4 h-4 text-blue-400" />
+                          <FileText className="w-4 h-4 text-[#DFC07C]" />
                         ) : (
-                          <User className="w-4 h-4 text-blue-400" />
+                          <User className="w-4 h-4 text-[#DFC07C]" />
                         )}
                         <h3 className="text-xs font-bold uppercase text-white tracking-wider">
                           {type === 'loan'
@@ -1413,14 +1495,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   setTransferError('');
                                 }}
                                 placeholder="Member ID, Phone, or Email"
-                                className="w-full bg-slate-950 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500"
+                                className="w-full bg-[#050A16] border border-white/12 rounded-xl pl-8 pr-3 py-2.5 text-xs text-white focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500"
                               />
                             </div>
                             <button
                               type="button"
                               onClick={handleVerifyRecipient}
                               disabled={verifyLoading || !transferIdentifier.trim()}
-                              className="px-3.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-xl transition-all disabled:opacity-40 cursor-pointer shrink-0"
+                              className="px-3.5 bg-[#DFC07C]/15 hover:bg-[#DFC07C]/25 border border-[#DFC07C]/35 text-[#EAD39C] font-semibold text-xs rounded-xl transition-all disabled:opacity-40 cursor-pointer shrink-0 tap-interactive"
                             >
                               {verifyLoading ? 'Checking...' : 'Verify'}
                             </button>
@@ -1434,15 +1516,19 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           )}
 
                           {verifiedRecipient && (
-                            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/25 rounded-xl flex justify-between items-center">
+                            <motion.div
+                              initial={{ opacity: 0, y: -4 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl flex justify-between items-center"
+                            >
                               <div className="flex items-center gap-2 text-emerald-300">
                                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                                 <span className="text-xs font-semibold">{verifiedRecipient.name}</span>
                               </div>
-                              <span className="text-xs font-mono text-amber-300 font-semibold">
+                              <span className="text-xs font-mono text-[#EAD39C] font-semibold">
                                 {verifiedRecipient.memberId || 'Verified'}
                               </span>
-                            </div>
+                            </motion.div>
                           )}
 
                           <div className="space-y-1.5">
@@ -1452,7 +1538,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                               value={transferReference}
                               onChange={(e) => setTransferReference(e.target.value.slice(0, 100))}
                               placeholder="Add an optional note"
-                              className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500"
+                              className="w-full bg-[#050A16] border border-white/12 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500"
                             />
                           </div>
 
@@ -1463,7 +1549,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                               value={transferPassword}
                               onChange={(e) => setTransferPassword(e.target.value)}
                               placeholder="Confirm your login password"
-                              className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500"
+                              className="w-full bg-[#050A16] border border-white/12 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500"
                             />
                           </div>
                         </div>
@@ -1477,7 +1563,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             placeholder="Briefly describe the purpose of this loan..."
                             rows={2}
                             maxLength={120}
-                            className="w-full bg-slate-950/90 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500 resize-none h-14"
+                            className="w-full bg-[#050A16] border border-white/12 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500 resize-none h-14"
                           />
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex flex-wrap gap-1.5">
@@ -1487,17 +1573,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   type="button"
                                   onClick={() => setLoanReason(r)}
                                   className={cn(
-                                    'px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition-all cursor-pointer',
+                                    'px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition-all cursor-pointer tap-interactive',
                                     loanReason === r
-                                      ? 'bg-blue-600 border-blue-400 text-white'
-                                      : 'bg-slate-950 border-white/10 text-slate-400 hover:border-white/25 hover:text-slate-200'
+                                      ? 'bg-[#DFC07C]/20 border-[#DFC07C]/65 text-[#FFF2CC]'
+                                      : 'bg-[#050A16] border-white/10 text-slate-400 hover:border-white/25 hover:text-slate-200'
                                   )}
                                 >
                                   {r}
                                 </button>
                               ))}
                             </div>
-                            <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                            <span className="text-[10px] text-slate-500 font-mono tabular-nums shrink-0">
                               {loanReason.length}/120
                             </span>
                           </div>
@@ -1515,15 +1601,15 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
 
                     {/* SMART DYNAMIC REPAYMENT DATE SECTION (LOAN ONLY) */}
                     {type === 'loan' && (
-                      <div className="bg-[#070d1e] border border-white/[0.07] rounded-2xl p-4 space-y-3">
+                      <div className="bg-[#081022]/90 border border-white/[0.09] rounded-2xl p-4 space-y-3">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
-                            <Calendar className="w-4 h-4 text-blue-400" />
+                            <Calendar className="w-4 h-4 text-[#DFC07C]" />
                             <h3 className="text-xs font-bold uppercase text-white tracking-wider">
                               Estimated Repayment Date
                             </h3>
                           </div>
-                          <span className="text-[11px] font-mono font-semibold text-emerald-400">
+                          <span className="text-[11px] font-mono font-semibold text-emerald-400 tabular-nums">
                             Max: {formatDurationLabel(repaymentEligibility.maxDays)}
                           </span>
                         </div>
@@ -1536,9 +1622,9 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             value={estimatedRepaymentDate}
                             onChange={(e) => setEstimatedRepaymentDate(e.target.value)}
                             className={cn(
-                              'w-full bg-slate-950/90 border rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none transition-all font-mono font-semibold',
+                              'w-full bg-[#050A16] border rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none transition-all font-mono font-semibold',
                               repaymentDateValidation.valid
-                                ? 'border-white/10 focus:border-blue-500'
+                                ? 'border-white/12 focus:border-[#DFC07C]/70'
                                 : 'border-rose-500/60 focus:border-rose-400'
                             )}
                           />
@@ -1571,12 +1657,12 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                 type="button"
                                 onClick={() => setEstimatedRepaymentDate(dStr)}
                                 className={cn(
-                                  'px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer',
+                                  'px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer tap-interactive',
                                   isActive
-                                    ? 'bg-blue-600 border-blue-400 text-white'
+                                    ? 'bg-[#DFC07C]/22 border-[#DFC07C]/70 text-[#FFF2CC]'
                                     : preset.isExtended
                                       ? 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20'
-                                      : 'bg-slate-950 border-white/10 text-slate-300 hover:border-white/25'
+                                      : 'bg-[#050A16] border-white/10 text-slate-300 hover:border-white/25'
                                 )}
                               >
                                 {preset.label}
@@ -1593,10 +1679,10 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             className="w-full flex items-center justify-between text-[11px] text-slate-400 hover:text-slate-200 transition-colors cursor-pointer py-0.5"
                           >
                             <span className="flex items-center gap-1.5">
-                              <Clock className="w-3.5 h-3.5 text-blue-400" />
+                              <Clock className="w-3.5 h-3.5 text-[#DFC07C]" />
                               <span>
-                                {repaymentEligibility.tierSummary} • Latest:{' '}
-                                <strong className="text-slate-200 font-mono">
+                                {repaymentEligibility.tierSummary} · Latest:{' '}
+                                <strong className="text-slate-200 font-mono tabular-nums">
                                   {format(parseISO(repaymentEligibility.maxDateStr), 'dd MMM yyyy')}
                                 </strong>
                               </span>
@@ -1609,7 +1695,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           </button>
 
                           {showRepaymentFactors && (
-                            <div className="mt-2 p-3 rounded-xl bg-slate-950/90 border border-white/[0.07] space-y-2 text-[11px]">
+                            <div className="mt-2 p-3 rounded-xl bg-[#050A16] border border-white/[0.07] space-y-2 text-[11px]">
                               {repaymentEligibility.isRestricted ? (
                                 <p className="text-amber-300 leading-relaxed">
                                   {repaymentEligibility.restrictionReason}
@@ -1652,7 +1738,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   </div>
 
                   {/* STEP 1 FOOTER */}
-                  <div className="pt-2.5 border-t border-white/[0.06] shrink-0 bg-[#020612] space-y-2">
+                  <div className="pt-3 border-t border-white/[0.07] shrink-0 bg-[#040814]/90 backdrop-blur-md space-y-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -1665,14 +1751,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                         'w-full py-3.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2',
                         !isStep1Valid()
                           ? 'bg-slate-900 border border-white/5 text-slate-500 cursor-not-allowed'
-                          : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20 active:scale-[0.99] cursor-pointer'
+                          : 'gold-cta-gradient text-[#090E1A] active:scale-[0.99] cursor-pointer'
                       )}
                     >
                       <span>Continue</span>
                       <ArrowRight className="w-4 h-4" />
                     </button>
                     <p className="text-[11px] text-slate-500 text-center flex items-center justify-center gap-1.5">
-                      <Lock className="w-3 h-3 text-blue-400" />
+                      <Lock className="w-3 h-3 text-[#DFC07C]" />
                       <span>256-bit encrypted member session</span>
                     </p>
                   </div>
@@ -1688,14 +1774,14 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   initial={{ x: 16, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
                   exit={{ x: -16, opacity: 0 }}
-                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                   className="flex-1 flex flex-col justify-between overflow-hidden"
                 >
-                  <div className="flex-1 overflow-y-auto space-y-3 pr-0.5 pb-2">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 pr-0.5 pb-2">
                     {/* METHOD SELECTOR */}
-                    <div className="bg-[#070d1e] border border-white/[0.07] rounded-2xl p-4 space-y-3">
+                    <div className="bg-[#081022]/90 border border-white/[0.09] rounded-2xl p-4 space-y-3">
                       <div className="flex items-center gap-2">
-                        <Wallet className="w-4 h-4 text-emerald-400" />
+                        <Wallet className="w-4 h-4 text-[#DFC07C]" />
                         <h3 className="text-xs font-bold uppercase text-white tracking-wider">
                           {type === 'loan' || type === 'refund' ? 'Select Receiving Method' : 'Select Payment Method'}
                         </h3>
@@ -1718,12 +1804,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             }
                           }}
                           className={cn(
-                            'py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[80px]',
+                            'relative py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[82px] tap-interactive',
                             activeDigitalMethod === 'Bkash'
-                              ? 'bg-[#E2136E]/15 border-[#E2136E]/70 text-white shadow-[0_0_16px_rgba(226,19,110,0.22)]'
-                              : 'bg-slate-950/70 border-white/[0.08] text-slate-400 hover:border-white/20 hover:text-slate-200'
+                              ? 'bg-[#E2136E]/15 border-[#E2136E]/75 text-white shadow-[0_0_18px_rgba(226,19,110,0.22)]'
+                              : 'bg-[#050A16] border-white/[0.09] text-slate-400 hover:border-white/25 hover:text-slate-200'
                           )}
                         >
+                          {activeDigitalMethod === 'Bkash' && (
+                            <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 rounded-full bg-[#E2136E] flex items-center justify-center">
+                              <Check className="w-2.5 h-2.5 text-white stroke-[3]" />
+                            </span>
+                          )}
                           <BkashLogo size="md" />
                           <span className="text-[11px] font-bold tracking-tight leading-none">bKash</span>
                         </button>
@@ -1739,12 +1830,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             }
                           }}
                           className={cn(
-                            'py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[80px]',
+                            'relative py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[82px] tap-interactive',
                             activeDigitalMethod === 'Nagad'
-                              ? 'bg-[#F6921E]/15 border-[#F6921E]/70 text-white shadow-[0_0_16px_rgba(246,146,30,0.22)]'
-                              : 'bg-slate-950/70 border-white/[0.08] text-slate-400 hover:border-white/20 hover:text-slate-200'
+                              ? 'bg-[#F6921E]/15 border-[#F6921E]/75 text-white shadow-[0_0_18px_rgba(246,146,30,0.22)]'
+                              : 'bg-[#050A16] border-white/[0.09] text-slate-400 hover:border-white/25 hover:text-slate-200'
                           )}
                         >
+                          {activeDigitalMethod === 'Nagad' && (
+                            <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 rounded-full bg-[#F6921E] flex items-center justify-center">
+                              <Check className="w-2.5 h-2.5 text-slate-950 stroke-[3]" />
+                            </span>
+                          )}
                           <NagadLogo size="md" />
                           <span className="text-[11px] font-bold tracking-tight leading-none">Nagad</span>
                         </button>
@@ -1755,12 +1851,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             type="button"
                             onClick={() => setMethod('Recharge')}
                             className={cn(
-                              'py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[80px]',
+                              'relative py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[82px] tap-interactive',
                               method === 'Recharge'
-                                ? 'bg-sky-500/15 border-sky-400/70 text-white shadow-[0_0_16px_rgba(56,189,248,0.2)]'
-                                : 'bg-slate-950/70 border-white/[0.08] text-slate-400 hover:border-white/20 hover:text-slate-200'
+                                ? 'bg-sky-500/15 border-sky-400/75 text-white shadow-[0_0_18px_rgba(56,189,248,0.22)]'
+                                : 'bg-[#050A16] border-white/[0.09] text-slate-400 hover:border-white/25 hover:text-slate-200'
                             )}
                           >
+                            {method === 'Recharge' && (
+                              <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 rounded-full bg-sky-400 flex items-center justify-center">
+                                <Check className="w-2.5 h-2.5 text-slate-950 stroke-[3]" />
+                              </span>
+                            )}
                             {RechargeMobileIcon}
                             <span className="text-[11px] font-bold tracking-tight leading-none">Recharge</span>
                           </button>
@@ -1777,12 +1878,17 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             }
                           }}
                           className={cn(
-                            'py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[80px]',
+                            'relative py-2.5 px-1.5 rounded-xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer min-h-[82px] tap-interactive',
                             activeDigitalMethod === 'Cash'
-                              ? 'bg-emerald-500/15 border-emerald-400/70 text-white shadow-[0_0_16px_rgba(16,185,129,0.2)]'
-                              : 'bg-slate-950/70 border-white/[0.08] text-slate-400 hover:border-white/20 hover:text-slate-200'
+                              ? 'bg-emerald-500/15 border-emerald-400/75 text-white shadow-[0_0_18px_rgba(16,185,129,0.22)]'
+                              : 'bg-[#050A16] border-white/[0.09] text-slate-400 hover:border-white/25 hover:text-slate-200'
                           )}
                         >
+                          {activeDigitalMethod === 'Cash' && (
+                            <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 rounded-full bg-emerald-400 flex items-center justify-center">
+                              <Check className="w-2.5 h-2.5 text-slate-950 stroke-[3]" />
+                            </span>
+                          )}
                           {CashNoteIcon}
                           <span className="text-[11px] font-bold tracking-tight leading-none">Cash</span>
                         </button>
@@ -1796,8 +1902,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             className={cn(
                               'p-3.5 rounded-xl border flex items-center justify-between gap-3',
                               activeDigitalMethod === 'Bkash'
-                                ? 'bg-[#E2136E]/[0.08] border-[#E2136E]/30'
-                                : 'bg-[#F6921E]/[0.08] border-[#F6921E]/30'
+                                ? 'bg-[#E2136E]/[0.09] border-[#E2136E]/35'
+                                : 'bg-[#F6921E]/[0.09] border-[#F6921E]/35'
                             )}
                           >
                             <div className="flex items-center gap-3 min-w-0">
@@ -1810,7 +1916,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                 <p className="text-[10px] font-bold uppercase tracking-wider text-slate-300">
                                   Send Money ({activeDigitalMethod === 'Bkash' ? 'bKash' : 'Nagad'} Personal)
                                 </p>
-                                <p className="text-sm font-mono font-bold text-white tracking-wide mt-0.5 select-all">
+                                <p className="text-sm font-mono tabular-nums font-bold text-white tracking-wide mt-0.5 select-all">
                                   {getPersonalNumber()}
                                 </p>
                               </div>
@@ -1821,7 +1927,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                     </div>
 
                     {/* METHOD DETAILS FORM */}
-                    <div className="bg-[#070d1e] border border-white/[0.07] rounded-2xl p-4 space-y-3.5">
+                    <div className="bg-[#081022]/90 border border-white/[0.09] rounded-2xl p-4 space-y-3.5">
                       {activeDigitalMethod === 'Cash' ? (
                         type === 'loan' || type === 'refund' ? (
                           <div className="p-4 bg-emerald-500/[0.06] border border-emerald-500/20 rounded-xl space-y-2 text-center">
@@ -1850,7 +1956,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   else setCashPayerName(e.target.value);
                                 }}
                                 placeholder="Full name of person handing cash"
-                                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-medium focus:outline-none focus:border-emerald-500 transition-all placeholder:text-slate-500"
+                                className="w-full bg-[#050A16] border border-white/12 rounded-xl px-3.5 py-2.5 text-sm text-white font-medium focus:outline-none focus:border-emerald-400/70 transition-all placeholder:text-slate-500"
                               />
                             </div>
 
@@ -1867,7 +1973,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   else setCashPayerPhone(e.target.value);
                                 }}
                                 placeholder="01XXXXXXXXX"
-                                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono font-semibold focus:outline-none focus:border-emerald-500 transition-all placeholder:text-slate-500"
+                                className="w-full bg-[#050A16] border border-white/12 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono tabular-nums font-semibold focus:outline-none focus:border-emerald-400/70 transition-all placeholder:text-slate-500"
                               />
                             </div>
 
@@ -1877,13 +1983,19 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   <Check className="w-3.5 h-3.5 text-emerald-400" />
                                   Confirm Mobile Number
                                 </label>
-                                <input
-                                  type="tel"
-                                  value={confirmCashPayerPhone}
-                                  onChange={(e) => setConfirmCashPayerPhone(e.target.value)}
-                                  placeholder="Re-enter mobile number"
-                                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono font-semibold focus:outline-none focus:border-emerald-500 transition-all placeholder:text-slate-500"
-                                />
+                                <div className="relative">
+                                  <input
+                                    type="tel"
+                                    value={confirmCashPayerPhone}
+                                    onChange={(e) => setConfirmCashPayerPhone(e.target.value)}
+                                    placeholder="Re-enter mobile number"
+                                    className="w-full bg-[#050A16] border border-white/12 rounded-xl pl-3.5 pr-9 py-2.5 text-sm text-white font-mono tabular-nums font-semibold focus:outline-none focus:border-emerald-400/70 transition-all placeholder:text-slate-500"
+                                  />
+                                  {cashPayerPhone.trim().length > 0 &&
+                                    cashPayerPhone.trim() === confirmCashPayerPhone.trim() && (
+                                      <CheckCircle2 className="w-4 h-4 text-emerald-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                                    )}
+                                </div>
                                 {cashPayerPhone &&
                                   confirmCashPayerPhone &&
                                   cashPayerPhone.trim() !== confirmCashPayerPhone.trim() && (
@@ -1899,34 +2011,50 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                       ) : (
                         <>
                           {method === 'Recharge' && (type === 'loan' || type === 'refund') && (
-                            <div className="space-y-1.5">
+                            <div className="space-y-2">
                               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                                 <Building2 className="w-3.5 h-3.5 text-sky-400" />
                                 Mobile Operator
                               </label>
-                              <select
-                                value={mobileOperator}
-                                onChange={(e) => setMobileOperator(e.target.value)}
-                                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white font-semibold focus:outline-none focus:border-sky-500 transition-all cursor-pointer"
-                              >
-                                <option value="Grameenphone">Grameenphone</option>
-                                <option value="Robi">Robi</option>
-                                <option value="Airtel">Airtel</option>
-                                <option value="Banglalink">Banglalink</option>
-                                <option value="Teletalk">Teletalk</option>
-                              </select>
+                              <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                                {['Grameenphone', 'Robi', 'Airtel', 'Banglalink', 'Teletalk'].map((op) => {
+                                  const selectedOp = mobileOperator === op;
+                                  return (
+                                    <button
+                                      key={op}
+                                      type="button"
+                                      onClick={() => setMobileOperator(op)}
+                                      className={cn(
+                                        'py-2 px-1.5 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer truncate tap-interactive',
+                                        selectedOp
+                                          ? 'bg-sky-500/20 border-sky-400/70 text-sky-200'
+                                          : 'bg-[#050A16] border-white/10 text-slate-400 hover:border-white/25 hover:text-slate-200'
+                                      )}
+                                    >
+                                      {op === 'Grameenphone' ? 'GP' : op}
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             </div>
                           )}
 
                           <div className="space-y-1.5">
-                            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                              <Smartphone className="w-3.5 h-3.5 text-blue-400" />
-                              {method === 'Recharge'
-                                ? 'Recipient Mobile Number'
-                                : type === 'loan' || type === 'refund'
-                                  ? `Your ${activeDigitalMethod === 'Bkash' ? 'bKash' : 'Nagad'} Account Number`
-                                  : `Sender ${activeDigitalMethod === 'Bkash' ? 'bKash' : 'Nagad'} Number`}
-                            </label>
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                <Smartphone className="w-3.5 h-3.5 text-[#DFC07C]" />
+                                {method === 'Recharge'
+                                  ? 'Recipient Mobile Number'
+                                  : type === 'loan' || type === 'refund'
+                                    ? `Your ${activeDigitalMethod === 'Bkash' ? 'bKash' : 'Nagad'} Account Number`
+                                    : `Sender ${activeDigitalMethod === 'Bkash' ? 'bKash' : 'Nagad'} Number`}
+                              </label>
+                              {isValidBDPhone(type === 'subscription' ? subSenderMobile : accountNumber) && (
+                                <span className="text-[10.5px] font-medium text-emerald-400 flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> Valid
+                                </span>
+                              )}
+                            </div>
                             <input
                               type="tel"
                               value={type === 'subscription' ? subSenderMobile : accountNumber}
@@ -1939,7 +2067,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                   ? '01XXXXXXXXX'
                                   : `Enter ${activeDigitalMethod === 'Bkash' ? 'bKash' : 'Nagad'} number`
                               }
-                              className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono font-semibold focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500"
+                              className="w-full bg-[#050A16] border border-white/12 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono tabular-nums font-semibold focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500"
                             />
                             {hasDefaultWallet &&
                               (type === 'loan' || type === 'refund') &&
@@ -1954,20 +2082,26 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           {type !== 'subscription' && (
                             <div className="space-y-1.5">
                               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                                <Check className="w-3.5 h-3.5 text-blue-400" />
+                                <Check className="w-3.5 h-3.5 text-[#DFC07C]" />
                                 {method === 'Recharge' ? 'Confirm Mobile Number' : 'Confirm Account Number'}
                               </label>
-                              <input
-                                type="tel"
-                                value={confirmAccountNumber}
-                                onChange={(e) => setConfirmAccountNumber(e.target.value)}
-                                placeholder={
-                                  method === 'Recharge'
-                                    ? 'Re-enter mobile number'
-                                    : `Re-enter ${method === 'Bkash' ? 'bKash' : 'Nagad'} number`
-                                }
-                                className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono font-semibold focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500"
-                              />
+                              <div className="relative">
+                                <input
+                                  type="tel"
+                                  value={confirmAccountNumber}
+                                  onChange={(e) => setConfirmAccountNumber(e.target.value)}
+                                  placeholder={
+                                    method === 'Recharge'
+                                      ? 'Re-enter mobile number'
+                                      : `Re-enter ${method === 'Bkash' ? 'bKash' : 'Nagad'} number`
+                                  }
+                                  className="w-full bg-[#050A16] border border-white/12 rounded-xl pl-3.5 pr-9 py-2.5 text-sm text-white font-mono tabular-nums font-semibold focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500"
+                                />
+                                {accountNumber.trim().length > 0 &&
+                                  accountNumber.trim() === confirmAccountNumber.trim() && (
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                                  )}
+                              </div>
                               {accountNumber &&
                                 confirmAccountNumber &&
                                 accountNumber.trim() !== confirmAccountNumber.trim() && (
@@ -1982,7 +2116,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                           {type !== 'loan' && type !== 'refund' && (
                             <div className="space-y-1.5">
                               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                                <Hash className="w-3.5 h-3.5 text-blue-400" />
+                                <Hash className="w-3.5 h-3.5 text-[#DFC07C]" />
                                 Transaction ID (TrxID)
                               </label>
                               <div className="flex gap-2">
@@ -1994,7 +2128,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                     else setTrxId(e.target.value);
                                   }}
                                   placeholder="e.g. 9J28AB72K"
-                                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-blue-500 transition-all placeholder:text-slate-500 uppercase"
+                                  className="w-full bg-[#050A16] border border-white/12 rounded-xl px-3.5 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-[#DFC07C]/70 transition-all placeholder:text-slate-500 uppercase"
                                 />
                                 <button
                                   type="button"
@@ -2003,7 +2137,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                     if (type === 'subscription') setSubTrxId?.(gen);
                                     else setTrxId(gen);
                                   }}
-                                  className="px-3 py-1 bg-white/5 hover:bg-white/10 border border-white/15 rounded-xl text-[11px] font-semibold text-slate-200 shrink-0 cursor-pointer transition-colors"
+                                  className="px-3 py-1 bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 rounded-xl text-[11px] font-semibold text-slate-200 shrink-0 cursor-pointer transition-colors tap-interactive"
                                 >
                                   Auto-Fill
                                 </button>
@@ -2023,7 +2157,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   </div>
 
                   {/* STEP 2 FOOTER */}
-                  <div className="pt-2.5 border-t border-white/[0.06] shrink-0 bg-[#020612] space-y-2">
+                  <div className="pt-3 border-t border-white/[0.07] shrink-0 bg-[#040814]/90 backdrop-blur-md space-y-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -2034,7 +2168,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                         'w-full py-3.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2',
                         isStep2Invalid()
                           ? 'bg-slate-900 border border-white/5 text-slate-500 cursor-not-allowed'
-                          : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20 active:scale-[0.99] cursor-pointer'
+                          : 'gold-cta-gradient text-[#090E1A] active:scale-[0.99] cursor-pointer'
                       )}
                     >
                       <span>Review Summary</span>
@@ -2045,7 +2179,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
               )}
 
               {/* ============================================================
-                  STEP 3: REVIEW & TACTILE HOLD-AND-PRESS AUTHORIZATION
+                  STEP 3: PERFORATED TICKET SUMMARY & TACTILE AUTHORIZE BAR
                  ============================================================ */}
               {step === 3 && (
                 <motion.div
@@ -2053,15 +2187,15 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   initial={{ x: 16, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}
                   exit={{ x: -16, opacity: 0 }}
-                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                   className="flex-1 flex flex-col justify-between overflow-hidden"
                 >
-                  <div className="flex-1 overflow-y-auto space-y-3 pr-0.5 pb-2">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 pr-0.5 pb-2">
                     {/* REVIEW SUMMARY TICKET */}
-                    <div className="relative bg-[#070d1e] border border-white/[0.09] rounded-2xl p-4 sm:p-5 shadow-2xl overflow-hidden">
-                      <div className="flex items-center justify-between pb-3 border-b border-white/[0.07] mb-3.5">
+                    <div className="relative gold-rim-card rounded-2xl p-4 sm:p-5 overflow-hidden">
+                      <div className="flex items-center justify-between pb-3 mb-3 border-b border-white/[0.08]">
                         <div className="flex items-center gap-2">
-                          <FileText className="w-4 h-4 text-blue-400" />
+                          <FileText className="w-4 h-4 text-[#DFC07C]" />
                           <h3 className="text-xs font-bold uppercase text-white tracking-wider">
                             {type === 'transfer'
                               ? 'Transfer Summary'
@@ -2070,24 +2204,26 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                 : 'Transaction Summary'}
                           </h3>
                         </div>
-                        <span className="text-[11px] font-mono text-slate-400">{previewRefCode}</span>
+                        <span className="text-[11px] font-mono text-[#EAD39C]/85">{previewRefCode}</span>
                       </div>
 
-                      <div className="space-y-3 text-xs">
-                        {/* Amount */}
-                        <div className="flex justify-between items-center border-b border-white/[0.06] pb-2.5">
-                          <span className="text-slate-400 font-medium">
-                            {type === 'transfer' ? 'Transfer Amount' : type === 'loan' ? 'Loan Amount' : 'Amount'}
-                          </span>
-                          <span className="text-base text-white font-bold font-mono tabular-nums">
-                            ৳
-                            {type === 'subscription'
-                              ? getSubscriptionPricing(selectedSubTier || 'bronze', profile).price.toLocaleString()
-                              : parsedAmount.toLocaleString()}{' '}
-                            BDT
-                          </span>
-                        </div>
+                      {/* Hero Ticket Amount Banner */}
+                      <div className="py-2 text-center">
+                        <span className="text-[11px] font-medium text-slate-400 block">
+                          {type === 'transfer' ? 'Transfer Amount' : type === 'loan' ? 'Loan Amount' : 'Authorized Total'}
+                        </span>
+                        <p className="text-3xl font-black font-mono tabular-nums text-white mt-0.5">
+                          ৳
+                          {type === 'subscription'
+                            ? getSubscriptionPricing(selectedSubTier || 'bronze', profile).price.toLocaleString()
+                            : parsedAmount.toLocaleString()}
+                          <span className="text-xs font-bold text-[#EAD39C] ml-1.5">BDT</span>
+                        </p>
+                      </div>
 
+                      <div className="ticket-divider h-5 my-1" />
+
+                      <div className="space-y-3 text-xs pt-1">
                         {/* Recipient for transfers */}
                         {type === 'transfer' && verifiedRecipient && (
                           <>
@@ -2099,7 +2235,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             </div>
                             <div className="flex justify-between items-center border-b border-white/[0.06] pb-2.5">
                               <span className="text-slate-400 font-medium">Member ID</span>
-                              <span className="text-blue-400 font-mono font-semibold">
+                              <span className="text-[#EAD39C] font-mono font-semibold">
                                 {verifiedRecipient.memberId || 'Verified'}
                               </span>
                             </div>
@@ -2118,13 +2254,13 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                             <div className="flex justify-between items-center border-b border-white/[0.06] pb-2.5">
                               <span className="text-slate-400 font-medium">Repayment Date</span>
                               <div className="text-right">
-                                <span className="text-white font-mono font-semibold block">
+                                <span className="text-white font-mono tabular-nums font-semibold block">
                                   {estimatedRepaymentDate
                                     ? format(parseISO(estimatedRepaymentDate), 'dd MMM yyyy')
                                     : 'N/A'}
                                 </span>
                                 {repaymentDateValidation.valid && (
-                                  <span className="text-[10px] text-emerald-400 font-mono">
+                                  <span className="text-[10px] text-emerald-400 font-mono tabular-nums">
                                     {repaymentDateValidation.daysSelected} days term
                                   </span>
                                 )}
@@ -2169,7 +2305,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                 </div>
                                 <div className="flex justify-between items-center">
                                   <span className="text-slate-400 font-medium">Payer Mobile</span>
-                                  <span className="text-emerald-400 font-mono font-semibold">
+                                  <span className="text-emerald-400 font-mono tabular-nums font-semibold">
                                     {(type === 'subscription' ? subSenderMobile : cashPayerPhone) || 'N/A'}
                                   </span>
                                 </div>
@@ -2181,7 +2317,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                                 <span className="text-slate-400 font-medium">
                                   {method === 'Recharge' ? 'Mobile Number' : 'Account Number'}
                                 </span>
-                                <span className="text-blue-300 font-mono font-semibold">
+                                <span className="text-blue-300 font-mono tabular-nums font-semibold">
                                   {type === 'subscription' ? subSenderMobile : accountNumber}
                                 </span>
                               </div>
@@ -2196,7 +2332,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                               {type !== 'loan' && type !== 'refund' && (
                                 <div className="flex justify-between items-center">
                                   <span className="text-slate-400 font-medium">Transaction ID</span>
-                                  <span className="text-amber-300 font-mono font-semibold uppercase">
+                                  <span className="text-[#EAD39C] font-mono font-semibold uppercase">
                                     {(type === 'subscription' ? subTrxId : trxId) || 'Auto-Generated'}
                                   </span>
                                 </div>
@@ -2207,8 +2343,8 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                     </div>
 
                     {/* Integrity notice */}
-                    <div className="p-3 bg-slate-900/70 border border-white/[0.06] rounded-xl flex items-start gap-2.5">
-                      <Shield className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                    <div className="p-3 bg-[#081022]/85 border border-white/[0.07] rounded-xl flex items-start gap-2.5">
+                      <Shield className="w-4 h-4 text-[#DFC07C] shrink-0 mt-0.5" />
                       <p className="text-[11px] text-slate-400 leading-relaxed">
                         Verify all details above before authorizing. Submitting false transaction IDs violates member policy.
                       </p>
@@ -2216,7 +2352,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                   </div>
 
                   {/* TACTILE HOLD & PRESS TO AUTHORIZE BAR */}
-                  <div className="pt-3 border-t border-white/[0.07] shrink-0 bg-[#020612] space-y-2.5">
+                  <div className="pt-3 border-t border-white/[0.07] shrink-0 bg-[#040814]/90 backdrop-blur-md space-y-2.5">
                     <div
                       role="button"
                       tabIndex={0}
@@ -2251,29 +2387,29 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                         }
                       }}
                       className={cn(
-                        'relative w-full h-14 rounded-2xl border flex items-center justify-between px-3 overflow-hidden select-none touch-none transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400',
+                        'relative w-full h-14 rounded-2xl border flex items-center justify-between px-3 overflow-hidden select-none touch-none transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#DFC07C]',
                         isStep2Invalid()
-                          ? 'bg-slate-950 border-white/5 opacity-50 cursor-not-allowed'
+                          ? 'bg-[#060C1A] border-white/5 opacity-50 cursor-not-allowed'
                           : isHolding
-                            ? 'bg-slate-950 border-emerald-400/60 shadow-[0_0_24px_rgba(16,185,129,0.22)] scale-[0.99] cursor-grabbing'
-                            : 'bg-slate-950 border-white/15 hover:border-emerald-400/45 shadow-lg cursor-pointer'
+                            ? 'bg-[#060C1A] border-emerald-400/70 shadow-[0_0_26px_rgba(16,185,129,0.28)] scale-[0.99] cursor-grabbing'
+                            : 'bg-[#070E20] border-[#DFC07C]/35 hover:border-emerald-400/55 shadow-lg cursor-pointer'
                       )}
                     >
                       {/* Smooth Progress Sweep Fill */}
                       <div
-                        className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-600/30 via-emerald-500/45 to-emerald-400/65 pointer-events-none"
+                        className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-600/35 via-emerald-500/45 to-[#DFC07C]/45 pointer-events-none"
                         style={{ width: `${holdProgress}%` }}
                       />
 
                       {/* Crisp Leading Edge Glow Line */}
                       {holdProgress > 1 && holdProgress < 100 && (
                         <div
-                          className="absolute inset-y-0 w-0.5 bg-emerald-300 shadow-[0_0_12px_2px_rgba(52,211,153,0.8)] pointer-events-none"
+                          className="absolute inset-y-0 w-0.5 bg-emerald-300 shadow-[0_0_12px_2px_rgba(52,211,153,0.85)] pointer-events-none"
                           style={{ left: `${holdProgress}%` }}
                         />
                       )}
 
-                      {/* Left Circular Fingerprint + Live Radial Progress Gauge */}
+                      {/* Left Circular ShieldCheck + Live Radial Progress Gauge */}
                       <div className="relative z-10 w-9 h-9 flex items-center justify-center shrink-0">
                         <svg className="w-9 h-9 -rotate-90" viewBox="0 0 36 36">
                           <circle
@@ -2303,13 +2439,13 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                               ? 'bg-emerald-500 text-slate-950'
                               : isHolding
                                 ? 'bg-emerald-500/20 text-emerald-300'
-                                : 'bg-white/5 text-slate-300'
+                                : 'bg-white/[0.06] text-[#EAD39C]'
                           )}
                         >
                           {holdProgress >= 99 ? (
                             <Check className="w-4 h-4 stroke-[3]" />
                           ) : (
-                            <Fingerprint className="w-4 h-4" />
+                            <ShieldCheck className="w-4 h-4" />
                           )}
                         </div>
                       </div>
@@ -2335,7 +2471,7 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
                       </div>
 
                       {/* Right Amount Confirmation Tag */}
-                      <div className="relative z-10 px-2.5 py-1 rounded-lg bg-white/[0.06] border border-white/10 text-[11px] font-mono font-semibold text-slate-200 shrink-0 pointer-events-none">
+                      <div className="relative z-10 px-2.5 py-1 rounded-lg bg-[#050A16]/90 border border-[#DFC07C]/25 text-[11px] font-mono tabular-nums font-semibold text-[#EAD39C] shrink-0 pointer-events-none">
                         ৳
                         {type === 'subscription'
                           ? getSubscriptionPricing(selectedSubTier || 'bronze', profile).price.toLocaleString()
@@ -2370,13 +2506,13 @@ export const SecureTransactionPortal: React.FC<SecureTransactionPortalProps> = (
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center space-y-5 px-6"
+            className="fixed inset-0 z-[100] bg-[#040814]/95 backdrop-blur-md flex flex-col items-center justify-center space-y-5 px-6"
           >
             <motion.div
               initial={{ scale: 0.75, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ type: 'spring', stiffness: 260, damping: 20 }}
-              className="w-20 h-20 rounded-full bg-emerald-500/15 border-2 border-emerald-400/60 flex items-center justify-center shadow-[0_0_32px_rgba(16,185,129,0.3)]"
+              className="w-20 h-20 rounded-full bg-emerald-500/15 border-2 border-emerald-400/65 flex items-center justify-center shadow-[0_0_36px_rgba(16,185,129,0.35)]"
             >
               <CheckCircle2 className="w-10 h-10 text-emerald-400" />
             </motion.div>

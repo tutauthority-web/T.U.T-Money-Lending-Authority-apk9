@@ -443,12 +443,13 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
   const returnHref = receiptResult ? buildReturnHref(receiptResult) : null;
 
   return (
-    <div className="min-h-screen bg-[#030712] flex flex-col items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-md bg-[#0B132B] border border-[#1E3368] rounded-2xl p-6 shadow-2xl space-y-5 text-left">
+    <div className="min-h-screen bg-vault-mesh relative flex flex-col items-center justify-center p-4 sm:p-6 overflow-x-hidden">
+      <div className="absolute inset-0 vault-grid-pattern opacity-35 pointer-events-none" />
+      <div className="relative z-10 w-full max-w-md gold-rim-card rounded-2xl p-6 space-y-5 text-left">
         {/* Top Merchant Summary */}
         <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
           <div className="min-w-0">
-            <span className="text-[11px] font-semibold text-amber-300 block">
+            <span className="text-[11px] font-semibold text-[#EAD39C] block">
               T.U.T. Private Lending Authority · Card Checkout
             </span>
             <h2 className="text-lg font-bold text-white truncate mt-0.5">
@@ -473,7 +474,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
             <button
               type="button"
               onClick={() => window.open(window.location.href, '_blank', 'noopener,noreferrer')}
-              className="w-full py-2 rounded-lg bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              className="w-full py-2.5 rounded-lg gold-cta-gradient text-[#090E1A] font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer tap-interactive"
             >
               <ExternalLink className="w-3.5 h-3.5" />
               <span>Open Secure Checkout Tab</span>
@@ -483,7 +484,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
 
         {/* Editable Amount only when Merchant didn't specify a fixed amount */}
         {(!resolvedSession.amount || resolvedSession.amount <= 0) && !receiptResult && !sessionLoading && (
-          <div className="p-3.5 rounded-xl bg-[#070D1F] border border-white/10 space-y-1.5">
+          <div className="p-3.5 rounded-xl bg-[#050A16] border border-white/10 space-y-1.5">
             <label className="text-[11px] font-semibold text-slate-300 block">
               Payment Amount (BDT)
             </label>
@@ -494,7 +495,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
               value={customAmount}
               onChange={(e) => setCustomAmount(e.target.value)}
               placeholder="Enter amount in BDT"
-              className="w-full px-3 py-2 rounded-lg bg-[#0B132B] border border-white/10 text-sm font-mono tabular-nums font-bold text-emerald-300"
+              className="w-full px-3 py-2 rounded-lg bg-[#091124] border border-white/10 text-sm font-mono tabular-nums font-bold text-emerald-300 focus:outline-none focus:border-[#DFC07C]/70"
             />
           </div>
         )}
@@ -510,12 +511,12 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
           </div>
         ) : sessionLoading || isAuthChecking ? (
           <div className="py-10 flex flex-col items-center justify-center gap-3 text-center">
-            <div className="w-8 h-8 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+            <div className="w-8 h-8 border-2 border-[#DFC07C] border-t-transparent rounded-full animate-spin" />
             <p className="text-xs text-slate-300">Verifying secure checkout session...</p>
           </div>
         ) : !user ? (
           <div className="py-5 text-center space-y-4">
-            <div className="w-12 h-12 mx-auto rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-300">
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-[#DFC07C]/15 border border-[#DFC07C]/35 flex items-center justify-center text-[#EAD39C]">
               <LogIn className="w-5 h-5" />
             </div>
             <div>
@@ -529,10 +530,10 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
               type="button"
               disabled={isLoggingIn}
               onClick={onGoogleLogin}
-              className="w-full py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+              className="w-full py-3 rounded-xl gold-cta-gradient text-[#090E1A] font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer disabled:opacity-50"
             >
               <ShieldCheck className="w-4 h-4" />
-              <span>{isLoggingIn ? 'Signing In...' : 'Sign In with Google'}</span>
+              <span>{isLoggingIn ? 'Signing In...' : 'Sign In with Gmail'}</span>
             </button>
           </div>
         ) : !profile || profile.status !== 'approved' ? (
@@ -546,7 +547,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
             </p>
             <a
               href={PRIMARY_VERCEL_GATEWAY_URL}
-              className="inline-flex items-center gap-1.5 text-amber-300 font-semibold hover:underline"
+              className="inline-flex items-center gap-1.5 text-[#EAD39C] font-semibold hover:underline"
             >
               <span>Open Member Portal</span>
               <ExternalLink className="w-3 h-3" />
@@ -564,7 +565,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
               type="button"
               disabled={retryingConfirm}
               onClick={handleRetryServerConfirm}
-              className="w-full py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-2.5 rounded-xl gold-cta-gradient text-[#090E1A] font-bold text-xs flex items-center justify-center gap-2 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${retryingConfirm ? 'animate-spin' : ''}`} />
               <span>{retryingConfirm ? 'Confirming...' : 'Verify & Notify Merchant'}</span>
@@ -585,13 +586,15 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                 </p>
               )}
               {returnHref && redirectCountdown !== null && (
-                <p className="text-[11px] text-amber-300 font-semibold">
+                <p className="text-[11px] text-[#EAD39C] font-semibold">
                   Returning to {receiptResult.merchantName} in {redirectCountdown}s...
                 </p>
               )}
             </div>
 
-            <div className="p-3 rounded-xl bg-[#070D1F] border border-white/10 space-y-2 text-[11px]">
+            <div className="ticket-divider h-3" />
+
+            <div className="p-3 rounded-xl bg-[#050A16] border border-white/10 space-y-2 text-[11px]">
               <div className="flex items-center justify-between">
                 <span className="text-slate-400 font-semibold">Signed Payment Token</span>
                 <button
@@ -601,7 +604,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                     setCopiedToken(true);
                     setTimeout(() => setCopiedToken(false), 2000);
                   }}
-                  className="text-amber-300 hover:text-amber-200 flex items-center gap-1 cursor-pointer font-semibold"
+                  className="text-[#EAD39C] hover:text-white flex items-center gap-1 cursor-pointer font-semibold"
                 >
                   {copiedToken ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                   <span>{copiedToken ? 'Copied' : 'Copy Token'}</span>
@@ -626,7 +629,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
           /* Main Card-Only Checkout */
           <div className="space-y-4">
             {/* Member Strip */}
-            <div className="px-3.5 py-2.5 rounded-xl bg-slate-900/70 border border-white/10 flex items-center justify-between text-xs">
+            <div className="px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/10 flex items-center justify-between text-xs">
               <div className="min-w-0">
                 <span className="font-bold text-white block truncate">{profile.name}</span>
                 <span className="text-[11px] text-slate-400 font-mono truncate block">
@@ -644,7 +647,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
             {issuedBackupKey && (
               <div className="p-3.5 rounded-xl bg-emerald-500/12 border border-emerald-400/35 space-y-1.5 text-xs">
                 <p className="font-bold text-emerald-300">Save Your One-Time Recovery Backup Key</p>
-                <p className="font-mono text-amber-300 font-bold">{issuedBackupKey}</p>
+                <p className="font-mono text-[#EAD39C] font-bold">{issuedBackupKey}</p>
               </div>
             )}
 
@@ -652,12 +655,12 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
             {!tutCard?.secretCodeHash || !tutCard?.isActive ? (
               <form
                 onSubmit={handleInitialSetupInCheckout}
-                className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 space-y-3"
+                className="p-4 rounded-xl bg-[#DFC07C]/10 border border-[#DFC07C]/30 space-y-3"
               >
                 <div className="flex items-start gap-2">
-                  <KeyRound className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                  <KeyRound className="w-4 h-4 text-[#EAD39C] shrink-0 mt-0.5" />
                   <div>
-                    <p className="text-xs font-bold text-amber-200">
+                    <p className="text-xs font-bold text-[#FFF2CC]">
                       Set Your 6-Digit Card Payment Key First
                     </p>
                     <p className="text-[11px] text-slate-300 mt-0.5">
@@ -673,7 +676,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                     value={quickPinInput}
                     onChange={(e) => setQuickPinInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="6-digit Key"
-                    className="px-3 py-2 rounded-xl bg-[#070D1F] border border-white/15 text-xs font-mono text-white text-center"
+                    className="px-3 py-2 rounded-xl bg-[#050A16] border border-white/15 text-xs font-mono text-white text-center focus:outline-none focus:border-[#DFC07C]/70"
                     required
                   />
                   <input
@@ -683,7 +686,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                     value={quickPinConfirm}
                     onChange={(e) => setQuickPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="Confirm Key"
-                    className="px-3 py-2 rounded-xl bg-[#070D1F] border border-white/15 text-xs font-mono text-white text-center"
+                    className="px-3 py-2 rounded-xl bg-[#050A16] border border-white/15 text-xs font-mono text-white text-center focus:outline-none focus:border-[#DFC07C]/70"
                     required
                   />
                 </div>
@@ -691,7 +694,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                 <button
                   type="submit"
                   disabled={activatingCard}
-                  className="w-full py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold cursor-pointer disabled:opacity-50"
+                  className="w-full py-2.5 rounded-xl gold-cta-gradient text-[#090E1A] text-xs font-bold cursor-pointer disabled:opacity-50"
                 >
                   {activatingCard ? 'Activating Card...' : 'Set Key & Continue to Pay'}
                 </button>
@@ -701,14 +704,14 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
-                      <CreditCard className="w-3.5 h-3.5 text-amber-400" />
+                      <CreditCard className="w-3.5 h-3.5 text-[#DFC07C]" />
                       <span>16-Digit T.U.T. Card Number</span>
                     </label>
                     {tutCard?.cardNumber && (
                       <button
                         type="button"
                         onClick={() => setCardNumberInput(tutCard.cardNumber)}
-                        className="text-[11px] font-semibold text-amber-300 hover:text-amber-200 cursor-pointer"
+                        className="text-[11px] font-semibold text-[#EAD39C] hover:text-white cursor-pointer"
                       >
                         Use My Card ({formatCardNumberDisplay(tutCard.cardNumber, true)})
                       </button>
@@ -723,7 +726,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                       setCardNumberInput(e.target.value.replace(/[^\d\s]/g, '').slice(0, 19))
                     }
                     placeholder="5488 •••• •••• ••••"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#070D1F] border border-white/10 text-white font-mono tabular-nums text-sm tracking-wider focus:outline-none focus:border-amber-400/60"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/12 text-white font-mono tabular-nums text-sm tracking-wider focus:outline-none focus:border-[#DFC07C]/70"
                     required
                   />
                 </div>
@@ -737,10 +740,10 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                     <button
                       type="button"
                       onClick={() => setFundingSource('wallet_deposit')}
-                      className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                      className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer tap-interactive ${
                         fundingSource === 'wallet_deposit'
                           ? 'bg-emerald-500/15 border-emerald-400/50 text-white'
-                          : 'bg-[#070D1F] border-white/10 text-slate-400'
+                          : 'bg-[#050A16] border-white/10 text-slate-400'
                       }`}
                     >
                       <span className="text-[10px] font-bold uppercase block">Vault Balance</span>
@@ -752,10 +755,10 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                     <button
                       type="button"
                       onClick={() => setFundingSource('credit_line')}
-                      className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                      className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer tap-interactive ${
                         fundingSource === 'credit_line'
                           ? 'bg-blue-500/15 border-blue-400/50 text-white'
-                          : 'bg-[#070D1F] border-white/10 text-slate-400'
+                          : 'bg-[#050A16] border-white/10 text-slate-400'
                       }`}
                     >
                       <span className="text-[10px] font-bold uppercase block">0% Credit Line</span>
@@ -768,7 +771,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
 
                 <div>
                   <label className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5 mb-1">
-                    <Lock className="w-3 h-3 text-amber-400" />
+                    <Lock className="w-3 h-3 text-[#DFC07C]" />
                     <span>6-Digit Card Payment Key</span>
                   </label>
                   <input
@@ -778,7 +781,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                     value={secretCodeInput}
                     onChange={(e) => setSecretCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
                     placeholder="••••••"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#070D1F] border border-white/10 text-white font-mono text-sm tracking-[0.35em] text-center focus:outline-none focus:border-amber-400/60"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#050A16] border border-white/12 text-white font-mono text-sm tracking-[0.35em] text-center focus:outline-none focus:border-[#DFC07C]/70"
                     required
                   />
                 </div>
@@ -793,7 +796,7 @@ export const TutPaymentCheckout: React.FC<TutPaymentCheckoutProps> = ({
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-full py-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                  className="w-full py-3.5 rounded-xl gold-cta-gradient text-[#090E1A] font-bold text-xs flex items-center justify-center gap-2 transition-all active:scale-[0.99] cursor-pointer disabled:opacity-50"
                 >
                   <span>
                     {submitting

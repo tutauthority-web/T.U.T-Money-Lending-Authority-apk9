@@ -238,17 +238,16 @@ const SpendChart = ({ transactions, profile }: { transactions: Transaction[]; pr
     <div className="p-6 bg-slate-900/40 border border-white/5 rounded-3xl text-left space-y-4 shadow-xl">
       <div className="flex justify-between items-center">
         <div>
-          <h4 className="text-xs font-black text-white uppercase tracking-wider flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-            Lending & Saving Analytics
+          <h4 className="text-xs font-bold text-white tracking-tight flex items-center gap-2">
+            Lending &amp; Saving Analytics
           </h4>
-          <p className="text-[9px] text-blue-400/50 uppercase tracking-widest mt-0.5">
-            Active Verified Ledger Flow
+          <p className="text-[10px] text-slate-400 mt-0.5">
+            Active verified ledger flow
           </p>
         </div>
-        <span className="text-[9px] font-mono font-black text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1.5">
-          <Fingerprint className="w-3 h-3 text-emerald-400 animate-pulse" />
-          LIVE SECURE SYNC
+        <span className="text-[10.5px] font-mono font-semibold text-emerald-400 flex items-center gap-1.5">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+          Live Sync
         </span>
       </div>
 
@@ -2391,23 +2390,21 @@ export function MemberDashboard({
                 const last4 = pan.slice(-4);
                 const hasPin = Boolean(tutCard?.secretCodeHash);
                 return (
-                  <div className="p-3.5 rounded-xl bg-[#0B1222] border border-white/10 hover:border-amber-400/35 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="gold-rim-card p-4 rounded-xl transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
                       <div
                         className={cn(
-                          'w-8 h-8 rounded-lg border flex items-center justify-center shrink-0',
+                          'w-9 h-9 rounded-xl border flex items-center justify-center shrink-0',
                           tutCard?.isFrozen
-                            ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                            : hasPin
-                            ? 'bg-amber-500/10 border-amber-400/30 text-amber-300'
-                            : 'bg-amber-500/15 border-amber-400/45 text-amber-300'
+                            ? 'bg-rose-500/12 border-rose-500/35 text-rose-400'
+                            : 'bg-[#DFC07C]/15 border-[#DFC07C]/35 text-[#EAD39C]'
                         )}
                       >
                         <KeyRound className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 space-y-0.5">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <h3 className="font-bold text-white">Card Key Management</h3>
+                          <h3 className="font-bold text-white tracking-tight">Card Key Management</h3>
                           <span aria-hidden="true" className="text-slate-600">·</span>
                           <span className="font-mono tabular-nums text-[11px] text-slate-300">
                             •••• {last4}
@@ -2420,7 +2417,7 @@ export function MemberDashboard({
                                 ? 'text-rose-400'
                                 : hasPin
                                 ? 'text-emerald-400'
-                                : 'text-amber-300'
+                                : 'text-[#EAD39C]'
                             )}
                           >
                             {tutCard?.isFrozen ? 'Frozen' : hasPin ? 'PIN Active & Locked' : 'PIN Required'}
@@ -2437,7 +2434,7 @@ export function MemberDashboard({
                     <button
                       type="button"
                       onClick={() => setShowCardSecurityModal(true)}
-                      className="w-full sm:w-auto py-2 px-3.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                      className="w-full sm:w-auto py-2 px-4 rounded-xl gold-cta-gradient text-[#090E1A] text-xs font-bold flex items-center justify-center gap-1.5 transition-all active:scale-[0.98] cursor-pointer shrink-0 whitespace-nowrap"
                     >
                       <span>{hasPin ? 'Manage Key & Recovery' : 'Set Card PIN'}</span>
                       <ChevronRight className="w-3.5 h-3.5" />

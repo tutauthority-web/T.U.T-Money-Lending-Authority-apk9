@@ -351,6 +351,7 @@ service cloud.firestore {
       allow get: if isAuthenticated() && (
         isOwner(userId) || 
         isAdmin() || 
+        (resource == null && userId.matches('pre_email_[a-zA-Z0-9_]+')) ||
         (resource != null && resource.data.email != null && request.auth.token.email != null && resource.data.email.lower() == request.auth.token.email.lower())
       );
       allow list: if isAuthenticated();

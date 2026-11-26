@@ -2,6 +2,7 @@
 
 @theme {
   --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Playfair Display", Georgia, Cambria, serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -15,11 +16,11 @@
     border-radius: 10px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(59, 130, 246, 0.28);
+    background: rgba(223, 192, 124, 0.25);
     border-radius: 10px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(59, 130, 246, 0.48);
+    background: rgba(223, 192, 124, 0.48);
   }
   .scrollbar-none {
     scrollbar-width: none;
@@ -38,10 +39,11 @@
   }
 
   body {
-    @apply bg-slate-950 text-blue-50 antialiased min-h-screen overflow-x-hidden max-w-[100vw];
+    @apply bg-[#040814] text-blue-50 antialiased min-h-screen overflow-x-hidden max-w-[100vw];
     background-image:
-      radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.05) 0%, transparent 48%),
-      radial-gradient(circle at 100% 100%, rgba(37, 99, 235, 0.04) 0%, transparent 48%);
+      radial-gradient(circle at 12% 0%, rgba(223, 192, 124, 0.055) 0%, transparent 42%),
+      radial-gradient(circle at 88% 10%, rgba(59, 130, 246, 0.07) 0%, transparent 45%),
+      radial-gradient(circle at 50% 100%, rgba(15, 28, 63, 0.28) 0%, transparent 55%);
     overscroll-behavior-y: contain;
     padding-bottom: env(safe-area-inset-bottom, 0px);
     user-select: text;
@@ -60,7 +62,7 @@
   input:focus-visible,
   select:focus-visible,
   textarea:focus-visible {
-    outline: 2px solid rgba(96, 165, 250, 0.65);
+    outline: 2px solid rgba(223, 192, 124, 0.7);
     outline-offset: 2px;
   }
 }
@@ -75,12 +77,56 @@
   .text-gradient {
     @apply bg-clip-text text-transparent bg-gradient-to-br from-white to-blue-400;
   }
+  .text-gold-gradient {
+    background: linear-gradient(135deg, #FFF5D6 0%, #EAD39C 45%, #C9973B 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
   .bg-mesh {
     background-image:
       radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.14) 0px, transparent 50%),
       radial-gradient(at 100% 0%, rgba(147, 197, 253, 0.08) 0px, transparent 50%),
       radial-gradient(at 100% 100%, rgba(30, 58, 138, 0.14) 0px, transparent 50%),
       radial-gradient(at 0% 100%, rgba(96, 165, 250, 0.08) 0px, transparent 50%);
+  }
+  .bg-vault-mesh {
+    background-color: #040814;
+    background-image:
+      radial-gradient(ellipse 75% 55% at 78% 18%, rgba(223, 192, 124, 0.11) 0%, transparent 62%),
+      radial-gradient(ellipse 65% 50% at 15% 15%, rgba(37, 99, 235, 0.14) 0%, transparent 60%),
+      radial-gradient(ellipse 90% 45% at 50% 100%, rgba(196, 146, 50, 0.08) 0%, transparent 60%);
+  }
+  .vault-grid-pattern {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.024) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.024) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .gold-rim-card {
+    background: linear-gradient(180deg, rgba(13, 21, 41, 0.94) 0%, rgba(7, 12, 26, 0.97) 100%);
+    border: 1px solid rgba(223, 192, 124, 0.28);
+    box-shadow:
+      0 24px 60px -15px rgba(2, 5, 16, 0.9),
+      0 0 36px -12px rgba(223, 192, 124, 0.16),
+      inset 0 1px 0 rgba(255, 245, 214, 0.14);
+  }
+  .gold-cta-gradient {
+    background: linear-gradient(135deg, #F5DC9B 0%, #DFB459 52%, #C49131 100%);
+    box-shadow:
+      0 10px 26px -8px rgba(223, 180, 89, 0.45),
+      inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  }
+  .gold-cta-gradient:hover:not(:disabled) {
+    background: linear-gradient(135deg, #F9E6B3 0%, #E7BE67 52%, #CF9C3B 100%);
+    box-shadow:
+      0 14px 30px -8px rgba(223, 180, 89, 0.58),
+      inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  }
+  .ticket-divider {
+    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.14) 1px, transparent 1px);
+    background-size: 8px 1px;
+    background-repeat: repeat-x;
+    background-position: center;
   }
 }
 

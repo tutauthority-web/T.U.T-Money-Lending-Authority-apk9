@@ -3391,7 +3391,12 @@ export default function App() {
                 }
               }
             }).catch(err => {
-              console.error("Error checking pre-created profile:", err);
+              const code = (err as any)?.code;
+              if (code === 'permission-denied') {
+                console.warn("Pre-created profile lookup skipped due to Firestore rules:", code);
+              } else {
+                console.warn("Pre-created profile lookup unavailable:", code || err);
+              }
               setProfile(null);
               localStorage.removeItem('tut_saved_profile');
             });
@@ -4328,7 +4333,9 @@ export default function App() {
     if (isLoggingIn) return;
 
     if (authMode === 'signup' && password !== confirmPassword) {
-      addToast("পাসওয়ার্ড অমিল", "পাসওয়ার্ড দুটি মিলছে না। অনুগ্রহ করে আবার চেক করুন।", "warning");
+      const msg = "Passwords do not match. Please verify both password fields.";
+      setGlobalError(msg);
+      addToast("Password Mismatch", msg, "warning");
       return;
     }
 
@@ -4345,7 +4352,9 @@ export default function App() {
 
       if (authMode === 'signup' && !isGmailAddress(finalEmail)) {
         setIsLoggingIn(false);
-        addToast('Gmail Required', 'New user registration requires an official @gmail.com email address.', 'warning');
+        const msg = 'New member registration requires an official @gmail.com email address.';
+        setGlobalError(msg);
+        addToast('Gmail Required', msg, 'warning');
         return;
       }
 
@@ -4375,37 +4384,70 @@ export default function App() {
       }
       window.location.reload();
     } catch (error: any) {
-      console.error("Email auth error:", error);
       setIsLoggingIn(false);
-      
-      let msg = "ত্রুটি ঘটেছে, আবার চেষ্টা করুন।";
-      if (error.code === 'auth/operation-not-allowed') {
-        msg = "স্যার, ফায়ারবেস কনসোলে ইমেইল লগইন ইনেবল করা নেই।";
-      } else if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-        msg = "ইমেইল অথবা পাসওয়ার্ড ভুল।";
-      } else if (error.code === 'auth/email-already-in-use') {
-        msg = "এই ইমেইলটি ইতিমধ্যে ব্যবহৃত হচ্ছে।";
-      } else if (error.code === 'auth/weak-password') {
-        msg = "পাসওয়ার্ডটি খুব দুর্বল। কমপক্ষে ৬টি অক্ষর দিন।";
-      } else if (error.code === 'auth/invalid-email') {
-        msg = "সঠিক ইমেইল এড্রেস দিন।";
+      const code = error?.code || '';
+      const isExpectedUserAuthError = [
+        'auth/invalid-credential',
+        'auth/wrong-password',
+        'auth/user-not-found',
+        'auth/email-already-in-use',
+        'auth/weak-password',
+        'auth/invalid-email',
+        'auth/too-many-requests'
+      ].includes(code);
+
+      if (isExpectedUserAuthError) {
+        console.info("Email auth rejected:", code);
+      } else {
+        console.error("Unexpected email auth error:", error);
       }
-      
-      addToast("অথেনটিকেশন ব্যর্থ", msg, "warning");
+
+      let msg = "Authentication failed. Please check your credentials and try again.";
+      let toastTitle = "Sign In Failed";
+      let toastVariant: 'warning' | 'info' = 'warning';
+
+      if (code === 'auth/operation-not-allowed') {
+        msg = "Email/Password sign-in is not enabled in the Firebase project configuration. Please use 'Continue with Gmail'.";
+      } else if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+        msg = "Incorrect email or password. If you previously joined using Google, click 'Continue with Gmail' below or use 'Forgot Password?'.";
+      } else if (code === 'auth/email-already-in-use') {
+        setAuthMode('login');
+        setConfirmPassword('');
+        toastTitle = "Account Already Exists";
+        toastVariant = 'info';
+        msg = "This Gmail is already registered. Sign in with your password below, or click 'Continue with Gmail'.";
+      } else if (code === 'auth/weak-password') {
+        msg = "Password is too weak. Please choose at least 6 characters.";
+      } else if (code === 'auth/invalid-email') {
+        msg = "Please enter a valid email address.";
+      } else if (code === 'auth/too-many-requests') {
+        msg = "Too many failed attempts. Wait a moment, reset your password, or use 'Continue with Gmail'.";
+      }
+
+      setGlobalError(msg);
+      addToast(toastTitle, msg, toastVariant);
     }
   };
 
   const handleForgotPassword = async () => {
-    if (!email) {
-      addToast("ইমেইল প্রয়োজন", "পাসওয়ার্ড রিসেট করতে আগে আপনার ইমেইলটি লিখুন।", "info");
+    const targetEmail = email.trim();
+    if (!targetEmail) {
+      const msg = "Enter your email address first to receive a password reset link.";
+      setGlobalError(msg);
+      addToast("Email Required", msg, "info");
       return;
     }
     try {
-      await sendPasswordResetEmail(auth, email);
-      addToast("রিসেট লিঙ্ক পাঠানো হয়েছে", "আপনার ইমেইলে পাসওয়ার্ড রিসেট লিঙ্ক পাঠানো হয়েছে। অনুগ্রহ করে চেক করুন।", "success");
+      setGlobalError(null);
+      await sendPasswordResetEmail(auth, targetEmail);
+      addToast("Reset Link Sent", `Password reset instructions were sent to ${targetEmail}. Check your inbox or spam folder.`, "success");
     } catch (error: any) {
-      console.error("Reset email error:", error);
-      addToast("ত্রুটি", error.message || "ইমেইল পাঠানো সম্ভব হয়নি।", "warning");
+      console.warn("Reset email notice:", error?.code || error?.message);
+      const msg = error?.code === 'auth/invalid-email'
+        ? "Please enter a valid email address."
+        : (error?.message || "Unable to send password reset email right now.");
+      setGlobalError(msg);
+      addToast("Reset Failed", msg, "warning");
     }
   };
 
@@ -4427,11 +4469,11 @@ export default function App() {
       const signedEmail = result.user.email?.toLowerCase().trim() || '';
 
       if (!isGmailAddress(signedEmail)) {
-        const userSnap = await getDoc(doc(db, 'users', result.user.uid));
+        const userSnap = await getDoc(doc(db, 'users', result.user.uid)).catch(() => null);
         const preUid = 'pre_email_' + signedEmail.replace(/[^a-zA-Z0-9]/g, '_');
-        const preSnap = signedEmail ? await getDoc(doc(db, 'users', preUid)) : null;
+        const preSnap = signedEmail ? await getDoc(doc(db, 'users', preUid)).catch(() => null) : null;
 
-        if (!userSnap.exists() && !preSnap?.exists()) {
+        if (!userSnap?.exists() && !preSnap?.exists()) {
           if (getAdditionalUserInfo(result)?.isNewUser) {
             await deleteUser(result.user).catch(() => {});
           }
@@ -4451,8 +4493,6 @@ export default function App() {
       }
       window.location.reload();
     } catch (error: any) {
-      console.error("Login attempt failed:", error);
-      
       // Automatic Retry logic: If the network fails, try to reconnect once.
       if (!isRetry && (error.code === 'auth/network-request-failed' || error.message?.includes('network'))) {
         console.log("Network error detected. Retrying login once...");
@@ -4466,9 +4506,11 @@ export default function App() {
       // Handle user cancellation gracefully without showing harsh popups/alerts
       if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
         console.info("Sign in cancelled: User closed the login window.");
-        addToast("Sign In Cancelled", "The login popup was closed before sign-in completed. Click Sign In to try again when ready.", "info");
+        addToast("Sign In Cancelled", "The login popup was closed before sign-in completed. Click Continue with Gmail to try again.", "info");
         return;
       }
+
+      console.error("Login attempt failed:", error);
       
       let errorMessage = "Login Failed. ";
       if (error.code === 'auth/network-request-failed') {
@@ -4490,6 +4532,7 @@ export default function App() {
         errorMessage += error.message || "Unknown error occurred.";
       }
       
+      setGlobalError(errorMessage);
       addToast("Sign In Issue", errorMessage, "warning");
     }
   };
@@ -8464,93 +8507,93 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-blue-50 font-sans selection:bg-blue-500/30">
-      {/* Header — Sleek 3-Zone Banking Bar */}
-      <header className="sticky top-0 z-40 bg-slate-950/88 backdrop-blur-xl border-b border-white/[0.07] px-3.5 sm:px-6 py-2.5">
-        <div className="w-full max-w-7xl mx-auto flex gap-4 justify-between items-center">
-          {/* Zone 1: Brand Identity */}
-          <button
-            type="button"
-            onClick={() => {
-              if (user && profile?.status === 'approved') {
-                setShowProfileModal(false);
-                setActiveTransactionView(null);
-                setActiveMemberTab('dashboard');
-                window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-              }
-            }}
-            className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group shrink-0"
-          >
-            <div className="logo-shield w-9 h-9 overflow-hidden rounded-xl border border-white/15 flex items-center justify-center flex-shrink-0 bg-slate-900 group-hover:border-blue-400/40 transition-colors">
-              <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm sm:text-[15px] font-extrabold tracking-tight text-white leading-none whitespace-nowrap">T.U.T.</span>
-                {isOffline && (
-                  <span className="inline-flex items-center gap-1 bg-rose-500/15 text-rose-400 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-rose-500/25">
-                    Offline
-                  </span>
-                )}
+    <div className="min-h-screen bg-[#040814] text-blue-50 font-sans selection:bg-[#DFC07C]/30">
+      {/* Header — Sleek 3-Zone Banking Bar (Authenticated Session Only) */}
+      {user && (
+        <header className="sticky top-0 z-40 bg-slate-950/88 backdrop-blur-xl border-b border-white/[0.07] px-3.5 sm:px-6 py-2.5">
+          <div className="w-full max-w-7xl mx-auto flex gap-4 justify-between items-center">
+            {/* Zone 1: Brand Identity */}
+            <button
+              type="button"
+              onClick={() => {
+                if (user && profile?.status === 'approved') {
+                  setShowProfileModal(false);
+                  setActiveTransactionView(null);
+                  setActiveMemberTab('dashboard');
+                  window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+                }
+              }}
+              className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group shrink-0"
+            >
+              <div className="logo-shield w-9 h-9 overflow-hidden rounded-xl border border-white/15 flex items-center justify-center flex-shrink-0 bg-slate-900 group-hover:border-blue-400/40 transition-colors">
+                <img src={tutLogo} alt="T.U.T. Logo" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
               </div>
-              <p className="text-[10px] font-medium text-slate-400 tracking-wide truncate leading-none mt-1">Private Lending</p>
-            </div>
-          </button>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm sm:text-[15px] font-extrabold tracking-tight text-white leading-none whitespace-nowrap">T.U.T.</span>
+                  {isOffline && (
+                    <span className="inline-flex items-center gap-1 bg-rose-500/15 text-rose-400 text-[10px] font-semibold px-1.5 py-0.5 rounded border border-rose-500/25">
+                      Offline
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px] font-medium text-slate-400 tracking-wide truncate leading-none mt-1">Private Lending</p>
+              </div>
+            </button>
 
-          {/* Zone 2: Desktop Primary Navigation (Single-row clean links) */}
-          {user && profile?.status === 'approved' && !isAdminLoggedIn && (
-            <nav aria-label="Primary Navigation" className="hidden md:flex items-center gap-1">
-              {[
-                { id: 'dashboard', label: 'Home', icon: Home },
-                { id: 'memos', label: 'Vault', icon: FileText, badge: pendingMemberTxCount },
-                { id: 'subscription', label: 'Premium', icon: Award },
-                { id: 'partners', label: 'Deals', icon: Briefcase },
-                { id: 'profile', label: 'Profile', icon: User },
-              ].map((item) => {
-                const Icon = item.icon;
-                const isSelected = !showProfileModal && (
-                  activeMemberTab === item.id || (item.id === 'profile' && activeMemberTab === 'wallets')
-                );
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      setShowProfileModal(false);
-                      setActiveTransactionView(null);
-                      setActiveMemberTab(item.id as any);
-                      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-                    }}
-                    className={cn(
-                      "relative px-3.5 py-2 rounded-lg text-[13px] font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer",
-                      isSelected
-                        ? "text-white bg-white/[0.06]"
-                        : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.03]"
-                    )}
-                  >
-                    <Icon className={cn("w-3.5 h-3.5", isSelected ? "text-blue-400" : "text-current")} />
-                    <span>{item.label}</span>
-                    {item.badge !== undefined && item.badge > 0 && (
-                      <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold leading-none tabular-nums">
-                        {item.badge}
-                      </span>
-                    )}
-                    {isSelected && (
-                      <motion.div
-                        layoutId="desktopTopNavIndicator"
-                        className="absolute bottom-0 inset-x-3 h-[2px] bg-blue-400 rounded-full"
-                        transition={{ type: 'spring', stiffness: 480, damping: 36 }}
-                      />
-                    )}
-                  </button>
-                );
-              })}
-            </nav>
-          )}
+            {/* Zone 2: Desktop Primary Navigation (Single-row clean links) */}
+            {profile?.status === 'approved' && !isAdminLoggedIn && (
+              <nav aria-label="Primary Navigation" className="hidden md:flex items-center gap-1">
+                {[
+                  { id: 'dashboard', label: 'Home', icon: Home },
+                  { id: 'memos', label: 'Vault', icon: FileText, badge: pendingMemberTxCount },
+                  { id: 'subscription', label: 'Premium', icon: Award },
+                  { id: 'partners', label: 'Deals', icon: Briefcase },
+                  { id: 'profile', label: 'Profile', icon: User },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const isSelected = !showProfileModal && (
+                    activeMemberTab === item.id || (item.id === 'profile' && activeMemberTab === 'wallets')
+                  );
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setShowProfileModal(false);
+                        setActiveTransactionView(null);
+                        setActiveMemberTab(item.id as any);
+                        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+                      }}
+                      className={cn(
+                        "relative px-3.5 py-2 rounded-lg text-[13px] font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer",
+                        isSelected
+                          ? "text-white bg-white/[0.06]"
+                          : "text-slate-400 hover:text-slate-100 hover:bg-white/[0.03]"
+                      )}
+                    >
+                      <Icon className={cn("w-3.5 h-3.5", isSelected ? "text-blue-400" : "text-current")} />
+                      <span>{item.label}</span>
+                      {item.badge !== undefined && item.badge > 0 && (
+                        <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold leading-none tabular-nums">
+                          {item.badge}
+                        </span>
+                      )}
+                      {isSelected && (
+                        <motion.div
+                          layoutId="desktopTopNavIndicator"
+                          className="absolute bottom-0 inset-x-3 h-[2px] bg-blue-400 rounded-full"
+                          transition={{ type: 'spring', stiffness: 480, damping: 36 }}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </nav>
+            )}
 
-          {/* Zone 3: Quick Utility & Account Controls */}
-          <div className="flex items-center gap-2 shrink-0">
-            {user ? (
+            {/* Zone 3: Quick Utility & Account Controls */}
+            <div className="flex items-center gap-2 shrink-0">
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <a 
                   href="https://wa.me/8801713710607" 
@@ -8590,22 +8633,13 @@ export default function App() {
                   <LogOut className="w-4 h-4" />
                 </button>
               </div>
-            ) : (
-              <Button onClick={() => handleLogin()} disabled={isLoggingIn} className="text-xs px-3.5 py-2 rounded-xl">
-                {isLoggingIn ? (
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <Lock className="w-4 h-4" />
-                )}
-                <span>{isLoggingIn ? 'Connecting...' : 'Login'}</span>
-              </Button>
-            )}
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
+      )}
 
-      <main className="w-full max-w-7xl mx-auto px-2.5 sm:px-5 lg:px-8 py-4 sm:py-6 pb-24 md:pb-10">
-        {globalError && (
+      <main className={user ? 'w-full max-w-7xl mx-auto px-2.5 sm:px-5 lg:px-8 py-4 sm:py-6 pb-24 md:pb-10' : 'w-full min-h-screen'}>
+        {user && globalError && (
           <div className="mb-8 p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-between gap-4 text-red-400">
             <div className="flex items-center gap-3">
               <AlertCircle className="w-5 h-5 flex-shrink-0" />
@@ -8634,6 +8668,7 @@ export default function App() {
             handleForgotPassword={handleForgotPassword}
             isLoggingIn={isLoggingIn}
             setIsLoggingIn={setIsLoggingIn}
+            globalError={globalError}
             setGlobalError={setGlobalError}
             externalAction={externalAction}
           />
